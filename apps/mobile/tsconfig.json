@@ -1,0 +1,9 @@
+{
+  "extends": "tsconfig/expo.json",
+  "compilerOptions": {
+    "paths": {
+      "@bus-ta/shared": ["../../packages/shared/src/index.ts"],
+      "@bus-ta/shared/*": ["../../packages/shared/src/*"]
+    }
+  }
+}
