@@ -25,10 +25,19 @@ export class MockBellAdapter {
   ): Promise<BellAdapterResult> {
     // TODO: 실제 하차벨 하드웨어 연동 시 이 구현체를 교체
     const success = Math.random() < this.successRate;
+    const respondedAt = new Date().toISOString();
+
+    if (success) {
+      return {
+        success,
+        respondedAt,
+      };
+    }
+
     return {
       success,
-      failReason: success ? undefined : "MOCK_HARDWARE_TIMEOUT",
-      respondedAt: new Date().toISOString(),
+      failReason: "MOCK_HARDWARE_TIMEOUT",
+      respondedAt,
     };
   }
 }
