@@ -2,7 +2,9 @@
 
 ## 역할
 
-서버의 하차벨 요청(`POST /api/trips/{tripId}/bell/request`)을 수신하고 물리적 하차벨을 동작시킨다. 결과를 서버(`POST /api/trips/{tripId}/bell/result`)로 보고한다.
+하차 1정거장 전 백엔드가 `PATCH /api/trips/{tripId}/status` 처리 중 자동 생성한 `STOP_REQUEST` 명령을 (앱 경유로) 수신하고 물리적 하차벨을 동작시킨다. 결과를 서버(`POST /api/trips/{tripId}/bell/result`)로 보고한다.
+
+> 별도 `POST /api/trips/{tripId}/bell/request` 엔드포인트는 사용하지 않는다 (폐기됨).
 
 ## 명령 상수
 
@@ -10,8 +12,7 @@
 
 | 명령 | 의미 |
 |---|---|
-| `RING` | 하차벨 울림 |
-| `CANCEL` | 하차벨 취소 |
+| `STOP_REQUEST` | 하차벨 울림 (MVP 단일 명령) |
 
 ## 하드웨어 사양 (예정)
 
