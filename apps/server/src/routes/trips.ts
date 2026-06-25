@@ -26,12 +26,8 @@ tripsRouter.get("/:tripId/status", (_req, res) => {
   res.status(501).json({ message: "Not implemented" });
 });
 
-// POST /api/trips/:tripId/bell/request
-// NOT_REQUESTED | 재시도 가능한 FAIL → PENDING 으로만 전환
-tripsRouter.post("/:tripId/bell/request", (_req, res) => {
-  // TODO: 하차벨 요청 처리
-  res.status(501).json({ message: "Not implemented" });
-});
+// 폐기: POST /api/trips/:tripId/bell/request
+// 하차벨 요청은 PATCH /:tripId/status 처리 중 remainingStations=1 & NOT_REQUESTED 감지 시 자동 생성한다.
 
 // POST /api/trips/:tripId/bell/result
 // PENDING → SUCCESS | FAIL 으로만 전환

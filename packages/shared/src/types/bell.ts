@@ -10,7 +10,7 @@ export interface BellState {
 export interface BellRequest {
   tripId: TripId;
   /**
-   * /bell/request 와 /bell/result 를 연결하는 식별자 전용.
+   * 하차벨 요청과 /bell/result 결과를 연결하는 식별자 전용.
    * requestId(위치 업데이트용) 와 혼용 금지.
    */
   bellRequestId: BellRequestId;

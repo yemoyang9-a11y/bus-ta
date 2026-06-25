@@ -9,13 +9,13 @@ const BellStatusSchema = z.enum([
 ]);
 
 /**
- * bellRequestId: /bell/request ↔ /bell/result 연결 전용
+ * bellRequestId: 하차벨 요청 ↔ /bell/result 결과 연결 전용
  * requestId(위치 업데이트용)와 절대 혼용하지 않는다.
  *
  * 상태 전환 책임:
- * - POST /bell/request → NOT_REQUESTED | 재시도 가능한 FAIL → PENDING
- * - POST /bell/result  → PENDING → SUCCESS | FAIL
- * - GET 조회           → 상태 변경 없음
+ * - PATCH /trips/{tripId}/status      → remainingStations=1 & NOT_REQUESTED 감지 시 자동 PENDING 생성
+ * - POST  /trips/{tripId}/bell/result → PENDING → SUCCESS | FAIL
+ * - GET   조회                        → 상태 변경 없음
  */
 export const BellRequestSchema = z.object({
   tripId: z.string().min(1),
