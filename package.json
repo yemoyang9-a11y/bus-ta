@@ -2,6 +2,7 @@
   "name": "bus-ta",
   "version": "0.0.1",
   "private": true,
+  "packageManager": "pnpm@11.7.0",
   "description": "AI·BLE 기반 시각장애인 대중교통 탑승·하차 보조 시스템 모노레포",
   "engines": {
     "node": ">=20.0.0",
