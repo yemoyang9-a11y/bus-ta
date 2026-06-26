@@ -1,5 +1,11 @@
 import { API_PATHS } from "@bus-ta/shared";
 
+declare const process: {
+  env: {
+    EXPO_PUBLIC_API_BASE_URL?: string;
+  };
+};
+
 const BASE_URL = process.env["EXPO_PUBLIC_API_BASE_URL"] ?? "http://localhost:3000";
 
 // TODO: axios 또는 fetch 래퍼로 교체

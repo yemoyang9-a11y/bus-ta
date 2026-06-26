@@ -138,6 +138,18 @@ POST  /api/trips/{tripId}/bell/result
 
 DB 미연결 개발 단계에서는 `dbStatus: "NOT_CONFIGURED"`를 반환할 수 있습니다.
 
+Supabase 환경변수가 설정되어 있지만 연결 확인에 실패하면 `500`과 함께 다음 형식을 반환합니다.
+
+```json
+{
+  "success": false,
+  "serverStatus": "UP",
+  "dbStatus": "DOWN",
+  "message": "Supabase connection failed",
+  "timestamp": "2026-07-01T14:30:00+09:00"
+}
+```
+
 ## POST /api/routes/search
 
 - 기능 이름: 노선 후보 검색

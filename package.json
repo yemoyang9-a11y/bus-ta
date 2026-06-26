@@ -8,7 +8,7 @@
     "pnpm": ">=9.0.0"
   },
   "scripts": {
-    "typecheck": "pnpm -r --filter='!./apps/mobile' --filter='!bus-ta' exec tsc --noEmit",
+    "typecheck": "pnpm -r typecheck",
     "build": "pnpm -r --filter=!./apps/mobile run build",
     "lint": "pnpm -r run lint"
   },
