@@ -29,7 +29,7 @@ export type UpdateTripStatusRequest = z.infer<typeof UpdateTripStatusRequestSche
 export const TripStatusResponseSchema = z.object({
   tripId: z.string(),
   status: TripStatusSchema,
-  remainingStops: z.number().int().nonnegative(),
+  remainingStations: z.number().int().nonnegative(),
   updatedAt: z.string(),
 });
 export type TripStatusResponse = z.infer<typeof TripStatusResponseSchema>;

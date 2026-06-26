@@ -3,7 +3,7 @@ import type { Station } from "@bus-ta/shared";
 export interface NearestStationResult {
   currentStation: Station;
   nextStation: Station | null;
-  remainingStops: number;
+  remainingStations: number;
 }
 
 /**
@@ -30,7 +30,7 @@ export function calcNearestStation(
 
   const nextSeq = current.sequence + 1;
   const nextStation = stations.find((s) => s.sequence === nextSeq) ?? null;
-  const remainingStops = Math.max(0, alightingStationSequence - current.sequence);
+  const remainingStations = Math.max(0, alightingStationSequence - current.sequence);
 
-  return { currentStation: current, nextStation, remainingStops };
+  return { currentStation: current, nextStation, remainingStations };
 }

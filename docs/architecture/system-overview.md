@@ -12,8 +12,10 @@
 [apps/mobile] ─── HTTPS ──→ [apps/server]
         │                         │
         │                    [Supabase DB]
-        │                         │
-        │                    [스마트 하차벨] ← 서버에서 bell 명령 전송
+        │
+        │  앱이 STOP_REQUEST 전달
+        ▼
+[스마트 하차벨]
         │
         └─── 음성/햅틱 피드백 → 사용자
 ```

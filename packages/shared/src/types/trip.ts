@@ -13,7 +13,7 @@ export interface Trip {
   /** 다음 정류장 */
   nextStation: Station | null;
   /** 목적지까지 남은 정류장 수 */
-  remainingStops: number;
+  remainingStations: number;
   createdAt: string;
   updatedAt: string;
 }
