@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { BELL_STATUS, DEMO_ROUTE, TRIP_STATUS } from "@bus-ta/shared";
+import { BELL_COMMAND, BELL_STATUS, DEMO_ROUTE, TRIP_STATUS } from "@bus-ta/shared";
 import { updateTripStatus, type TripProgressData } from "./update-trip-status.service.js";
 
 const baseTrip: TripProgressData["trip"] = {
@@ -169,6 +169,145 @@ test("clamps a multi-station forward jump to one station", async () => {
   }
   assert.equal(result.body.currentStation?.stationName, DEMO_ROUTE.stationList[1]!.stationName);
   assert.equal((saved[0] as { locationLog: { reason: string } }).locationLog.reason, "FORWARD_JUMP_CLAMPED");
+});
+
+test("auto-generates a bell request when remainingStations becomes 1 and bell is NOT_REQUESTED", async () => {
+  const saved: unknown[] = [];
+
+  const result = await updateTripStatus(
+    "trip-test-001",
+    {
+      requestId: "loc-bell-1",
+      latitude: DEMO_ROUTE.stationList[2]!.latitude,
+      longitude: DEMO_ROUTE.stationList[2]!.longitude,
+      recordedAt: "2026-07-01T14:36:00+09:00",
+      source: "MOCK",
+    },
+    {
+      findTripProgressData: async () => ({
+        trip: baseTrip,
+        status: {
+          ...baseStatus,
+          currentStation: DEMO_ROUTE.stationList[1]!,
+          nextStation: DEMO_ROUTE.stationList[2]!,
+          remainingStations: 2,
+          tripStatus: TRIP_STATUS.NEAR_DESTINATION,
+        },
+      }),
+      findLocationLogByRequestId: async () => null,
+      saveStatusAndLocation: async (data) => {
+        saved.push(data);
+      },
+      generateBellRequestId: () => "bell-test-001",
+      now: () => "2026-07-01T14:36:01+09:00",
+    },
+  );
+
+  if (result.httpStatus !== 200) {
+    throw new Error("expected successful status update");
+  }
+  assert.equal(result.body.remainingStations, 1);
+  assert.equal(result.body.shouldTriggerBell, true);
+  assert.equal(result.body.bellStatus, BELL_STATUS.PENDING);
+  assert.equal(result.body.bellRequestId, "bell-test-001");
+  assert.equal(result.body.command, BELL_COMMAND.STOP_REQUEST);
+
+  assert.equal(saved.length, 1);
+  const savedInput = saved[0] as {
+    status: { bellStatus: string };
+    bellRequest: { tripId: string; bellRequestId: string; command: string; requestedAt: string } | null;
+  };
+  assert.equal(savedInput.status.bellStatus, BELL_STATUS.PENDING);
+  assert.deepEqual(savedInput.bellRequest, {
+    tripId: "trip-test-001",
+    bellRequestId: "bell-test-001",
+    command: BELL_COMMAND.STOP_REQUEST,
+    requestedAt: "2026-07-01T14:36:01+09:00",
+  });
+});
+
+test("does not generate a second bell request when bell is already PENDING", async () => {
+  const saved: unknown[] = [];
+
+  const result = await updateTripStatus(
+    "trip-test-001",
+    {
+      requestId: "loc-bell-2",
+      latitude: DEMO_ROUTE.stationList[2]!.latitude,
+      longitude: DEMO_ROUTE.stationList[2]!.longitude,
+      recordedAt: "2026-07-01T14:37:00+09:00",
+      source: "MOCK",
+    },
+    {
+      findTripProgressData: async () => ({
+        trip: baseTrip,
+        status: {
+          ...baseStatus,
+          currentStation: DEMO_ROUTE.stationList[1]!,
+          nextStation: DEMO_ROUTE.stationList[2]!,
+          remainingStations: 1,
+          tripStatus: TRIP_STATUS.NEAR_DESTINATION,
+          bellStatus: BELL_STATUS.PENDING,
+        },
+      }),
+      findLocationLogByRequestId: async () => null,
+      saveStatusAndLocation: async (data) => {
+        saved.push(data);
+      },
+      generateBellRequestId: () => "bell-should-not-be-used",
+      now: () => "2026-07-01T14:37:01+09:00",
+    },
+  );
+
+  if (result.httpStatus !== 200) {
+    throw new Error("expected successful status update");
+  }
+  assert.equal(result.body.shouldTriggerBell, false);
+  assert.equal(result.body.bellStatus, BELL_STATUS.PENDING);
+  assert.equal(saved.length, 1);
+  const savedInput = saved[0] as { status: { bellStatus: string }; bellRequest?: unknown };
+  assert.equal(savedInput.status.bellStatus, BELL_STATUS.PENDING);
+  assert.equal(savedInput.bellRequest ?? null, null);
+});
+
+test("does not generate a bell request when more than one station remains", async () => {
+  const saved: unknown[] = [];
+
+  const result = await updateTripStatus(
+    "trip-test-001",
+    {
+      requestId: "loc-bell-3",
+      latitude: DEMO_ROUTE.stationList[1]!.latitude,
+      longitude: DEMO_ROUTE.stationList[1]!.longitude,
+      recordedAt: "2026-07-01T14:38:00+09:00",
+      source: "MOCK",
+    },
+    {
+      findTripProgressData: async () => ({
+        trip: baseTrip,
+        status: {
+          ...baseStatus,
+          currentStation: DEMO_ROUTE.stationList[0]!,
+          nextStation: DEMO_ROUTE.stationList[1]!,
+        },
+      }),
+      findLocationLogByRequestId: async () => null,
+      saveStatusAndLocation: async (data) => {
+        saved.push(data);
+      },
+      generateBellRequestId: () => "bell-should-not-be-used",
+      now: () => "2026-07-01T14:38:01+09:00",
+    },
+  );
+
+  if (result.httpStatus !== 200) {
+    throw new Error("expected successful status update");
+  }
+  assert.equal(result.body.remainingStations, 2);
+  assert.equal(result.body.shouldTriggerBell, false);
+  assert.equal(result.body.bellStatus, BELL_STATUS.NOT_REQUESTED);
+  const savedInput = saved[0] as { bellRequest?: unknown };
+  assert.equal(savedInput.bellRequest ?? null, null);
 });
 
 test("rejects an unknown tripId", async () => {

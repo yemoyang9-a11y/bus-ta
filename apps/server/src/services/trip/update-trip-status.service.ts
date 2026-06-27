@@ -1,4 +1,6 @@
+import { randomUUID } from "node:crypto";
 import {
+  BELL_COMMAND,
   BELL_STATUS,
   TRIP_STATUS,
   UpdateTripStatusRequestSchema,
@@ -62,9 +64,21 @@ export interface LocationLogCreateRecord {
   reason: "BACKWARD_STATION_IGNORED" | "FORWARD_JUMP_CLAMPED" | null;
 }
 
+export interface BellRequestCreateRecord {
+  tripId: string;
+  bellRequestId: string;
+  command: typeof BELL_COMMAND.STOP_REQUEST;
+  requestedAt: string;
+}
+
 export interface SaveStatusAndLocationInput {
   status: TripStatusUpdateRecord;
   locationLog: LocationLogCreateRecord;
+  /**
+   * remainingStations=1 & bellStatus=NOT_REQUESTED 감지 시에만 채워진다.
+   * 채워지면 repository 가 bell_logs 에 STOP_REQUEST 요청을 기록한다.
+   */
+  bellRequest?: BellRequestCreateRecord | null;
 }
 
 export interface UpdateTripStatusRepository {
@@ -75,6 +89,7 @@ export interface UpdateTripStatusRepository {
 
 export interface UpdateTripStatusDependencies extends UpdateTripStatusRepository {
   now?: () => string;
+  generateBellRequestId?: () => string;
 }
 
 type UpdateTripStatusSuccessBody = {
@@ -87,9 +102,9 @@ type UpdateTripStatusSuccessBody = {
   remainingStations: number;
   tripStatus: string;
   bellStatus: string;
-  shouldTriggerBell: false;
+  shouldTriggerBell: boolean;
   bellRequestId?: string;
-  command: null;
+  command: typeof BELL_COMMAND.STOP_REQUEST | null;
   guideMessage: string;
   source?: UpdateTripStatusRequest["source"];
   message: string;
@@ -110,6 +125,7 @@ export type UpdateTripStatusResult =
   | { httpStatus: 500; body: UpdateTripStatusErrorBody };
 
 const defaultNow = () => new Date().toISOString();
+const defaultGenerateBellRequestId = () => `bell-${randomUUID()}`;
 
 export async function updateTripStatus(
   tripId: string,
@@ -157,13 +173,40 @@ export async function updateTripStatus(
   }
 
   const progress = calculateProgress(progressData, parsed.data);
+
+  // 5단계: 하차 1정거장 전 하차벨 자동 요청 생성.
+  // remainingStations=1 & bellStatus=NOT_REQUESTED 일 때만 STOP_REQUEST 를 생성하고 PENDING 으로 전환한다.
+  // PENDING/SUCCESS/FAIL 이면 중복 생성하지 않는다.
+  const shouldTriggerBell =
+    progress.remainingStations === 1 &&
+    progressData.status.bellStatus === BELL_STATUS.NOT_REQUESTED;
+
+  let bellStatus = progressData.status.bellStatus;
+  let bellRequestId = progressData.status.bellRequestId;
+  let command = progressData.status.command;
+  let bellRequest: BellRequestCreateRecord | null = null;
+
+  if (shouldTriggerBell) {
+    const generateBellRequestId =
+      dependencies.generateBellRequestId ?? defaultGenerateBellRequestId;
+    bellRequestId = generateBellRequestId();
+    command = BELL_COMMAND.STOP_REQUEST;
+    bellStatus = BELL_STATUS.PENDING;
+    bellRequest = {
+      tripId,
+      bellRequestId,
+      command: BELL_COMMAND.STOP_REQUEST,
+      requestedAt: timestamp,
+    };
+  }
+
   const status: TripStatusUpdateRecord = {
     tripId,
     currentStation: progress.currentStation,
     nextStation: progress.nextStation,
     remainingStations: progress.remainingStations,
     tripStatus: progress.tripStatus,
-    bellStatus: progressData.status.bellStatus,
+    bellStatus,
     lastRequestId: parsed.data.requestId,
     locationSource: parsed.data.source,
     recordedAt: parsed.data.recordedAt,
@@ -185,6 +228,7 @@ export async function updateTripStatus(
         locationAccepted: progress.locationAccepted,
         reason: progress.reason,
       },
+      ...(bellRequest ? { bellRequest } : {}),
     });
   } catch {
     return {
@@ -206,14 +250,15 @@ export async function updateTripStatus(
         status: {
           ...progressData.status,
           ...status,
-          bellRequestId: progressData.status.bellRequestId,
-          command: progressData.status.command,
+          bellRequestId,
+          command,
         },
       },
       {
-        message: "이동 상태를 갱신했습니다.",
+        message: shouldTriggerBell ? "하차벨 요청을 생성했습니다." : "이동 상태를 갱신했습니다.",
         source: parsed.data.source,
         timestamp,
+        shouldTriggerBell,
       },
     ),
   };
@@ -256,8 +301,10 @@ function toResponseBody(
     message: string;
     timestamp: string;
     source?: UpdateTripStatusRequest["source"];
+    shouldTriggerBell?: boolean;
   },
 ): UpdateTripStatusSuccessBody {
+  const shouldTriggerBell = options.shouldTriggerBell ?? false;
   const body: UpdateTripStatusSuccessBody = {
     success: true,
     tripId: progressData.trip.tripId,
@@ -268,9 +315,13 @@ function toResponseBody(
     remainingStations: progressData.status.remainingStations,
     tripStatus: progressData.status.tripStatus,
     bellStatus: progressData.status.bellStatus,
-    shouldTriggerBell: false,
-    command: null,
-    guideMessage: getGuideMessage(progressData.status.remainingStations, progressData.status.bellStatus),
+    shouldTriggerBell,
+    command: progressData.status.command,
+    guideMessage: getGuideMessage(
+      progressData.status.remainingStations,
+      progressData.status.bellStatus,
+      shouldTriggerBell,
+    ),
     message: options.message,
     timestamp: options.timestamp,
   };
@@ -319,9 +370,12 @@ function getTripStatus(remainingStations: number) {
   return TRIP_STATUS.ON_BUS;
 }
 
-function getGuideMessage(remainingStations: number, bellStatus: string) {
+function getGuideMessage(remainingStations: number, bellStatus: string, shouldTriggerBell = false) {
   if (remainingStations === 0) {
     return "목적지 정류장에 도착했습니다.";
+  }
+  if (shouldTriggerBell) {
+    return "하차벨을 요청했습니다. 하차를 준비하세요.";
   }
   if (remainingStations === 1 && bellStatus === BELL_STATUS.NOT_REQUESTED) {
     return "하차까지 한 정류장 남았습니다. 하차벨 요청을 준비합니다.";

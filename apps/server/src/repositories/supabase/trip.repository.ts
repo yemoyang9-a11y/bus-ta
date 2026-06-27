@@ -98,6 +98,11 @@ export class SupabaseTripRepository implements TripCreationRepository, UpdateTri
       toTripStatusUpdateRow(data.status),
     );
     await this.insert("location_logs", toLocationLogRow(data.locationLog));
+
+    // 5단계: 하차벨 자동 요청이 생성된 경우에만 bell_logs 에 STOP_REQUEST 요청을 기록한다.
+    if (data.bellRequest) {
+      await this.insert("bell_logs", toBellLogRow(data.bellRequest));
+    }
   }
 
   private async insert(table: string, row: Record<string, unknown>) {
@@ -215,6 +220,15 @@ function toTripStatusUpdateRow(status: SaveStatusAndLocationInput["status"]) {
     location_source: status.locationSource,
     recorded_at: status.recordedAt,
     updated_at: status.updatedAt,
+  };
+}
+
+function toBellLogRow(bellRequest: NonNullable<SaveStatusAndLocationInput["bellRequest"]>) {
+  return {
+    trip_id: bellRequest.tripId,
+    bell_request_id: bellRequest.bellRequestId,
+    command: bellRequest.command,
+    requested_at: bellRequest.requestedAt,
   };
 }
 
