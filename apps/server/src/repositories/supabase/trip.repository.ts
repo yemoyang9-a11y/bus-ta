@@ -50,6 +50,13 @@ export class SupabaseTripRepository implements TripCreationRepository, UpdateTri
       return null;
     }
 
+    // 가장 최근 하차벨 요청을 읽어 bellRequestId / command 를 채운다 (없으면 null).
+    const bellRows = await this.selectRows(
+      "bell_logs",
+      `trip_id=eq.${encodeURIComponent(tripId)}&order=requested_at.desc&limit=1`,
+    );
+    const bell = bellRows[0];
+
     return {
       trip: {
         tripId: readString(trip, "trip_id"),
@@ -64,8 +71,8 @@ export class SupabaseTripRepository implements TripCreationRepository, UpdateTri
         remainingStations: readNumber(status, "remaining_stations"),
         tripStatus: readString(status, "trip_status"),
         bellStatus: readString(status, "bell_status"),
-        bellRequestId: null,
-        command: null,
+        bellRequestId: bell ? readString(bell, "bell_request_id") : null,
+        command: bell ? (readString(bell, "command") as "STOP_REQUEST") : null,
         lastRequestId: readNullableString(status, "last_request_id"),
         locationSource: readNullableString(status, "location_source"),
         recordedAt: readNullableString(status, "recorded_at"),

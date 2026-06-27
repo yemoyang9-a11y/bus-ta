@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { createSupabaseTripRepositoryFromEnv } from "../repositories/supabase/trip.repository.js";
 import { createTrip } from "../services/trip/create-trip.service.js";
+import { getTripStatus } from "../services/trip/get-trip-status.service.js";
 import { updateTripStatus } from "../services/trip/update-trip-status.service.js";
 
 export const tripsRouter = Router();
@@ -48,9 +49,22 @@ tripsRouter.patch("/:tripId/status", async (req, res) => {
 });
 
 // GET /api/trips/:tripId/status
-tripsRouter.get("/:tripId/status", (_req, res) => {
-  // TODO: 현재 tripStatus + 남은 정류장 수 조회 (상태 변경 없음)
-  res.status(501).json({ message: "Not implemented" });
+// 조회 전용 — 상태를 변경하지 않고 하차벨 요청도 새로 만들지 않는다.
+tripsRouter.get("/:tripId/status", async (req, res) => {
+  const repository = createSupabaseTripRepositoryFromEnv();
+
+  if (!repository) {
+    res.status(500).json({
+      success: false,
+      errorCode: "DB_ERROR",
+      message: "Supabase is not configured",
+      timestamp: new Date().toISOString(),
+    });
+    return;
+  }
+
+  const result = await getTripStatus(req.params.tripId ?? "", repository);
+  res.status(result.httpStatus).json(result.body);
 });
 
 // POST /api/trips/:tripId/bell/result
