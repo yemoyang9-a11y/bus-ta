@@ -1,6 +1,7 @@
 ﻿# API 명세 요약
 
-> 상세 MVP 명세는 [../API_SPEC.md](../API_SPEC.md)를 기준으로 한다.
+> 이 문서는 요약/참고용이다. 상세 MVP 명세는 [../API_SPEC.md](../API_SPEC.md)를 단일 기준으로 하며,
+> 두 문서가 어긋나면 `../API_SPEC.md`가 우선한다.
 > 모든 API 경로와 상태값은 `packages/shared/src/constants/`와 문서가 서로 어긋나지 않도록 관리한다.
 
 ## 사용 API
