@@ -108,7 +108,7 @@ ODsay `passStopList`에서 경유 정류장의 고유 `stationId`를 제공하�
 GET   /api/health
 POST  /api/routes/search
 POST  /api/trips
-PATCH /api/trips/{tripId}
+PATCH /api/trips/{tripId}            # 미구현 (중간평가 범위 밖, 시연 재시작 장면 없음)
 PATCH /api/trips/{tripId}/status
 GET   /api/trips/{tripId}/status
 GET   /api/beacons?routeNo=
@@ -596,6 +596,9 @@ remainingStations = destinationStation의 stationList 배열 인덱스 - current
 상태 코드: `200`, `400`, `404`, `409`
 
 ## PATCH /api/trips/{tripId}
+
+> 미구현. 중간평가 범위 밖이며 시연에 운행 취소/재시작 장면이 없어 보류한다.
+> 현재 서버는 이 경로에 `501 Not implemented` 를 반환한다. 아래는 향후 구현 시 기준 명세이다.
 
 - 기능 이름: 운행 취소 또는 종료
 - HTTP 메서드: `PATCH`

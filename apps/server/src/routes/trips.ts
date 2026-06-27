@@ -26,8 +26,9 @@ tripsRouter.post("/", async (req, res) => {
 });
 
 // PATCH /api/trips/:tripId
+// 미구현(보류): 운행 취소/시연 재시작용. 중간평가 범위 밖이며 시연에 해당 장면이 없다.
+// 명세는 docs/API_SPEC.md "PATCH /api/trips/{tripId}" 참고.
 tripsRouter.patch("/:tripId", (_req, res) => {
-  // TODO: trip 정보 수정 (목적지 변경 등)
   res.status(501).json({ message: "Not implemented" });
 });
 
