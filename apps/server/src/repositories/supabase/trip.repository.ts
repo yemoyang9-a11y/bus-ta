@@ -11,6 +11,11 @@ import type {
   TripProgressData,
   UpdateTripStatusRepository,
 } from "../../services/trip/update-trip-status.service.js";
+import type {
+  BellRequestLookup,
+  BellResultRepository,
+  SaveBellResultInput,
+} from "../../services/trip/bell-result.service.js";
 
 type Env = Partial<Record<string, string | undefined>>;
 type FetchLike = (input: string | URL, init?: RequestInit) => Promise<Response>;
@@ -23,7 +28,9 @@ export function createSupabaseTripRepositoryFromEnv(
   return config ? new SupabaseTripRepository(config, fetchImpl) : null;
 }
 
-export class SupabaseTripRepository implements TripCreationRepository, UpdateTripStatusRepository {
+export class SupabaseTripRepository
+  implements TripCreationRepository, UpdateTripStatusRepository, BellResultRepository
+{
   constructor(
     private readonly config: SupabaseConfig,
     private readonly fetchImpl: FetchLike = fetch,
@@ -110,6 +117,48 @@ export class SupabaseTripRepository implements TripCreationRepository, UpdateTri
     if (data.bellRequest) {
       await this.insert("bell_logs", toBellLogRow(data.bellRequest));
     }
+  }
+
+  async findBellRequest(tripId: string, bellRequestId: string): Promise<BellRequestLookup | null> {
+    const bellRows = await this.selectRows(
+      "bell_logs",
+      `trip_id=eq.${encodeURIComponent(tripId)}&bell_request_id=eq.${encodeURIComponent(bellRequestId)}`,
+    );
+    const bell = bellRows[0];
+    if (!bell) {
+      return null;
+    }
+
+    const statusRows = await this.selectRows("trip_status", `trip_id=eq.${encodeURIComponent(tripId)}`);
+    const status = statusRows[0];
+    if (!status) {
+      return null;
+    }
+
+    return {
+      tripId: readString(bell, "trip_id"),
+      bellRequestId: readString(bell, "bell_request_id"),
+      result: readBellResult(bell, "result"),
+      bellStatus: readString(status, "bell_status"),
+      tripStatus: readString(status, "trip_status"),
+    };
+  }
+
+  async saveBellResult(data: SaveBellResultInput): Promise<void> {
+    await this.patch(
+      "bell_logs",
+      `trip_id=eq.${encodeURIComponent(data.tripId)}&bell_request_id=eq.${encodeURIComponent(data.bellRequestId)}`,
+      {
+        result: data.result,
+        message: data.resultMessage,
+        is_mock: data.isMock,
+        completed_at: data.completedAt,
+      },
+    );
+    await this.patch("trip_status", `trip_id=eq.${encodeURIComponent(data.tripId)}`, {
+      bell_status: data.bellStatus,
+      updated_at: data.completedAt,
+    });
   }
 
   private async insert(table: string, row: Record<string, unknown>) {
@@ -269,6 +318,13 @@ function readNullableString(row: Record<string, unknown>, key: string) {
     throw new Error(`Expected ${key} to be a nullable string`);
   }
   return value;
+}
+
+function readBellResult(row: Record<string, unknown>, key: string) {
+  const value = row[key];
+  if (value === null || value === undefined) return null;
+  if (value === "SUCCESS" || value === "FAIL") return value;
+  throw new Error(`Expected ${key} to be SUCCESS, FAIL, or null`);
 }
 
 function readNumber(row: Record<string, unknown>, key: string) {
