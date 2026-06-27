@@ -40,3 +40,20 @@
 - 재발 방지 방법: 타임아웃과 재시도 정책 추가 검토
 - 관련 커밋 또는 Pull Request: 확인 필요
 ```
+
+## GET /api/health 의 dbStatus 가 NOT_CONFIGURED 로 나옴
+
+- 발생 날짜: 2026-06-27
+- 담당자: 예모
+- 발생 환경: 백엔드 로컬 개발 (apps/server)
+- 증상: `apps/server/.env` 에 `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` 를 넣었는데도
+  `GET /api/health` 응답이 `dbStatus: "NOT_CONFIGURED"` 로 나온다.
+- 원인: 서버가 `.env` 파일을 자동으로 읽지 않았다. `tsx watch src/index.ts` 와
+  `node dist/index.js` 는 `.env` 를 자동 로드하지 않으므로 `process.env` 에 값이 들어가지 않았다.
+- 임시 해결 방법: 서버를 실행하는 셸에서 환경변수를 직접 주입한 뒤 실행
+  (`$env:SUPABASE_URL=...; $env:SUPABASE_SERVICE_ROLE_KEY=...; pnpm --filter @bus-ta/server dev`).
+- 최종 해결 방법: `apps/server/src/index.ts` 시작 시 실행 디렉터리의 `.env` 를
+  `process.loadEnvFile` 로 자동 로드한다. 파일이 없으면 건너뛰고, 셸에 이미 설정된 변수가 우선한다.
+- 수정 파일: `apps/server/src/index.ts`
+- 재발 방지 방법: `.env` 는 `.gitignore` 로 커밋 금지, 변수 이름은 `apps/server/.env.example` 에만 유지.
+- 관련 커밋 또는 Pull Request: yemo-develop 브랜치 커밋
