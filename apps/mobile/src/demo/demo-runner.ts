@@ -5,15 +5,11 @@
  * 서버가 좌표를 받아 정류장 계산을 수행한다.
  */
 import { DEMO_LOCATION_SEQUENCE } from "@bus-ta/shared";
-import { asTripId } from "@bus-ta/shared";
 import { apiClient } from "../api/client.js";
 
 export async function runDemoSequence(tripId: string, intervalMs = 3000): Promise<void> {
-  const tid = asTripId(tripId);
-
   for (const loc of DEMO_LOCATION_SEQUENCE) {
     await apiClient.trips.updateStatus(tripId, {
-      tripId: tid,
       ...loc,
     });
     // TODO: 실제 시연에서는 앱 상태(tripStatus)를 갱신 후 다음 좌표 전송

@@ -1,10 +1,20 @@
-import type { RouteId } from "./ids.js";
-import type { Station } from "./station.js";
+import type { Station, StationListItem } from "./station.js";
 
 export interface Route {
-  routeId: RouteId;
-  /** 노선 번호 (예: "360") */
+  candidateId: number;
   routeNo: string;
-  routeName: string;
-  stations: Station[];
+  localBusId: string;
+  gbisStationId: string;
+  boardingStation: Station;
+  destinationStation: Station;
+  stationList: StationListItem[];
+  totalTime?: number;
+  totalWalk?: number;
+  payment?: number;
+  busTransitCount?: number;
+  busStationCount?: number;
+  totalDistance?: number;
+  intervalTime?: number;
+  recommendationReason?: string;
+  guideMessage?: string;
 }

@@ -10,8 +10,6 @@ declare const _brand: unique symbol;
 type Brand<T, B extends string> = T & { readonly [_brand]: B };
 
 export type TripId = Brand<string, "TripId">;
-export type RouteId = Brand<string, "RouteId">;
-export type StationId = Brand<string, "StationId">;
 export type BeaconId = Brand<string, "BeaconId">;
 
 /** GPS 또는 mock 위치 업데이트의 중복 요청 판정용 */
@@ -22,8 +20,6 @@ export type BellRequestId = Brand<string, "BellRequestId">;
 
 // 편의 생성 함수 (런타임에는 plain string, 타입만 강제)
 export const asTripId = (s: string): TripId => s as TripId;
-export const asRouteId = (s: string): RouteId => s as RouteId;
-export const asStationId = (s: string): StationId => s as StationId;
 export const asBeaconId = (s: string): BeaconId => s as BeaconId;
 export const asRequestId = (s: string): RequestId => s as RequestId;
 export const asBellRequestId = (s: string): BellRequestId => s as BellRequestId;

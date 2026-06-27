@@ -1,9 +1,12 @@
 import type { BellRequestId, TripId } from "@bus-ta/shared";
+import { BELL_COMMAND, BELL_STATUS } from "@bus-ta/shared";
 
 export interface BellAdapterResult {
-  success: boolean;
-  failReason?: string;
-  respondedAt: string;
+  command: typeof BELL_COMMAND.STOP_REQUEST;
+  result: typeof BELL_STATUS.SUCCESS | typeof BELL_STATUS.FAIL;
+  resultMessage?: string;
+  isMock: boolean;
+  timestamp: string;
 }
 
 /**
@@ -25,19 +28,23 @@ export class MockBellAdapter {
   ): Promise<BellAdapterResult> {
     // TODO: 실제 하차벨 하드웨어 연동 시 이 구현체를 교체
     const success = Math.random() < this.successRate;
-    const respondedAt = new Date().toISOString();
+    const timestamp = new Date().toISOString();
 
     if (success) {
       return {
-        success,
-        respondedAt,
+        command: BELL_COMMAND.STOP_REQUEST,
+        result: BELL_STATUS.SUCCESS,
+        isMock: true,
+        timestamp,
       };
     }
 
     return {
-      success,
-      failReason: "MOCK_HARDWARE_TIMEOUT",
-      respondedAt,
+      command: BELL_COMMAND.STOP_REQUEST,
+      result: BELL_STATUS.FAIL,
+      resultMessage: "MOCK_HARDWARE_TIMEOUT",
+      isMock: true,
+      timestamp,
     };
   }
 }

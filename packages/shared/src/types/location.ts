@@ -7,8 +7,8 @@ export interface LocationUpdate {
    * bellRequestId 와 혼용 금지.
    */
   requestId: RequestId;
-  lat: number;
-  lng: number;
-  accuracy?: number;
-  timestamp: string;
+  latitude: number;
+  longitude: number;
+  recordedAt: string;
+  source: "GPS" | "MOCK" | "MANUAL";
 }

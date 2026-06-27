@@ -7,9 +7,9 @@ import { z } from "zod";
 export const LocationUpdateSchema = z.object({
   tripId: z.string().min(1),
   requestId: z.string().min(1),
-  lat: z.number().min(-90).max(90),
-  lng: z.number().min(-180).max(180),
-  accuracy: z.number().positive().optional(),
-  timestamp: z.string().datetime(),
+  latitude: z.number().min(-90).max(90),
+  longitude: z.number().min(-180).max(180),
+  recordedAt: z.string().min(1),
+  source: z.enum(["GPS", "MOCK", "MANUAL"]),
 });
 export type LocationUpdateInput = z.infer<typeof LocationUpdateSchema>;

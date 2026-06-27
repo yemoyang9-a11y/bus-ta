@@ -1,11 +1,26 @@
 import { Router } from "express";
+import { createSupabaseTripRepositoryFromEnv } from "../repositories/supabase/trip.repository.js";
+import { createTrip } from "../services/trip/create-trip.service.js";
+import { updateTripStatus } from "../services/trip/update-trip-status.service.js";
 
 export const tripsRouter = Router();
 
 // POST /api/trips
-tripsRouter.post("/", (_req, res) => {
-  // TODO: trip 생성
-  res.status(501).json({ message: "Not implemented" });
+tripsRouter.post("/", async (req, res) => {
+  const repository = createSupabaseTripRepositoryFromEnv();
+
+  if (!repository) {
+    res.status(500).json({
+      success: false,
+      errorCode: "DB_ERROR",
+      message: "Supabase is not configured",
+      timestamp: new Date().toISOString(),
+    });
+    return;
+  }
+
+  const result = await createTrip(req.body, repository);
+  res.status(result.httpStatus).json(result.body);
 });
 
 // PATCH /api/trips/:tripId
@@ -15,9 +30,21 @@ tripsRouter.patch("/:tripId", (_req, res) => {
 });
 
 // PATCH /api/trips/:tripId/status
-tripsRouter.patch("/:tripId/status", (_req, res) => {
-  // TODO: tripStatus 강제 변경 (앱 → 서버)
-  res.status(501).json({ message: "Not implemented" });
+tripsRouter.patch("/:tripId/status", async (req, res) => {
+  const repository = createSupabaseTripRepositoryFromEnv();
+
+  if (!repository) {
+    res.status(500).json({
+      success: false,
+      errorCode: "DB_ERROR",
+      message: "Supabase is not configured",
+      timestamp: new Date().toISOString(),
+    });
+    return;
+  }
+
+  const result = await updateTripStatus(req.params.tripId ?? "", req.body, repository);
+  res.status(result.httpStatus).json(result.body);
 });
 
 // GET /api/trips/:tripId/status
@@ -25,9 +52,6 @@ tripsRouter.get("/:tripId/status", (_req, res) => {
   // TODO: 현재 tripStatus + 남은 정류장 수 조회 (상태 변경 없음)
   res.status(501).json({ message: "Not implemented" });
 });
-
-// 폐기: POST /api/trips/:tripId/bell/request
-// 하차벨 요청은 PATCH /:tripId/status 처리 중 remainingStations=1 & NOT_REQUESTED 감지 시 자동 생성한다.
 
 // POST /api/trips/:tripId/bell/result
 // PENDING → SUCCESS | FAIL 으로만 전환

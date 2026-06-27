@@ -1,5 +1,7 @@
 import { z } from "zod";
+import { BELL_COMMAND } from "../constants/bell-command.js";
 import { BELL_STATUS } from "../constants/bell-status.js";
+import { TRIP_STATUS } from "../constants/trip-status.js";
 
 const BellStatusSchema = z.enum([
   BELL_STATUS.NOT_REQUESTED,
@@ -24,17 +26,27 @@ export const BellRequestSchema = z.object({
 export type BellRequestInput = z.infer<typeof BellRequestSchema>;
 
 export const BellResultSchema = z.object({
-  tripId: z.string().min(1),
   bellRequestId: z.string().min(1),
-  success: z.boolean(),
-  failReason: z.string().optional(),
-  respondedAt: z.string().datetime(),
+  command: z.enum([BELL_COMMAND.STOP_REQUEST]),
+  result: z.enum([BELL_STATUS.SUCCESS, BELL_STATUS.FAIL]),
+  resultMessage: z.string().optional(),
+  isMock: z.boolean().optional(),
+  timestamp: z.string().min(1),
 });
 export type BellResultInput = z.infer<typeof BellResultSchema>;
 
 export const BellStateResponseSchema = z.object({
+  success: z.boolean(),
   tripId: z.string(),
-  status: BellStatusSchema,
-  updatedAt: z.string(),
+  bellStatus: BellStatusSchema,
+  tripStatus: z.enum([
+    TRIP_STATUS.WAITING_BUS,
+    TRIP_STATUS.ON_BUS,
+    TRIP_STATUS.NEAR_DESTINATION,
+    TRIP_STATUS.TRIP_DONE,
+    TRIP_STATUS.ERROR,
+  ]),
+  message: z.string(),
+  timestamp: z.string(),
 });
 export type BellStateResponse = z.infer<typeof BellStateResponseSchema>;

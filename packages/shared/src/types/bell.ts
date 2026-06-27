@@ -1,5 +1,6 @@
 import type { TripId, BellRequestId } from "./ids.js";
 import type { BellStatus } from "../constants/bell-status.js";
+import type { BellCommand } from "../constants/bell-command.js";
 
 export interface BellState {
   tripId: TripId;
@@ -19,7 +20,9 @@ export interface BellRequest {
 export interface BellResult {
   tripId: TripId;
   bellRequestId: BellRequestId;
-  success: boolean;
-  failReason?: string;
-  respondedAt: string;
+  command: BellCommand;
+  result: Extract<BellStatus, "SUCCESS" | "FAIL">;
+  resultMessage?: string;
+  isMock?: boolean;
+  timestamp: string;
 }

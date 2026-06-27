@@ -30,7 +30,7 @@
 - 공통 패키지: `packages/shared/`
 - 백엔드 라우트 파일은 있으나 주요 API는 아직 `501 Not implemented` 상태다.
 - `supabase/migrations/`에는 `.gitkeep`만 있고 실제 테이블 생성 SQL은 아직 없다.
-- `apps/server/src/routes/trips.ts`에는 구버전 `/bell/request` 라우트가 남아 있으므로 구현 전에 제거하거나 비공개 처리해야 한다.
+- `apps/server/src/routes/trips.ts`에는 실제 `/bell/request` 라우트가 없고, 사용 금지 주석만 남아 있다.
 
 ## 최종 개발 순서 요약
 
@@ -451,6 +451,11 @@ GET /api/beacons?routeNo=
 8. `GET /api/beacons?routeNo=` 구현
 9. mock 기반 통합 테스트
 10. 효린·유나 모듈 실제 연동
+
+## 나중에 해야 할 것
+
+- 서버 실행 환경에 `SUPABASE_URL`과 `SUPABASE_SERVICE_ROLE_KEY` 또는 `SUPABASE_ANON_KEY`를 설정한 뒤 실제 API 호출로 DB 저장 흐름을 확인한다.
+- 효린 `getArrivalInfo(selectedCandidate)` 실제 모듈이 repo에 들어오면 `POST /api/trips` 생성 흐름에 연결하고, 실패 시 `predictedArrivalMinutes: null`로 계속 진행되는지 재확인한다.
 
 ## 커밋 단위 제안
 

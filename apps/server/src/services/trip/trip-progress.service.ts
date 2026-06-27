@@ -1,8 +1,8 @@
-import type { Station } from "@bus-ta/shared";
+import type { StationListItem } from "@bus-ta/shared";
 
 export interface NearestStationResult {
-  currentStation: Station;
-  nextStation: Station | null;
+  currentStation: StationListItem;
+  nextStation: StationListItem | null;
   remainingStations: number;
 }
 
@@ -11,26 +11,29 @@ export interface NearestStationResult {
  * 실제 구현 시 haversine 거리 계산을 사용한다.
  */
 export function calcNearestStation(
-  lat: number,
-  lng: number,
-  stations: Station[],
-  alightingStationSequence: number,
+  latitude: number,
+  longitude: number,
+  stations: StationListItem[],
+  destinationStationIndex = stations.length - 1,
 ): NearestStationResult | null {
   if (stations.length === 0) return null;
 
-  // TODO: haversine 거리 기반 가장 가까운 정류장 찾기
-  const sorted = [...stations].sort((a, b) => {
-    const dA = Math.hypot(a.lat - lat, a.lng - lng);
-    const dB = Math.hypot(b.lat - lat, b.lng - lng);
-    return dA - dB;
+  let currentIndex = 0;
+  let currentDistance = Number.POSITIVE_INFINITY;
+
+  stations.forEach((station, index) => {
+    const distance = Math.hypot(station.latitude - latitude, station.longitude - longitude);
+    if (distance < currentDistance) {
+      currentDistance = distance;
+      currentIndex = index;
+    }
   });
 
-  const current = sorted[0];
+  const current = stations[currentIndex];
   if (!current) return null;
 
-  const nextSeq = current.sequence + 1;
-  const nextStation = stations.find((s) => s.sequence === nextSeq) ?? null;
-  const remainingStations = Math.max(0, alightingStationSequence - current.sequence);
+  const nextStation = stations[currentIndex + 1] ?? null;
+  const remainingStations = Math.max(0, destinationStationIndex - currentIndex);
 
   return { currentStation: current, nextStation, remainingStations };
 }

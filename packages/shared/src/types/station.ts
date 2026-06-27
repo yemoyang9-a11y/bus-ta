@@ -1,11 +1,11 @@
-import type { StationId, RouteId } from "./ids.js";
-
 export interface Station {
-  stationId: StationId;
-  name: string;
-  lat: number;
-  lng: number;
-  /** 노선 내 정류장 순번 (0-based) */
+  stationName: string;
+  latitude: number;
+  longitude: number;
+  /** stationList 항목에는 필수, boarding/destination 객체에는 생략 가능 */
+  sequence?: number;
+}
+
+export interface StationListItem extends Station {
   sequence: number;
-  routeId: RouteId;
 }
