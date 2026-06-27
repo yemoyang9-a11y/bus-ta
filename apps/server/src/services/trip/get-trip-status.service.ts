@@ -1,5 +1,5 @@
-import { BELL_STATUS } from "@bus-ta/shared";
 import type { TripProgressData } from "./update-trip-status.service.js";
+import { buildGuideMessage } from "./guide-message.js";
 
 export interface GetTripStatusRepository {
   findTripProgressData(tripId: string): Promise<TripProgressData | null>;
@@ -25,6 +25,7 @@ type GetTripStatusSuccessBody = {
   bellRequestId?: string;
   command: "STOP_REQUEST" | null;
   guideMessage: string;
+  message: string;
   timestamp: string;
 };
 
@@ -93,7 +94,8 @@ export async function getTripStatus(
     bellStatus: status.bellStatus,
     shouldTriggerBell: false,
     command: status.command,
-    guideMessage: getGuideMessage(status.remainingStations, status.bellStatus),
+    guideMessage: buildGuideMessage(status.remainingStations, status.bellStatus),
+    message: "운행 상태를 조회했습니다.",
     timestamp,
   };
 
@@ -102,26 +104,4 @@ export async function getTripStatus(
   }
 
   return { httpStatus: 200, body };
-}
-
-function getGuideMessage(remainingStations: number, bellStatus: string) {
-  if (bellStatus === BELL_STATUS.SUCCESS) {
-    return "하차벨 요청이 정상 처리되었습니다.";
-  }
-  if (bellStatus === BELL_STATUS.FAIL) {
-    return "하차벨 요청이 실패했습니다.";
-  }
-  if (bellStatus === BELL_STATUS.PENDING) {
-    return "하차벨 요청 결과를 기다리고 있습니다.";
-  }
-  if (remainingStations === 0) {
-    return "목적지 정류장에 도착했습니다.";
-  }
-  if (remainingStations === 1) {
-    return "하차까지 한 정류장 남았습니다.";
-  }
-  if (remainingStations === 2) {
-    return "하차까지 두 정류장 남았습니다. 하차 준비를 시작하세요.";
-  }
-  return "이동 중입니다.";
 }

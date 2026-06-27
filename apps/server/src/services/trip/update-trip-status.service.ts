@@ -7,6 +7,7 @@ import {
   type CreateTripRequest,
   type UpdateTripStatusRequest,
 } from "@bus-ta/shared";
+import { buildGuideMessage } from "./guide-message.js";
 
 type Station = CreateTripRequest["stationList"][number];
 
@@ -317,7 +318,7 @@ function toResponseBody(
     bellStatus: progressData.status.bellStatus,
     shouldTriggerBell,
     command: progressData.status.command,
-    guideMessage: getGuideMessage(
+    guideMessage: buildGuideMessage(
       progressData.status.remainingStations,
       progressData.status.bellStatus,
       shouldTriggerBell,
@@ -370,21 +371,3 @@ function getTripStatus(remainingStations: number) {
   return TRIP_STATUS.ON_BUS;
 }
 
-function getGuideMessage(remainingStations: number, bellStatus: string, shouldTriggerBell = false) {
-  if (remainingStations === 0) {
-    return "목적지 정류장에 도착했습니다.";
-  }
-  if (shouldTriggerBell) {
-    return "하차벨을 요청했습니다. 하차를 준비하세요.";
-  }
-  if (remainingStations === 1 && bellStatus === BELL_STATUS.NOT_REQUESTED) {
-    return "하차까지 한 정류장 남았습니다. 하차벨 요청을 준비합니다.";
-  }
-  if (remainingStations === 2) {
-    return "하차까지 두 정류장 남았습니다. 하차 준비를 시작하세요.";
-  }
-  if (bellStatus === BELL_STATUS.PENDING) {
-    return "하차벨 요청 결과를 기다리고 있습니다.";
-  }
-  return "이동 상태를 갱신했습니다.";
-}
