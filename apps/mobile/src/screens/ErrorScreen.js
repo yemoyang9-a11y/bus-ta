@@ -1,7 +1,10 @@
- import React from 'react';
+import React from 'react';
 import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import * as Speech from 'expo-speech';
 
+// 오류 화면
+// API 호출 실패 시 navigation.navigate('Error')로 이동
+// 백엔드 연결 후 오류 발생 시 이 화면이 표시됨
 export default function ErrorScreen({ navigation }) {
   React.useEffect(() => {
     Speech.speak('오류가 발생했습니다. 네트워크 연결을 확인해주세요.', { language: 'ko' });

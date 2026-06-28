@@ -4,12 +4,24 @@ import * as Speech from 'expo-speech';
 import { useFocusEffect } from '@react-navigation/native';
 import axios from 'axios';
 
+// =============================================
+// [백엔드 연결 시 수정 1] API 주소 변경
+// 'http://백엔드IP:포트' → ngrok 주소로 변경
+// 예: 'https://abc123.ngrok.io'
+// =============================================
 const API_BASE_URL = 'http://백엔드IP:포트';
 
 export default function RouteListScreen({ route, navigation }) {
+  // ConfirmScreen에서 전달받은 값들
+  // - destinationText: 목적지 텍스트 (예: '병점역')
+  // - routes: POST /api/routes/search 응답의 노선 후보 배열
+  // - guideMessage: 유나 AI 모듈이 생성한 안내 문장 (TTS로 출력)
   const { destinationText, routes, guideMessage } = route.params;
   const [loading, setLoading] = useState(false);
 
+  // 화면 진입 시 guideMessage TTS 출력
+  // 유나 AI 모듈이 생성한 안내 문장 읽어줌
+  // 백엔드 연결 후에는 실제 유나 안내 문장이 출력됨
   useFocusEffect(
     React.useCallback(() => {
       const timer = setTimeout(() => {
@@ -25,14 +37,18 @@ export default function RouteListScreen({ route, navigation }) {
     }, [guideMessage])
   );
 
+  // 노선 선택 시 POST /api/trips 호출 후 탑승 중 화면으로 이동
   const selectRoute = async (selectedRoute) => {
     try {
       Speech.stop();
 
-      // 백엔드 연결 후 아래 주석 해제 + mock tripId 줄 주석처리
-      // API_SPEC.md 기준:
-      // - routeId, routeDirection, endStationName 삭제
-      // - candidateId, localBusId, gbisStationId 추가
+      // =============================================
+      // [백엔드 연결 시 수정 2] 아래 주석 해제
+      // POST /api/trips 호출
+      // API_SPEC.md 기준 필드:
+      // - candidateId, localBusId, gbisStationId 사용
+      // - routeId, routeDirection, endStationName 사용 안 함
+      // =============================================
       // const res = await axios.post(`${API_BASE_URL}/api/trips`, {
       //   destination: destinationText,
       //   candidateId: selectedRoute.candidateId,
@@ -52,7 +68,9 @@ export default function RouteListScreen({ route, navigation }) {
       // });
       // const tripId = res.data.tripId;
 
-      // 백엔드 연결 후 이 줄 주석처리
+      // =============================================
+      // [백엔드 연결 시 수정 3] 아래 줄 주석처리
+      // =============================================
       const tripId = 'trip-001';
 
       navigation.navigate('Riding', { tripId, selectedRoute });
@@ -70,6 +88,7 @@ export default function RouteListScreen({ route, navigation }) {
     );
   }
 
+  // 노선 없을 때 처리
   if (!routes || routes.length === 0) {
     return (
       <View style={styles.emptyContainer}>
@@ -83,6 +102,7 @@ export default function RouteListScreen({ route, navigation }) {
 
   return (
     <View style={styles.container}>
+      {/* 유나 AI 안내 문장 화면에도 표시 */}
       <Text style={styles.guideMessage}>{guideMessage}</Text>
       <FlatList
         data={routes}

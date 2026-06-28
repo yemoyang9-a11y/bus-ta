@@ -4,14 +4,22 @@ import * as Speech from 'expo-speech';
 import { useFocusEffect } from '@react-navigation/native';
 import axios from 'axios';
 
+// =============================================
+// [백엔드 연결 시 수정 1] API 주소 변경
+// 'http://백엔드IP:포트' → ngrok 주소로 변경
+// 예: 'https://abc123.ngrok.io'
+// =============================================
 const API_BASE_URL = 'http://백엔드IP:포트';
 
+// =============================================
 // 백엔드 연결 전 임시 mock 데이터
 // 백엔드 연결 후에는 PATCH /api/trips/{tripId}/status 응답으로 대체됨
+// [백엔드 연결 시 수정 2] isBackendConnected = true로 변경하면 이 데이터 안 쓰임
+// =============================================
 const MOCK_STATUSES = [
   {
-    currentStation: { stationName: '오목천역.영신여자고교.청구아파트', latitude: 37.242027, longitude: 126.962801, sequence: 0 },
-    nextStation: { stationName: '수영오거리.방송통신대입구', latitude: 37.237447, longitude: 126.962515, sequence: 1 },
+    currentStation: { stationName: '수원대학교', latitude: 37.213789, longitude: 126.979772, sequence: 0 },
+    nextStation: { stationName: '융건릉사거리', latitude: 37.207917, longitude: 126.987467, sequence: 2 },
     remainingStations: 3,
     tripStatus: 'ON_BUS',
     shouldTriggerBell: false,
@@ -21,8 +29,8 @@ const MOCK_STATUSES = [
     guideMessage: '버스에 탑승했습니다. 3정거장 남았습니다.',
   },
   {
-    currentStation: { stationName: '수영오거리.방송통신대입구', latitude: 37.237447, longitude: 126.962515, sequence: 1 },
-    nextStation: { stationName: '수원대학교', latitude: 37.213789, longitude: 126.979749, sequence: 10 },
+    currentStation: { stationName: '융건릉사거리', latitude: 37.207917, longitude: 126.987467, sequence: 2 },
+    nextStation: { stationName: '중외제약사거리', latitude: 37.201489, longitude: 127.003042, sequence: 4 },
     remainingStations: 2,
     tripStatus: 'NEAR_DESTINATION',
     shouldTriggerBell: false,
@@ -32,8 +40,8 @@ const MOCK_STATUSES = [
     guideMessage: '2정거장 남았습니다. 하차 준비를 시작하세요.',
   },
   {
-    currentStation: { stationName: '수영오거리.방송통신대입구', latitude: 37.237447, longitude: 126.962515, sequence: 1 },
-    nextStation: { stationName: '수원대학교', latitude: 37.213789, longitude: 126.979749, sequence: 10 },
+    currentStation: { stationName: '중외제약사거리', latitude: 37.201489, longitude: 127.003042, sequence: 4 },
+    nextStation: { stationName: '병점역후문', latitude: 37.20601, longitude: 127.032047, sequence: 10 },
     remainingStations: 1,
     tripStatus: 'NEAR_DESTINATION',
     shouldTriggerBell: true,
@@ -44,12 +52,12 @@ const MOCK_STATUSES = [
   },
 ];
 
-// mock GPS 좌표 시퀀스 (PATCH /status에 전송할 좌표)
-// 백엔드 연결 후 isBackendConnected = true로 변경하면 실제 PATCH 호출됨
+// mock GPS 좌표 시퀀스
+// 백엔드 연결 후 isBackendConnected = true로 변경하면 실제 PATCH /status 호출 시 사용됨
 const MOCK_COORDINATES = [
-  { latitude: 37.242027, longitude: 126.962801 },
-  { latitude: 37.237447, longitude: 126.962515 },
-  { latitude: 37.213789, longitude: 126.979749 },
+  { latitude: 37.213789, longitude: 126.979772 },
+  { latitude: 37.207917, longitude: 126.987467 },
+  { latitude: 37.201489, longitude: 127.003042 },
 ];
 
 export default function RidingScreen({ route, navigation }) {
@@ -60,7 +68,7 @@ export default function RidingScreen({ route, navigation }) {
   const mockCoordIndexRef = useRef(0);
 
   // =============================================
-  // 백엔드 연결 시 false → true로 변경
+  // [백엔드 연결 시 수정 2] false → true로 변경
   // true로 변경하면:
   // - 시연용 버튼 자동으로 사라짐
   // - 3초마다 PATCH /api/trips/{tripId}/status 자동 호출
@@ -69,6 +77,7 @@ export default function RidingScreen({ route, navigation }) {
   const isBackendConnected = false;
 
   // 처음 탑승 중 화면 들어올 때 TTS 실행
+  // 이전 화면 TTS와 겹치지 않도록 500ms 딜레이 적용
   useFocusEffect(
     React.useCallback(() => {
       const timer = setTimeout(() => {
@@ -84,7 +93,7 @@ export default function RidingScreen({ route, navigation }) {
     }, [])
   );
 
-  // 정류장이 바뀔 때마다 TTS 실행
+  // 정류장 바뀔 때마다 TTS 실행
   // 1정거장은 아래 useEffect에서 TTS + 하차 안내 처리를 같이 하므로 여기서 제외
   // 첫 화면(mockIndex === 0)은 useFocusEffect에서 처리하므로 여기서 제외
   useEffect(() => {
@@ -99,9 +108,9 @@ export default function RidingScreen({ route, navigation }) {
 
   // 1정거장 남았을 때 TTS 출력 후 하차 안내 화면 전환
   // API_SPEC.md 기준:
-  // - bellRequestId는 백엔드 응답(status.bellRequestId)에서 받아서 전달
-  // - command, guideMessage도 함께 전달
+  // - bellRequestId는 백엔드가 PATCH /status 응답에서 생성한 값 (프론트 생성 금지)
   // - /bell/request API는 사용하지 않음
+  // - shouldTriggerBell: true + bellStatus: PENDING + bellRequestId 존재 시 실행
   useEffect(() => {
     if (
       status.shouldTriggerBell === true &&
@@ -124,7 +133,7 @@ export default function RidingScreen({ route, navigation }) {
   }, [status]);
 
   // 백엔드 연결 후 3초마다 PATCH /status 자동 호출
-  // mock GPS 좌표를 순서대로 전송하며 이동 상황 재현
+  // isBackendConnected = true일 때만 실행됨
   useEffect(() => {
     if (!isBackendConnected) return;
 
@@ -153,7 +162,6 @@ export default function RidingScreen({ route, navigation }) {
 
       setStatus(res.data);
 
-      // 다음 좌표로 이동 (마지막 좌표에서 멈춤)
       if (mockCoordIndexRef.current < MOCK_COORDINATES.length - 1) {
         mockCoordIndexRef.current += 1;
       }
@@ -177,7 +185,8 @@ export default function RidingScreen({ route, navigation }) {
   };
 
   // 시연용 버튼 함수
-  // 백엔드 연결 전까지 사용 (isBackendConnected: false일 때만 버튼 표시)
+  // isBackendConnected = false일 때만 버튼 표시
+  // isBackendConnected = true로 변경하면 버튼 자동으로 사라짐
   const goNextStation = () => {
     const nextIndex = mockIndex + 1;
     if (nextIndex < MOCK_STATUSES.length) {
