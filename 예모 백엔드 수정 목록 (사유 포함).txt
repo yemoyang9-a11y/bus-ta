@@ -1,0 +1,241 @@
+예모 백엔드 수정 목록 (사유 포함)
+
+1. POST /api/routes/search 내부 처리 흐름 변경
+기존 흐름:
+목적지 좌표 변환 → GBIS 주변 정류장 조회 → 정류장별 버스 후보 조회 → guideMessage 생성
+변경 흐름:
+1. searchRoutes(destination, latitude, longitude) 호출
+2. candidates 전체 수신 (stationList 포함)
+3. stationList 제거한 summary만 유나에게 전달
+4. 유나가 추린 candidateId 2-3개 수신
+5. candidateId로 원본 candidates에서 full data 꺼냄
+6. guideMessage + 선별된 candidates 프론트에 응답
+사유:
+
+기존에는 백엔드가 GBIS 주변 정류소 API를 직접 호출해서 좌표 기반으로 정류장을 찾은 뒤 버스 후보를 조회하는 방식이었다. 이 방식은 좌표 기반 역조회 과정이 불안정하고 불필요한 API 호출이 많다는 문제가 있었다.
+현재는 ODsay searchPubTransPathT 하나로 경로 후보 전체를 조회하고, ODsay가 반환하는 startLocalStationID가 GBIS stationId와 동일함을 테스트로 확인했기 때문에 역조회가 불필요해졌다. GBIS 주변 정류소 조회 단계 자체가 제거된 것이다.
+유나한테 candidates 전체를 넘기지 않고 summary만 넘기는 이유는 stationList가 OpenAI API 토큰을 불필요하게 소모하기 때문이다. 유나 AI가 후보를 추릴 때 필요한 정보는 버스 번호, 소요시간, 도보거리, 요금, 배차간격, 탑승/하차 정류장명이면 충분하고 경유 정류장 목록은 판단 기준이 아니다.
+
+2. 유나에게 넘기는 summary 형태
+json[
+  {
+    "candidateId": 1,
+    "routeNo": "700-2",
+    "totalTime": 30,
+    "totalWalk": 825,
+    "payment": 1650,
+    "intervalTime": 15,
+    "busStationCount": 10,
+    "boardingStation": { "stationName": "오목천역.영신여자고교.청구아파트" },
+    "destinationStation": { "stationName": "수원대학교" }
+  },
+  {
+    "candidateId": 2,
+    "routeNo": "720-2",
+    "totalTime": 32,
+    "totalWalk": 987,
+    "payment": 1650,
+    "intervalTime": 15,
+    "busStationCount": 10,
+    "boardingStation": { "stationName": "오목천주공아파트" },
+    "destinationStation": { "stationName": "수원대학교" }
+  }
+]
+사유:
+
+유나 AI가 후보를 추릴 때 실제로 필요한 필드만 포함한 형태다. stationList는 제외한다. stationList는 경유 정류장 전체 목록으로 후보당 10~20개 정류장 객체가 포함되는데, 유나 AI가 후보를 비교하는 데 이 정보는 필요하지 않다. 불필요한 데이터를 OpenAI API에 넘기면 토큰 비용이 늘고 응답 속도도 느려진다.
+candidateId를 포함하는 이유는 유나가 선택한 후보를 백엔드에 반환할 때 식별자가 필요하기 때문이다. 유나가 "1번, 3번 추천"이라고 반환하면 백엔드가 candidateId로 원본 candidates에서 stationList 포함 전체 데이터를 꺼낼 수 있다.
+
+3. POST /api/routes/search Response 변경
+기존:
+json{
+  "success": true,
+  "routes": [
+    {
+      "routeId": "route-7002",
+      "routeNo": "700-2",
+      "routeDirection": "수원대학교 방면",
+      "endStationName": "수원대학교",
+      "boardingStation": {
+        "stationId": "ST001",
+        "stationName": "수원역",
+        "latitude": 37.266,
+        "longitude": 127.001,
+        "sequence": 0
+      },
+      "destinationStation": {
+        "stationId": "ST004",
+        "stationName": "수원대학교",
+        "latitude": 37.209,
+        "longitude": 126.976,
+        "sequence": 2
+      },
+      "predictedArrivalMinutes": 6,
+      "stationList": [
+        { "stationId": "ST001", "stationName": "수원역", "latitude": 37.266, "longitude": 127.001, "sequence": 0 },
+        { "stationId": "ST002", "stationName": "세류역", "latitude": 37.245, "longitude": 127.013, "sequence": 1 },
+        { "stationId": "ST004", "stationName": "수원대학교", "latitude": 37.209, "longitude": 126.976, "sequence": 2 }
+      ]
+    }
+  ],
+  "guideMessage": "수원역 정류장에서 700-2번 버스를 이용할 수 있습니다.",
+  "message": "노선 후보를 조회했습니다.",
+  "timestamp": "2026-07-01T14:30:00+09:00"
+}
+변경:
+json{
+  "success": true,
+  "destination": "수원대학교",
+  "destinationCoordinate": { "latitude": 37.213789, "longitude": 126.979749 },
+  "guideMessage": "700-2번과 720-2번, 두 대의 버스를 찾았어요. 원하는 버스를 선택해 주세요.",
+  "candidates": [
+    {
+      "candidateId": 1,
+      "routeNo": "700-2",
+      "localBusId": "234000021",
+      "gbisStationId": "201000166",
+      "boardingStation": {
+        "stationName": "오목천역.영신여자고교.청구아파트",
+        "latitude": 37.242027,
+        "longitude": 126.962801
+      },
+      "destinationStation": {
+        "stationName": "수원대학교",
+        "latitude": 37.213789,
+        "longitude": 126.979749
+      },
+      "stationList": [
+        { "stationName": "오목천역.영신여자고교.청구아파트", "latitude": 37.242027, "longitude": 126.962801, "sequence": 0 },
+        { "stationName": "수영오거리.방송통신대입구", "latitude": 37.237447, "longitude": 126.962515, "sequence": 1 },
+        { "stationName": "수원대학교", "latitude": 37.213789, "longitude": 126.979749, "sequence": 10 }
+      ],
+      "totalTime": 30,
+      "totalWalk": 825,
+      "payment": 1650,
+      "busTransitCount": 1,
+      "busStationCount": 10,
+      "totalDistance": 4653,
+      "intervalTime": 15
+    }
+  ],
+  "message": "노선 후보를 조회했습니다.",
+  "timestamp": "2026-07-01T14:30:00+09:00"
+}
+각 변경 사유:
+routes → candidates: searchRoutes()가 완성된 경로가 아닌 유나 AI가 추릴 후보 목록을 반환하는 구조로 바뀌었음. 유나가 2-3개 추리고 사용자가 최종 선택하는 2단계 흐름을 명확히 표현하기 위해 변경.
+routeId → localBusId: 기존 routeId는 "route-7002"처럼 임의로 붙인 내부 식별자였음. 실제로 ODsay busLocalBlID가 GBIS routeId 형식("234000021")과 동일함을 테스트로 확인했기 때문에 이 값을 직접 사용. 필드명은 GBIS routeId와 혼동 방지를 위해 localBusId로 명확히 함.
+routeDirection, endStationName 제거: ODsay가 이 값을 직접 제공하지 않아 현재 routeSearch.js에서 생성하지 않음. 중간평가 직행 버스 범위에서는 없어도 동작에 문제없음. 추후 확장 항목으로 남김.
+boardingStation, destinationStation에서 stationId, sequence 제거: 기존 stationId("ST001" 등)는 임의로 붙인 내부 식별자였음. 현재 구조에서는 ODsay startLocalStationID를 gbisStationId로 candidate 레벨에 별도 보관하기 때문에, boardingStation/destinationStation에 중복으로 넣을 필요가 없어 제거. sequence는 stationList 안에서 관리하면 되므로 이 레벨에서는 불필요.
+predictedArrivalMinutes 제거: searchRoutes() 단계에서는 GBIS 도착정보를 조회하지 않음. 사용자가 후보 선택 후 getArrivalInfo()를 호출할 때 처음 조회됨. 따라서 이 단계 응답에 포함될 수 없음.
+stationList 유지, stationId 제거: remainingStations 계산과 currentStation/nextStation 추적에 필수라 유지. 경유 정류장의 stationId는 현재 구현에서 사용하지 않으므로 제거. 좌표와 sequence로 정류장 식별 가능. ODsay passStopList가 탑승~하차 구간 정류장만 제공하므로 전체 노선이 아닌 해당 경로 구간만 포함됨.
+candidateId 추가: 유나 AI가 후보를 추린 뒤 선택한 candidateId를 백엔드에 반환할 때, 백엔드가 원본 candidates에서 full data를 꺼내기 위한 식별자. DB 고유 ID가 아니라 해당 searchRoutes 응답 안에서만 유효한 임시 번호.
+gbisStationId 추가: ODsay startLocalStationID = GBIS stationId임을 테스트로 확인. 사용자 선택 후 getArrivalInfo() 호출 시 이 값을 바로 GBIS 도착정보 조회에 사용하기 때문에 candidates 레벨에 포함해야 함.
+totalTime, totalWalk, payment, busTransitCount, busStationCount, totalDistance, intervalTime 추가: 유나 AI가 후보 중 최적 2-3개를 추리려면 비교 기준 데이터가 필요함. ODsay path.info와 subPath에서 직접 제공하는 값들이라 추가.
+
+4. POST /api/trips Request 변경
+기존:
+json{
+  "destination": "수원대학교",
+  "routeId": "route-7002",
+  "routeNo": "700-2",
+  "routeDirection": "수원대학교 방면",
+  "endStationName": "수원대학교",
+  "boardingStation": {
+    "stationId": "ST001",
+    "stationName": "수원역",
+    "latitude": 37.266,
+    "longitude": 127.001,
+    "sequence": 0
+  },
+  "destinationStation": {
+    "stationId": "ST004",
+    "stationName": "수원대학교",
+    "latitude": 37.209,
+    "longitude": 126.976,
+    "sequence": 2
+  },
+  "stationList": [
+    { "stationId": "ST001", "stationName": "수원역", "latitude": 37.266, "longitude": 127.001, "sequence": 0 },
+    { "stationId": "ST002", "stationName": "세류역", "latitude": 37.245, "longitude": 127.013, "sequence": 1 },
+    { "stationId": "ST004", "stationName": "수원대학교", "latitude": 37.209, "longitude": 126.976, "sequence": 2 }
+  ]
+}
+변경:
+json{
+  "destination": "수원대학교",
+  "routeNo": "700-2",
+  "localBusId": "234000021",
+  "gbisStationId": "201000166",
+  "boardingStation": {
+    "stationName": "오목천역.영신여자고교.청구아파트",
+    "latitude": 37.242027,
+    "longitude": 126.962801
+  },
+  "destinationStation": {
+    "stationName": "수원대학교",
+    "latitude": 37.213789,
+    "longitude": 126.979749
+  },
+  "stationList": [
+    { "stationName": "오목천역.영신여자고교.청구아파트", "latitude": 37.242027, "longitude": 126.962801, "sequence": 0 },
+    { "stationName": "수영오거리.방송통신대입구", "latitude": 37.237447, "longitude": 126.962515, "sequence": 1 },
+    { "stationName": "수원대학교", "latitude": 37.213789, "longitude": 126.979749, "sequence": 10 }
+  ],
+  "predictedArrivalMinutes": 3
+}
+사유:
+routeId 제거, localBusId + gbisStationId 추가: 기존 routeId는 임의 내부 식별자였음. 현재는 localBusId(GBIS 도착정보 조회용)와 gbisStationId(GBIS 정류장 ID) 두 값으로 분리해서 명확히 함. getArrivalInfo() 호출 결과로 이 두 값이 확보되기 때문에 POST /api/trips 시점에는 이미 가지고 있음.
+routeDirection, endStationName 제거: POST /api/routes/search Response와 동일한 이유. ODsay에서 제공하지 않아 routeSearch.js가 생성하지 않음.
+stationId, sequence 제거 (boardingStation, destinationStation): 기존 임의 내부 식별자 제거. gbisStationId를 별도 필드로 관리. sequence는 stationList에서 관리.
+stationList의 stationId 제거: 경유 정류장의 stationId는 현재 구현에서 사용하지 않음. 좌표와 sequence 기반으로 정류장 식별.
+predictedArrivalMinutes 추가: 사용자 선택 후 getArrivalInfo()를 호출해서 얻은 도착 예정 시간을 운행 생성 시점 참고값으로 함께 저장. 실시간 안내에서는 필요 시 재조회.
+
+5. 공통 정류장 객체 변경
+기존: { "stationId": "ST001", "stationName": "수원역", "latitude": 37.266, "longitude": 127.001, "sequence": 0 }
+변경: { "stationName": "수원역", "latitude": 37.266, "longitude": 127.001, "sequence": 0 }
+사유: 기존 stationId("ST001" 등)는 임의로 붙인 내부 식별자였음. 경유 정류장의 stationId는 현재 구현에서 사용하지 않으므로 제거. 중간평가에서는 sequence와 좌표 기준으로 정류장 순서를 추적하며, 정류장 고유 ID 기반 추적은 중간평가 이후 보완한다.
+
+6. POST /api/trips 검증 조건 변경
+기존: boardingStation.stationId가 stationList 첫 번째 정류장과 같은지 검증
+변경: boardingStation.stationName과 latitude/longitude가 stationList 첫 번째 정류장과 일치하는지 검증
+사유: stationId가 제거됐기 때문에 기존 검증 기준을 사용할 수 없음. 좌표와 stationName으로 동일 정류장 여부를 판단.
+
+7. 오류 코드 변경
+제거:
+NO_NEARBY_STATION: GBIS 주변 정류소 조회(getBusStationAroundListv2) 자체가 제거됐으므로 이 오류가 발생하는 시나리오가 없어짐.
+추가:
+NO_ROUTE_CANDIDATE       : ODsay 경로탐색 결과 후보가 하나도 없음
+NO_DIRECT_BUS_CANDIDATE  : ODsay 결과는 있으나 직행 버스 조건을 만족하는 후보가 없음
+                           (버스 구간 2개 이상인 환승 경로만 있거나 하차 정류장이 목적지 0.7km 초과)
+ARRIVAL_INFO_NOT_FOUND   : 사용자가 선택한 후보의 gbisStationId로 GBIS 실시간 도착정보 조회 시
+                           해당 localBusId 버스를 찾지 못함. predictedArrivalMinutes: null로 처리하고
+                           운행 생성은 계속 진행 가능
+
+8. 문서에 반드시 명시할 내용
+candidateId
+  - 해당 searchRoutes 응답 안에서만 유효한 임시 후보 번호
+  - DB 고유 ID가 아님
+  - 유나 AI가 후보를 추린 뒤 선택한 candidateId를 반환하면
+    백엔드가 이 값으로 원본 candidates에서 full data를 꺼냄
+
+localBusId
+  - ODsay busLocalBlID 값
+  - GBIS 실시간 도착정보 조회 시 routeId 비교에 사용
+  - 형식 예시: "234000021"
+
+gbisStationId
+  - ODsay startLocalStationID 기준
+  - 현재 테스트에서 GBIS stationId로 사용 가능함을 확인
+  - getArrivalInfo()에서 실시간 도착정보 조회에 사용
+  - 중간평가 이후 탑승 후 실시간 버스 위치 체크에도 사용 예정
+  - "항상 동일함"이 아닌 현재 구현 기준으로 사용함을 명시
+
+stationList
+  - ODsay passStopList 기준
+  - 탑승 정류장부터 하차 정류장까지 구간 정류장만 포함 (전체 노선 아님)
+  - stationId 없음, sequence와 좌표 기준으로 정류장 추적
+  - 중간평가 이후 정류장 고유 ID 기반 추적으로 보완 예정
+
+busTransitCount
+  - ODsay 기준 버스 이용 구간 수
+  - 환승 횟수와 다름. 직행 버스도 1로 반환됨
