@@ -15,7 +15,7 @@ export function buildGuideMessage(
     return "목적지 정류장에 도착했습니다.";
   }
   if (shouldTriggerBell) {
-    return "하차벨을 요청했습니다. 하차를 준비하세요.";
+    return "하차까지 한 정류장 남았습니다. 다음 정류장에서 하차하세요.";
   }
   if (bellStatus === BELL_STATUS.SUCCESS) {
     return "하차벨 요청이 정상 처리되었습니다.";

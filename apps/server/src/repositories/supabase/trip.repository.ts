@@ -79,7 +79,9 @@ export class SupabaseTripRepository
         tripStatus: readString(status, "trip_status"),
         bellStatus: readString(status, "bell_status"),
         bellRequestId: bell ? readString(bell, "bell_request_id") : null,
-        command: bell ? (readString(bell, "command") as "STOP_REQUEST") : null,
+        // command 는 "지금 실행할 명령" 이므로 PATCH 자동 생성 순간에만 채운다.
+        // 조회/재계산 경로에서는 항상 null (계약: GET 및 PATCH 비트리거 응답은 command=null).
+        command: null,
         lastRequestId: readNullableString(status, "last_request_id"),
         locationSource: readNullableString(status, "location_source"),
         recordedAt: readNullableString(status, "recorded_at"),

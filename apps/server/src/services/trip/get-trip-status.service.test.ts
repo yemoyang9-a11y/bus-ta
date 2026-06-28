@@ -63,7 +63,8 @@ test("returns bellRequestId and command when a bell request is pending", async (
   if (result.httpStatus !== 200) return;
   assert.equal(result.body.bellStatus, BELL_STATUS.PENDING);
   assert.equal(result.body.bellRequestId, "bell-test-001");
-  assert.equal(result.body.command, BELL_COMMAND.STOP_REQUEST);
+  // 조회 응답은 command 를 노출하지 않는다(항상 null). 명령은 PATCH 자동 생성 응답에서만.
+  assert.equal(result.body.command, null);
   assert.equal(result.body.shouldTriggerBell, false);
   assert.equal(result.body.guideMessage, "하차벨 요청 결과를 기다리고 있습니다.");
 });

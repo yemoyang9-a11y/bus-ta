@@ -256,7 +256,9 @@ export async function updateTripStatus(
         },
       },
       {
-        message: shouldTriggerBell ? "하차벨 요청을 생성했습니다." : "이동 상태를 갱신했습니다.",
+        message: shouldTriggerBell
+          ? "이동 상태를 갱신하고 하차벨 요청을 생성했습니다."
+          : "이동 상태를 갱신했습니다.",
         source: parsed.data.source,
         timestamp,
         shouldTriggerBell,
