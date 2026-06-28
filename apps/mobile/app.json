@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "bus-ta",
-    "slug": "bus-ta",
+    "name": "BusHelper",
+    "slug": "BusHelper",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -12,13 +12,14 @@
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "supportsTablet": false
+      "supportsTablet": true
     },
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
-      }
+      },
+      "newArchEnabled": false
     },
     "web": {
       "favicon": "./assets/favicon.png"
