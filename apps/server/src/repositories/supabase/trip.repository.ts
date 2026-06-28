@@ -108,17 +108,22 @@ export class SupabaseTripRepository
   }
 
   async saveStatusAndLocation(data: SaveStatusAndLocationInput): Promise<void> {
-    await this.patch(
-      "trip_status",
-      `trip_id=eq.${encodeURIComponent(data.status.tripId)}`,
-      toTripStatusUpdateRow(data.status),
-    );
+    // 부분 반영 위험 완화: 로그(location_logs, bell_logs)를 먼저 기록하고 trip_status 를
+    // 마지막에 갱신한다. 중간 실패 시 trip_status 가 전진하지 않으므로 다음 요청이
+    // 안전하게 재전진하며, "PENDING 인데 bell_logs 없음" 같은 불일치를 예방한다.
+    // (완전한 원자성은 Supabase RPC/트랜잭션으로 후속 보강 — REMAINING_CHECKLIST 참고)
     await this.insert("location_logs", toLocationLogRow(data.locationLog));
 
     // 5단계: 하차벨 자동 요청이 생성된 경우에만 bell_logs 에 STOP_REQUEST 요청을 기록한다.
     if (data.bellRequest) {
       await this.insert("bell_logs", toBellLogRow(data.bellRequest));
     }
+
+    await this.patch(
+      "trip_status",
+      `trip_id=eq.${encodeURIComponent(data.status.tripId)}`,
+      toTripStatusUpdateRow(data.status),
+    );
   }
 
   async findBellRequest(tripId: string, bellRequestId: string): Promise<BellRequestLookup | null> {
