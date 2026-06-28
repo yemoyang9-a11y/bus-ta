@@ -32,6 +32,11 @@
 - [ ] ESP32 펌웨어 / `targetBeaconId` 실제 장비값
 - [ ] RN 앱 화면 / STT / BLE 연동
 
+## F. 견고성 백로그 (재검토 반영, 중간평가 이후)
+
+- [ ] PATCH `/status` 와 POST `/bell/result` 의 다중 쓰기를 Supabase RPC/Postgres function 으로 묶어 **진짜 트랜잭션(원자성)** 보장
+  - 현재는 저장 순서 조정 + bell/result 멱등 자가치유로 완화만 적용됨 (`54b7eb4`~).
+
 ## E. 관리·검증
 
 - [ ] 시연 전 Supabase 테스트 trip 데이터 정리 (선택)

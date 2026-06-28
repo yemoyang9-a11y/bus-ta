@@ -24,6 +24,12 @@ export interface SaveBellResultInput {
 export interface BellResultRepository {
   findBellRequest(tripId: string, bellRequestId: string): Promise<BellRequestLookup | null>;
   saveBellResult(data: SaveBellResultInput): Promise<void>;
+  /** 부분 실패 보정용 — trip_status.bell_status 만 결과값으로 맞춘다. */
+  reconcileBellStatus(
+    tripId: string,
+    bellStatus: typeof BELL_STATUS.SUCCESS | typeof BELL_STATUS.FAIL,
+    completedAt: string,
+  ): Promise<void>;
 }
 
 export interface BellResultDependencies extends BellResultRepository {
@@ -104,15 +110,25 @@ export async function recordBellResult(
     };
   }
 
-  // 멱등: 이미 결과가 기록된 요청은 덮어쓰지 않고 기존 상태를 반환한다.
+  // 멱등: 이미 결과가 기록된 요청은 덮어쓰지 않고 기존 결과를 반환한다.
   if (lookup.result !== null) {
+    // 부분 실패 자가 치유: bell_logs 에는 결과가 있는데 trip_status.bell_status 가
+    // 아직 반영되지 않은 경우(예: 직전 요청에서 두 번째 PATCH 실패) 결과값으로 보정한다.
+    if (lookup.bellStatus !== lookup.result) {
+      try {
+        await dependencies.reconcileBellStatus(tripId, lookup.result, timestamp);
+      } catch {
+        return dbError(timestamp);
+      }
+    }
     return {
       httpStatus: 200,
       body: {
         success: true,
         tripId,
         bellRequestId,
-        bellStatus: lookup.bellStatus,
+        // bell_logs.result 가 권위 있는 값. trip_status 가 지연됐어도 정확한 결과를 반환한다.
+        bellStatus: lookup.result,
         tripStatus: lookup.tripStatus,
         message: "이미 처리된 하차벨 결과입니다.",
         timestamp,

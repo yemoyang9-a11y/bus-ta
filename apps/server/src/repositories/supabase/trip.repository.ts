@@ -168,6 +168,17 @@ export class SupabaseTripRepository
     });
   }
 
+  async reconcileBellStatus(
+    tripId: string,
+    bellStatus: "SUCCESS" | "FAIL",
+    completedAt: string,
+  ): Promise<void> {
+    await this.patch("trip_status", `trip_id=eq.${encodeURIComponent(tripId)}`, {
+      bell_status: bellStatus,
+      updated_at: completedAt,
+    });
+  }
+
   private async insert(table: string, row: Record<string, unknown>) {
     const response = await this.fetchImpl(`${this.config.url}/rest/v1/${table}`, {
       method: "POST",
