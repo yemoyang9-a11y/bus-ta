@@ -1,6 +1,6 @@
 # 백엔드 작업 보고서 · Codex 인수인계
 
-> 작성: Claude (클라우드 세션) · 기준 커밋: `a0db3a4` · 브랜치: `yemo-develop`
+> 작성: Claude (클라우드 세션) · 최신 tip: `af1d554` (이후 문서/체크리스트 커밋 포함, 코드 변경 없음) · 브랜치: `yemo-develop`
 > 목적: 0~10단계 백엔드 작업 진행/결과를 codex 가 재검토하고 이어서 작업할 수 있도록 정리한다.
 > 팀 공통 기준은 `docs/`(특히 `docs/API_SPEC.md`)와 `CLAUDE.md` 가 우선한다. 이 문서와 충돌 시 공통 문서를 따른다.
 
@@ -11,7 +11,7 @@
 ```bash
 git fetch origin
 git checkout yemo-develop
-git pull origin yemo-develop          # tip = a0db3a4
+git pull origin yemo-develop          # tip = af1d554
 CI=true pnpm install --frozen-lockfile
 ```
 
