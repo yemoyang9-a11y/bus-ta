@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { getArrivalInfo } from "../adapters/routes/hyorin-route-search.adapter.js";
 import { createSupabaseTripRepositoryFromEnv } from "../repositories/supabase/trip.repository.js";
 import { createTrip } from "../services/trip/create-trip.service.js";
 import { getTripStatus } from "../services/trip/get-trip-status.service.js";
@@ -21,7 +22,13 @@ tripsRouter.post("/", async (req, res) => {
     return;
   }
 
-  const result = await createTrip(req.body, repository);
+  const result = await createTrip(req.body, {
+    createTripWithStatus: (data) => repository.createTripWithStatus(data),
+    getPredictedArrivalMinutes: async (candidate) => {
+      const info = await getArrivalInfo(candidate);
+      return info.predictedArrivalMinutes;
+    },
+  });
   res.status(result.httpStatus).json(result.body);
 });
 
