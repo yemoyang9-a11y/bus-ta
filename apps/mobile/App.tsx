@@ -16,7 +16,7 @@ const Stack = createStackNavigator();
 export default function App() {
   return (
     <NavigationContainer>
-      <Stack.Navigator initialRouteName="Main">
+      <Stack.Navigator id={undefined} initialRouteName="Main">
         <Stack.Screen name="Main" component={MainScreen} options={{ title: '버스 도우미' }} />
         <Stack.Screen name="STT" component={STTScreen} options={{ title: '목적지 입력' }} />
         <Stack.Screen name="Confirm" component={ConfirmScreen} options={{ title: '목적지 확인' }} />
