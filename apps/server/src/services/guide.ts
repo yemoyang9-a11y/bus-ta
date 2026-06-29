@@ -40,7 +40,6 @@ type OpenAIRouteGuideResponse = {
 };
 
 const ROUTE_NOT_FOUND_MESSAGE = "이동 가능한 버스 노선을 찾지 못했어요. 다시 검색해 주세요.";
-const ROUTE_GUIDE_FALLBACK_MESSAGE = "안내 문장을 생성할 수 없어요. 다시 시도해 주세요.";
 const TRIP_START_FALLBACK_MESSAGE =
   "선택한 버스를 기다리고 있어요. 버스가 도착하면 탑승을 준비해 주세요.";
 const MOVING_FALLBACK_MESSAGE = "현재 이동 상태를 확인하고 있어요.";
