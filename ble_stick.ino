@@ -63,5 +63,52 @@ class TargetBeaconCallback : public BLEAdvertisedDeviceCallbacks {
       Serial.print("detectedBeaconId: "); Serial.println(detectedBeaconId);
       Serial.print("rssi: ");             Serial.println(latestRssi);
       Serial.print("distanceLevel: ");    Serial.println(distanceLevel);
-      Serial.print("vibrationLevel: ");   Serial.priintln(vibrationLevel);
-      Serial.print(‰Ω¥‰Ι…Ρ¥½Ή½µµ…Ήθ€¤μM•Ι¥…°ΉΑΙ¥ΉΡ±Έ΅Ω¥‰Ι…Ρ¥½Ή½µµ…Ή¤μ4(€€€€€M•Ι¥…°ΉΑΙ¥ΉΡ±Έ ‰‘•Ρ•Ρ•θΡΙΥ”¤μ4(€€€€€M•Ι¥…°ΉΑΙ¥ΉΡ±Έ ‰¥Ν5½¬θΡΙΥ”¤μ4(€€€€€M•Ι¥…°ΉΑΙ¥ΉΡ±Έ ττττττττττττττττττττττττττττττττ¤μ4(€€€τ4(€τ4)τμ4(4)Ω½¥Ν•ΡΥΐ ¤μ4(€M•Ι¥…°Ή‰•¥Έ ΔΔΤΘΐΐ¤μ4(€‘•±…δ Δΐΐΐ¤μ4(4(€M•Ι¥…°ΉΑΙ¥ΉΡ±Έ τττMµ…ΙΠ…Ή”M@ΜΘMΡ…ΙΠ€τττ¤μ4(€M•Ι¥…°ΉΑΙ¥ΉΡ±Έ ‰½µµ…ΉθMQ}QIQ}	=8¤μ4(€M•Ι¥…°ΉΑΙ¥ΉΠ ‰Ρ…Ι•Ρ	•…½Ή%θ€¤μM•Ι¥…°ΉΑΙ¥ΉΡ±Έ΅QIQ}	=9}%¤μ4(€M•Ι¥…°ΉΑΙ¥ΉΡ±Έ ‰½µµ…ΉθMQIQ}	=9}M8¤μ4(4(€	1•Ω¥”θι¥Ή¥Π ‰M5IQ}9}M@ΜΘ¤μ4(€Α	1M…Έ€τ	1•Ω¥”θι•ΡM…Έ ¤μ4(€Α	1M…Έ΄ωΝ•Ρ‘Ω•ΙΡ¥Ν•‘•Ω¥•…±±‰…­Μ΅Ή•άQ…Ι•Ρ	•…½Ή…±±‰…¬ ¤¤μ4(€Α	1M…Έ΄ωΝ•ΡΡ¥Ω•M…Έ΅ΡΙΥ”¤μ4(€Α	1M…Έ΄ωΝ•Ρ%ΉΡ•ΙΩ…° Δΐΐ¤μ4(€Α	1M…Έ΄ωΝ•Ρ]¥Ή‘½ά δδ¤μ4)τ4(4)Ω½¥±½½ΐ ¤μ4(€Ρ…Ι•Ρ•Ρ•Ρ•€τ™…±Ν”μ4(€±…Ρ•ΝΡIΝΝ¤€τ€΄δδδμ4(4(€Α	1M…Έ΄ωΝΡ…ΙΠ Μ°™…±Ν”¤μ4(4(€¥€ …Ρ…Ι•Ρ•Ρ•Ρ•¤μ4(€€€M•Ι¥…°ΉΑΙ¥ΉΡ±Έ ττττττττττττττττττττττττττττττττ¤μ4(€€€M•Ι¥…°ΉΑΙ¥ΉΡ±Έ ‰	1‘•Ρ•Ρ¥½ΈΙ•ΝΥ±Π¤μ4(€€€M•Ι¥…°ΉΑΙ¥ΉΠ ‰Ι½ΥΡ•9Όθ€¤μ€€€€€€€M•Ι¥…°ΉΑΙ¥ΉΡ±Έ΅I=UQ}9<¤μ4(€€€M•Ι¥…°ΉΑΙ¥ΉΠ ‰Ω•΅¥±•%θ€¤μ€€€€€M•Ι¥…°ΉΑΙ¥ΉΡ±Έ΅Y!%1}%¤μ4(€€€M•Ι¥…°ΉΑΙ¥ΉΠ ‰Ρ…Ι•Ρ	•…½Ή%θ€¤μM•Ι¥…°ΉΑΙ¥ΉΡ±Έ΅QIQ}	=9}%¤μ4(€€€M•Ι¥…°ΉΑΙ¥ΉΡ±Έ ‰‘•Ρ•Ρ•θ™…±Ν”¤μ4(€€€M•Ι¥…°ΉΑΙ¥ΉΡ±Έ ‰‘¥ΝΡ…Ή•1•Ω•°θ9=Q}QQ¤μ4(€€€M•Ι¥…°ΉΑΙ¥ΉΡ±Έ ‰Ω¥‰Ι…Ρ¥½Ή1•Ω•°θ=¤μ4(€€€M•Ι¥…°ΉΑΙ¥ΉΡ±Έ ‰Ω¥‰Ι…Ρ¥½Ή½µµ…ΉθY%	IQ%=9}=¤μ4(€€€M•Ι¥…°ΉΑΙ¥ΉΡ±Έ ‰¥Ν5½¬θΡΙΥ”¤μ4(€€€M•Ι¥…°ΉΑΙ¥ΉΡ±Έ ττττττττττττττττττττττττττττττττ¤μ4(€τ4(4(€Α	1M…Έ΄ω±•…ΙI•ΝΥ±ΡΜ ¤μ4(€‘•±…δ Δΐΐΐ¤μ4)
+      Serial.print("vibrationLevel: ");   Serial.println(vibrationLevel);
+      Serial.print("vibrationCommand: "); Serial.println(vibrationCommand);
+      Serial.println("detected: true");
+      Serial.println("isMock: true");
+      Serial.println("================================");
+    }
+  }
+};
+
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+
+  Serial.println("=== Smart Cane ESP32 Start ===");
+  Serial.println("command: SET_TARGET_BEACON");
+  Serial.print("targetBeaconId: "); Serial.println(TARGET_BEACON_ID);
+  Serial.println("command: START_BEACON_SCAN");
+
+  BLEDevice::init("SMART_CANE_ESP32");
+  pBLEScan = BLEDevice::getScan();
+  pBLEScan->setAdvertisedDeviceCallbacks(new TargetBeaconCallback());
+  pBLEScan->setActiveScan(true);
+  pBLEScan->setInterval(100);
+  pBLEScan->setWindow(99);
+}
+
+void loop() {
+  targetDetected = false;
+  latestRssi = -999;
+
+  pBLEScan->start(3, false);
+
+  if (!targetDetected) {
+    Serial.println("================================");
+    Serial.println("BLE detection result");
+    Serial.print("routeNo: ");        Serial.println(ROUTE_NO);
+    Serial.print("vehicleId: ");      Serial.println(VEHICLE_ID);
+    Serial.print("targetBeaconId: "); Serial.println(TARGET_BEACON_ID);
+    Serial.println("detected: false");
+    Serial.println("distanceLevel: NOT_DETECTED");
+    Serial.println("vibrationLevel: OFF");
+    Serial.println("vibrationCommand: VIBRATION_OFF");
+    Serial.println("isMock: true");
+    Serial.println("================================");
+  }
+
+  pBLEScan->clearResults();
+  delay(1000);
+}
