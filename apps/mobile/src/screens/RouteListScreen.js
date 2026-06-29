@@ -20,8 +20,6 @@ export default function RouteListScreen({ route, navigation }) {
   const [loading, setLoading] = useState(false);
 
   // 화면 진입 시 guideMessage TTS 출력
-  // 유나 AI 모듈이 생성한 안내 문장 읽어줌
-  // 백엔드 연결 후에는 실제 유나 안내 문장이 출력됨
   useFocusEffect(
     React.useCallback(() => {
       const timer = setTimeout(() => {
@@ -48,24 +46,13 @@ export default function RouteListScreen({ route, navigation }) {
       // API_SPEC.md 기준 필드:
       // - candidateId, localBusId, gbisStationId 사용
       // - routeId, routeDirection, endStationName 사용 안 함
+      // - destination 필드 필수 (백엔드 400 오류 방지)
       // =============================================
-      // const res = await axios.post(`${API_BASE_URL}/api/trips`, {
-      //   destination: destinationText,
-      //   candidateId: selectedRoute.candidateId,
-      //   routeNo: selectedRoute.routeNo,
-      //   localBusId: selectedRoute.localBusId,
-      //   gbisStationId: selectedRoute.gbisStationId,
-      //   boardingStation: selectedRoute.boardingStation,
-      //   destinationStation: selectedRoute.destinationStation,
-      //   stationList: selectedRoute.stationList,
-      //   totalTime: selectedRoute.totalTime,
-      //   totalWalk: selectedRoute.totalWalk,
-      //   payment: selectedRoute.payment,
-      //   busTransitCount: selectedRoute.busTransitCount,
-      //   busStationCount: selectedRoute.busStationCount,
-      //   totalDistance: selectedRoute.totalDistance,
-      //   intervalTime: selectedRoute.intervalTime,
-      // });
+      // const tripRequest = {
+      //   ...selectedRoute,
+      //   destination: destinationText || '병점역후문',
+      // };
+      // const res = await axios.post(`${API_BASE_URL}/api/trips`, tripRequest);
       // const tripId = res.data.tripId;
 
       // =============================================
