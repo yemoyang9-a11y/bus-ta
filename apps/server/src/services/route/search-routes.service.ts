@@ -1,10 +1,16 @@
 import { RoutesSearchRequestSchema, type Route, type RoutesSearchRequest } from "@bus-ta/shared";
+import { generateRouteGuide, type RouteGuideResult } from "../guide.js";
 
 export interface RouteSearchProvider {
   searchRoutes(request: RoutesSearchRequest): Promise<Route[]>;
 }
 
+export interface RouteGuideProvider {
+  generateRouteGuide(input: { destination: string; candidates: Route[] }): Promise<RouteGuideResult>;
+}
+
 export interface SearchRoutesDependencies extends RouteSearchProvider {
+  generateRouteGuide?: RouteGuideProvider["generateRouteGuide"];
   now?: () => string;
 }
 
@@ -30,12 +36,38 @@ export type SearchRoutesResult =
 
 const defaultNow = () => new Date().toISOString();
 
+function attachGuideMessages(routes: Route[], guideResult: RouteGuideResult): Route[] {
+  const routeById = new Map(routes.map((route) => [route.candidateId, route]));
+  const selectedRoutes = guideResult.selectedCandidates
+    .flatMap((selected): Route[] => {
+      const route = routeById.get(selected.candidateId);
+      if (!route) return [];
+      const { recommendationReason: _recommendationReason, ...routeWithoutReason } = route;
+
+      return [
+        {
+          ...routeWithoutReason,
+          guideMessage: selected.guideMessage,
+        },
+      ];
+    })
+    .slice(0, 2);
+
+  if (selectedRoutes.length > 0) {
+    return selectedRoutes;
+  }
+
+  return routes.slice(0, 2).map((route) => {
+    const { recommendationReason: _recommendationReason, ...routeWithoutReason } = route;
+    return routeWithoutReason;
+  });
+}
+
 /**
  * POST /api/routes/search — 목적지/현재 좌표로 노선 후보를 검색한다.
  *
  * 도착 예정 시간은 여기서 조회하지 않는다. 사용자가 후보를 선택한 뒤
  * POST /api/trips 내부에서 getArrivalInfo(selectedCandidate) 로 조회한다.
- * 현재는 mock 제공자를 주입해 골격만 동작한다.
  */
 export async function searchRoutes(
   input: unknown,
@@ -72,14 +104,25 @@ export async function searchRoutes(
     };
   }
 
+  const guideRoutes =
+    routes.length > 0
+      ? attachGuideMessages(
+          routes,
+          await (dependencies.generateRouteGuide ?? generateRouteGuide)({
+            destination: parsed.data.destination,
+            candidates: routes,
+          }),
+        )
+      : [];
+
   return {
     httpStatus: 200,
     body: {
       success: true,
       destination: parsed.data.destination,
-      routes,
+      routes: guideRoutes,
       message:
-        routes.length > 0
+        guideRoutes.length > 0
           ? "노선 후보를 조회했습니다."
           : "조건에 맞는 노선 후보가 없습니다.",
       timestamp,
