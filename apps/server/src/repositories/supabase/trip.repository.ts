@@ -1,0 +1,371 @@
+import { readSupabaseConfig, type SupabaseConfig } from "../../config/supabase.js";
+import type {
+  CreateTripWithStatusInput,
+  TripCreationRepository,
+  TripCreateRecord,
+  TripStatusCreateRecord,
+} from "../../services/trip/create-trip.service.js";
+import type {
+  LocationLogLookup,
+  SaveStatusAndLocationInput,
+  TripProgressData,
+  UpdateTripStatusRepository,
+} from "../../services/trip/update-trip-status.service.js";
+import type {
+  BellRequestLookup,
+  BellResultRepository,
+  SaveBellResultInput,
+} from "../../services/trip/bell-result.service.js";
+
+type Env = Partial<Record<string, string | undefined>>;
+type FetchLike = (input: string | URL, init?: RequestInit) => Promise<Response>;
+
+export function createSupabaseTripRepositoryFromEnv(
+  env: Env = process.env,
+  fetchImpl: FetchLike = fetch,
+): SupabaseTripRepository | null {
+  const config = readSupabaseConfig(env);
+  return config ? new SupabaseTripRepository(config, fetchImpl) : null;
+}
+
+export class SupabaseTripRepository
+  implements TripCreationRepository, UpdateTripStatusRepository, BellResultRepository
+{
+  constructor(
+    private readonly config: SupabaseConfig,
+    private readonly fetchImpl: FetchLike = fetch,
+  ) {}
+
+  async createTripWithStatus(data: CreateTripWithStatusInput): Promise<void> {
+    await this.insert("trips", toTripRow(data.trip));
+
+    try {
+      await this.insert("trip_status", toTripStatusRow(data.status));
+    } catch (error) {
+      await this.deleteTrip(data.trip.tripId);
+      throw error;
+    }
+  }
+
+  async findTripProgressData(tripId: string): Promise<TripProgressData | null> {
+    const tripRows = await this.selectRows("trips", `trip_id=eq.${encodeURIComponent(tripId)}`);
+    const statusRows = await this.selectRows("trip_status", `trip_id=eq.${encodeURIComponent(tripId)}`);
+    const trip = tripRows[0];
+    const status = statusRows[0];
+
+    if (!trip || !status) {
+      return null;
+    }
+
+    // 가장 최근 하차벨 요청을 읽어 bellRequestId / command 를 채운다 (없으면 null).
+    const bellRows = await this.selectRows(
+      "bell_logs",
+      `trip_id=eq.${encodeURIComponent(tripId)}&order=requested_at.desc&limit=1`,
+    );
+    const bell = bellRows[0];
+
+    return {
+      trip: {
+        tripId: readString(trip, "trip_id"),
+        destination: readString(trip, "destination"),
+        routeNo: readString(trip, "route_no"),
+        stationList: readArray(trip, "station_list"),
+      },
+      status: {
+        tripId: readString(status, "trip_id"),
+        currentStation: readNullableObject(status, "current_station"),
+        nextStation: readNullableObject(status, "next_station"),
+        remainingStations: readNumber(status, "remaining_stations"),
+        tripStatus: readString(status, "trip_status"),
+        bellStatus: readString(status, "bell_status"),
+        bellRequestId: bell ? readString(bell, "bell_request_id") : null,
+        // command 는 "지금 실행할 명령" 이므로 PATCH 자동 생성 순간에만 채운다.
+        // 조회/재계산 경로에서는 항상 null (계약: GET 및 PATCH 비트리거 응답은 command=null).
+        command: null,
+        lastRequestId: readNullableString(status, "last_request_id"),
+        locationSource: readNullableString(status, "location_source"),
+        recordedAt: readNullableString(status, "recorded_at"),
+        updatedAt: readString(status, "updated_at"),
+      },
+    };
+  }
+
+  async findLocationLogByRequestId(tripId: string, requestId: string): Promise<LocationLogLookup | null> {
+    const rows = await this.selectRows(
+      "location_logs",
+      `trip_id=eq.${encodeURIComponent(tripId)}&request_id=eq.${encodeURIComponent(requestId)}`,
+    );
+    const row = rows[0];
+
+    if (!row) {
+      return null;
+    }
+
+    return {
+      tripId: readString(row, "trip_id"),
+      requestId: readString(row, "request_id"),
+    };
+  }
+
+  async saveStatusAndLocation(data: SaveStatusAndLocationInput): Promise<void> {
+    // 부분 반영 위험 완화: 로그(location_logs, bell_logs)를 먼저 기록하고 trip_status 를
+    // 마지막에 갱신한다. 중간 실패 시 trip_status 가 전진하지 않으므로 다음 요청이
+    // 안전하게 재전진하며, "PENDING 인데 bell_logs 없음" 같은 불일치를 예방한다.
+    // (완전한 원자성은 Supabase RPC/트랜잭션으로 후속 보강 — REMAINING_CHECKLIST 참고)
+    await this.insert("location_logs", toLocationLogRow(data.locationLog));
+
+    // 5단계: 하차벨 자동 요청이 생성된 경우에만 bell_logs 에 STOP_REQUEST 요청을 기록한다.
+    if (data.bellRequest) {
+      await this.insert("bell_logs", toBellLogRow(data.bellRequest));
+    }
+
+    await this.patch(
+      "trip_status",
+      `trip_id=eq.${encodeURIComponent(data.status.tripId)}`,
+      toTripStatusUpdateRow(data.status),
+    );
+  }
+
+  async findBellRequest(tripId: string, bellRequestId: string): Promise<BellRequestLookup | null> {
+    const bellRows = await this.selectRows(
+      "bell_logs",
+      `trip_id=eq.${encodeURIComponent(tripId)}&bell_request_id=eq.${encodeURIComponent(bellRequestId)}`,
+    );
+    const bell = bellRows[0];
+    if (!bell) {
+      return null;
+    }
+
+    const statusRows = await this.selectRows("trip_status", `trip_id=eq.${encodeURIComponent(tripId)}`);
+    const status = statusRows[0];
+    if (!status) {
+      return null;
+    }
+
+    return {
+      tripId: readString(bell, "trip_id"),
+      bellRequestId: readString(bell, "bell_request_id"),
+      result: readBellResult(bell, "result"),
+      bellStatus: readString(status, "bell_status"),
+      tripStatus: readString(status, "trip_status"),
+    };
+  }
+
+  async saveBellResult(data: SaveBellResultInput): Promise<void> {
+    await this.patch(
+      "bell_logs",
+      `trip_id=eq.${encodeURIComponent(data.tripId)}&bell_request_id=eq.${encodeURIComponent(data.bellRequestId)}`,
+      {
+        result: data.result,
+        message: data.resultMessage,
+        is_mock: data.isMock,
+        completed_at: data.completedAt,
+      },
+    );
+    await this.patch("trip_status", `trip_id=eq.${encodeURIComponent(data.tripId)}`, {
+      bell_status: data.bellStatus,
+      updated_at: data.completedAt,
+    });
+  }
+
+  async reconcileBellStatus(
+    tripId: string,
+    bellStatus: "SUCCESS" | "FAIL",
+    completedAt: string,
+  ): Promise<void> {
+    await this.patch("trip_status", `trip_id=eq.${encodeURIComponent(tripId)}`, {
+      bell_status: bellStatus,
+      updated_at: completedAt,
+    });
+  }
+
+  private async insert(table: string, row: Record<string, unknown>) {
+    const response = await this.fetchImpl(`${this.config.url}/rest/v1/${table}`, {
+      method: "POST",
+      headers: {
+        ...this.headers(),
+        Prefer: "return=minimal",
+      },
+      body: JSON.stringify(row),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Supabase insert failed for ${table}: ${response.status}`);
+    }
+  }
+
+  private async patch(table: string, query: string, row: Record<string, unknown>) {
+    const response = await this.fetchImpl(`${this.config.url}/rest/v1/${table}?${query}`, {
+      method: "PATCH",
+      headers: {
+        ...this.headers(),
+        Prefer: "return=minimal",
+      },
+      body: JSON.stringify(row),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Supabase update failed for ${table}: ${response.status}`);
+    }
+  }
+
+  private async selectRows(table: string, query: string): Promise<Record<string, unknown>[]> {
+    const response = await this.fetchImpl(`${this.config.url}/rest/v1/${table}?select=*&${query}`, {
+      method: "GET",
+      headers: this.headers(),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Supabase select failed for ${table}: ${response.status}`);
+    }
+
+    const body = (await response.json()) as unknown;
+    return Array.isArray(body) ? (body as Record<string, unknown>[]) : [];
+  }
+
+  private async deleteTrip(tripId: string) {
+    await this.fetchImpl(`${this.config.url}/rest/v1/trips?trip_id=eq.${encodeURIComponent(tripId)}`, {
+      method: "DELETE",
+      headers: {
+        ...this.headers(),
+        Prefer: "return=minimal",
+      },
+    });
+  }
+
+  private headers() {
+    return {
+      apikey: this.config.apiKey,
+      Authorization: `Bearer ${this.config.apiKey}`,
+      "Content-Type": "application/json",
+    };
+  }
+}
+
+function toTripRow(trip: TripCreateRecord) {
+  return {
+    trip_id: trip.tripId,
+    user_id: null,
+    destination: trip.destination,
+    candidate_id: trip.candidateId,
+    route_no: trip.routeNo,
+    local_bus_id: trip.localBusId,
+    gbis_station_id: trip.gbisStationId,
+    vehicle_id: trip.vehicleId,
+    boarding_station: trip.boardingStation,
+    destination_station: trip.destinationStation,
+    station_list: trip.stationList,
+    total_time: trip.totalTime,
+    total_walk: trip.totalWalk,
+    payment: trip.payment,
+    bus_transit_count: trip.busTransitCount,
+    bus_station_count: trip.busStationCount,
+    total_distance: trip.totalDistance,
+    interval_time: trip.intervalTime,
+    predicted_arrival_minutes: trip.predictedArrivalMinutes,
+    created_at: trip.createdAt,
+    updated_at: trip.updatedAt,
+  };
+}
+
+function toTripStatusRow(status: TripStatusCreateRecord) {
+  return {
+    trip_id: status.tripId,
+    current_station: status.currentStation,
+    next_station: status.nextStation,
+    remaining_stations: status.remainingStations,
+    trip_status: status.tripStatus,
+    bell_status: status.bellStatus,
+    last_request_id: status.lastRequestId,
+    location_source: status.locationSource,
+    recorded_at: status.recordedAt,
+    updated_at: status.updatedAt,
+  };
+}
+
+function toTripStatusUpdateRow(status: SaveStatusAndLocationInput["status"]) {
+  return {
+    current_station: status.currentStation,
+    next_station: status.nextStation,
+    remaining_stations: status.remainingStations,
+    trip_status: status.tripStatus,
+    bell_status: status.bellStatus,
+    last_request_id: status.lastRequestId,
+    location_source: status.locationSource,
+    recorded_at: status.recordedAt,
+    updated_at: status.updatedAt,
+  };
+}
+
+function toBellLogRow(bellRequest: NonNullable<SaveStatusAndLocationInput["bellRequest"]>) {
+  return {
+    trip_id: bellRequest.tripId,
+    bell_request_id: bellRequest.bellRequestId,
+    command: bellRequest.command,
+    requested_at: bellRequest.requestedAt,
+  };
+}
+
+function toLocationLogRow(locationLog: SaveStatusAndLocationInput["locationLog"]) {
+  return {
+    trip_id: locationLog.tripId,
+    request_id: locationLog.requestId,
+    latitude: locationLog.latitude,
+    longitude: locationLog.longitude,
+    source: locationLog.source,
+    recorded_at: locationLog.recordedAt,
+    current_station: locationLog.currentStation,
+    remaining_stations: locationLog.remainingStations,
+    location_accepted: locationLog.locationAccepted,
+    reason: locationLog.reason,
+  };
+}
+
+function readString(row: Record<string, unknown>, key: string) {
+  const value = row[key];
+  if (typeof value !== "string") {
+    throw new Error(`Expected ${key} to be a string`);
+  }
+  return value;
+}
+
+function readNullableString(row: Record<string, unknown>, key: string) {
+  const value = row[key];
+  if (value === null || value === undefined) return null;
+  if (typeof value !== "string") {
+    throw new Error(`Expected ${key} to be a nullable string`);
+  }
+  return value;
+}
+
+function readBellResult(row: Record<string, unknown>, key: string) {
+  const value = row[key];
+  if (value === null || value === undefined) return null;
+  if (value === "SUCCESS" || value === "FAIL") return value;
+  throw new Error(`Expected ${key} to be SUCCESS, FAIL, or null`);
+}
+
+function readNumber(row: Record<string, unknown>, key: string) {
+  const value = row[key];
+  if (typeof value !== "number") {
+    throw new Error(`Expected ${key} to be a number`);
+  }
+  return value;
+}
+
+function readArray(row: Record<string, unknown>, key: string) {
+  const value = row[key];
+  if (!Array.isArray(value)) {
+    throw new Error(`Expected ${key} to be an array`);
+  }
+  return value as TripProgressData["trip"]["stationList"];
+}
+
+function readNullableObject(row: Record<string, unknown>, key: string) {
+  const value = row[key];
+  if (value === null || value === undefined) return null;
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`Expected ${key} to be a nullable object`);
+  }
+  return value as TripProgressData["status"]["currentStation"];
+}
