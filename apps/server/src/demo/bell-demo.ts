@@ -26,9 +26,17 @@ import {
 import type {
   CreateTripWithStatusInput,
   TripCreateRecord,
+  TripCreationRepository,
 } from "../services/trip/create-trip.service.js";
+import type { UpdateTripStatusRepository } from "../services/trip/update-trip-status.service.js";
+import type { BellResultRepository } from "../services/trip/bell-result.service.js";
+import { createSupabaseTripRepositoryFromEnv } from "../repositories/supabase/trip.repository.js";
 import { MockBellAdapter } from "../adapters/bell/mock-bell.adapter.js";
 import { asTripId, asBellRequestId } from "@bus-ta/shared";
+
+/** createTrip / updateTripStatus / recordBellResult 가 함께 쓰는 저장소 묶음 */
+type DemoRepo = TripCreationRepository & UpdateTripStatusRepository & BellResultRepository;
+const USE_DB = process.env["DEMO_USE_DB"] === "true";
 
 const INTERVAL_MS = Number(process.env["DEMO_INTERVAL_MS"] ?? 3000);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -36,7 +44,7 @@ const line = (s = "") => console.log(s);
 const rule = () => line("──────────────────────────────────────────────────────────");
 
 /** 인메모리 저장소 — 실제 Supabase repository 자리를 대신한다. */
-function createMemoryStore() {
+function createMemoryStore(): DemoRepo {
   let trip: TripCreateRecord | null = null;
   let status: TripProgressData["status"] | null = null;
   const locationLogs = new Map<string, unknown>();
@@ -115,17 +123,30 @@ function createMemoryStore() {
 }
 
 async function main() {
-  const repo = createMemoryStore();
+  let repo: DemoRepo;
+  if (USE_DB) {
+    const supabase = createSupabaseTripRepositoryFromEnv();
+    if (!supabase) {
+      line("[오류] DEMO_USE_DB=true 인데 Supabase 설정이 없습니다.");
+      line("       apps/server/.env 에 SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY 를 넣어주세요.");
+      process.exit(1);
+    }
+    repo = supabase;
+  } else {
+    repo = createMemoryStore();
+  }
+
   // 데모는 항상 성공을 보여주기 위해 성공률 100% 로 둔다.
   const bell = new MockBellAdapter(1);
 
   line();
   line("════════════ 하차벨 시연 (1551번 · 수원대학교 → 병점역후문) ════════════");
+  line(`저장 모드: ${USE_DB ? "실제 Supabase 기록" : "인메모리(DB 미사용)"}`);
   line(`mock GPS ${DEMO_LOCATION_SEQUENCE.length}개를 ${INTERVAL_MS / 1000}초 간격으로 전송합니다.`);
   rule();
 
-  // 1) 운행 생성
-  const tripId = "trip-demo-1551";
+  // 1) 운행 생성 (DB 모드는 매 실행마다 고유 tripId 사용)
+  const tripId = USE_DB ? `trip-demo-1551-${Date.now()}` : "trip-demo-1551";
   const created = await createTrip(
     { ...DEMO_ROUTE, destination: DEMO_ROUTE.destinationStation.stationName },
     {
@@ -145,7 +166,7 @@ async function main() {
   for (const loc of DEMO_LOCATION_SEQUENCE) {
     await sleep(INTERVAL_MS);
     const res = await updateTripStatus(tripId, loc, {
-      findTripProgressData: () => repo.findTripProgressData(),
+      findTripProgressData: (t) => repo.findTripProgressData(t),
       findLocationLogByRequestId: (t, r) => repo.findLocationLogByRequestId(t, r),
       saveStatusAndLocation: (d) => repo.saveStatusAndLocation(d),
     });
@@ -191,6 +212,11 @@ async function main() {
   }
 
   line("════════════ 시연 종료 ════════════");
+  if (USE_DB) {
+    line();
+    line(`[DB 확인] Supabase 대시보드에서 tripId="${tripId}" 로 조회하세요.`);
+    line(`  trips / trip_status / location_logs / bell_logs 에 데이터가 기록됩니다.`);
+  }
   line();
 }
 
