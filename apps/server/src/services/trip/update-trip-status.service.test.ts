@@ -1,20 +1,31 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { BELL_COMMAND, BELL_STATUS, DEMO_ROUTE, TRIP_STATUS } from "@bus-ta/shared";
+import { BELL_COMMAND, BELL_STATUS, TRIP_STATUS } from "@bus-ta/shared";
 import { updateTripStatus, type TripProgressData } from "./update-trip-status.service.js";
+
+// 정류장 계산 검증용 4정류장 고정 노선 (시연 fixture(DEMO_ROUTE=1551)와 분리해 테스트 안정화)
+const TEST_ROUTE = {
+  routeNo: "TEST-4",
+  stationList: [
+    { stationName: "T0", latitude: 37.49, longitude: 127.03, sequence: 0 },
+    { stationName: "T1", latitude: 37.492, longitude: 127.032, sequence: 1 },
+    { stationName: "T2", latitude: 37.494, longitude: 127.034, sequence: 2 },
+    { stationName: "T3", latitude: 37.496, longitude: 127.036, sequence: 3 },
+  ],
+};
 
 const baseTrip: TripProgressData["trip"] = {
   tripId: "trip-test-001",
   destination: "도착정류장",
-  routeNo: DEMO_ROUTE.routeNo,
-  stationList: DEMO_ROUTE.stationList,
+  routeNo: TEST_ROUTE.routeNo,
+  stationList: TEST_ROUTE.stationList,
 };
 
 const baseStatus: TripProgressData["status"] = {
   tripId: "trip-test-001",
   currentStation: null,
-  nextStation: DEMO_ROUTE.stationList[0]!,
-  remainingStations: DEMO_ROUTE.stationList.length - 1,
+  nextStation: TEST_ROUTE.stationList[0]!,
+  remainingStations: TEST_ROUTE.stationList.length - 1,
   tripStatus: TRIP_STATUS.WAITING_BUS,
   bellStatus: BELL_STATUS.NOT_REQUESTED,
   bellRequestId: null,
@@ -32,8 +43,8 @@ test("updates current station, next station, remainingStations, and tripStatus f
     "trip-test-001",
     {
       requestId: "loc-001",
-      latitude: DEMO_ROUTE.stationList[1]!.latitude,
-      longitude: DEMO_ROUTE.stationList[1]!.longitude,
+      latitude: TEST_ROUTE.stationList[1]!.latitude,
+      longitude: TEST_ROUTE.stationList[1]!.longitude,
       recordedAt: "2026-07-01T14:35:00+09:00",
       source: "MOCK",
     },
@@ -52,9 +63,9 @@ test("updates current station, next station, remainingStations, and tripStatus f
     success: true,
     tripId: "trip-test-001",
     destination: "도착정류장",
-    routeNo: DEMO_ROUTE.routeNo,
-    currentStation: DEMO_ROUTE.stationList[1],
-    nextStation: DEMO_ROUTE.stationList[2],
+    routeNo: TEST_ROUTE.routeNo,
+    currentStation: TEST_ROUTE.stationList[1],
+    nextStation: TEST_ROUTE.stationList[2],
     remainingStations: 2,
     tripStatus: TRIP_STATUS.NEAR_DESTINATION,
     bellStatus: BELL_STATUS.NOT_REQUESTED,
@@ -69,8 +80,8 @@ test("updates current station, next station, remainingStations, and tripStatus f
   assert.deepEqual(saved[0], {
     status: {
       tripId: "trip-test-001",
-      currentStation: DEMO_ROUTE.stationList[1],
-      nextStation: DEMO_ROUTE.stationList[2],
+      currentStation: TEST_ROUTE.stationList[1],
+      nextStation: TEST_ROUTE.stationList[2],
       remainingStations: 2,
       tripStatus: TRIP_STATUS.NEAR_DESTINATION,
       bellStatus: BELL_STATUS.NOT_REQUESTED,
@@ -82,11 +93,11 @@ test("updates current station, next station, remainingStations, and tripStatus f
     locationLog: {
       tripId: "trip-test-001",
       requestId: "loc-001",
-      latitude: DEMO_ROUTE.stationList[1]!.latitude,
-      longitude: DEMO_ROUTE.stationList[1]!.longitude,
+      latitude: TEST_ROUTE.stationList[1]!.latitude,
+      longitude: TEST_ROUTE.stationList[1]!.longitude,
       source: "MOCK",
       recordedAt: "2026-07-01T14:35:00+09:00",
-      currentStation: DEMO_ROUTE.stationList[1],
+      currentStation: TEST_ROUTE.stationList[1],
       remainingStations: 2,
       locationAccepted: true,
       reason: null,
@@ -101,8 +112,8 @@ test("returns current status without saving a new location when requestId is dup
     "trip-test-001",
     {
       requestId: "loc-001",
-      latitude: DEMO_ROUTE.stationList[1]!.latitude,
-      longitude: DEMO_ROUTE.stationList[1]!.longitude,
+      latitude: TEST_ROUTE.stationList[1]!.latitude,
+      longitude: TEST_ROUTE.stationList[1]!.longitude,
       recordedAt: "2026-07-01T14:35:00+09:00",
       source: "MOCK",
     },
@@ -111,8 +122,8 @@ test("returns current status without saving a new location when requestId is dup
         trip: baseTrip,
         status: {
           ...baseStatus,
-          currentStation: DEMO_ROUTE.stationList[1]!,
-          nextStation: DEMO_ROUTE.stationList[2]!,
+          currentStation: TEST_ROUTE.stationList[1]!,
+          nextStation: TEST_ROUTE.stationList[2]!,
           remainingStations: 2,
           tripStatus: TRIP_STATUS.NEAR_DESTINATION,
           lastRequestId: "loc-001",
@@ -142,8 +153,8 @@ test("clamps a multi-station forward jump to one station", async () => {
     "trip-test-001",
     {
       requestId: "loc-002",
-      latitude: DEMO_ROUTE.stationList[3]!.latitude,
-      longitude: DEMO_ROUTE.stationList[3]!.longitude,
+      latitude: TEST_ROUTE.stationList[3]!.latitude,
+      longitude: TEST_ROUTE.stationList[3]!.longitude,
       recordedAt: "2026-07-01T14:35:03+09:00",
       source: "MOCK",
     },
@@ -152,8 +163,8 @@ test("clamps a multi-station forward jump to one station", async () => {
         trip: baseTrip,
         status: {
           ...baseStatus,
-          currentStation: DEMO_ROUTE.stationList[0]!,
-          nextStation: DEMO_ROUTE.stationList[1]!,
+          currentStation: TEST_ROUTE.stationList[0]!,
+          nextStation: TEST_ROUTE.stationList[1]!,
         },
       }),
       findLocationLogByRequestId: async () => null,
@@ -167,7 +178,7 @@ test("clamps a multi-station forward jump to one station", async () => {
   if (result.httpStatus !== 200) {
     throw new Error("expected successful status update");
   }
-  assert.equal(result.body.currentStation?.stationName, DEMO_ROUTE.stationList[1]!.stationName);
+  assert.equal(result.body.currentStation?.stationName, TEST_ROUTE.stationList[1]!.stationName);
   assert.equal((saved[0] as { locationLog: { reason: string } }).locationLog.reason, "FORWARD_JUMP_CLAMPED");
 });
 
@@ -178,8 +189,8 @@ test("auto-generates a bell request when remainingStations becomes 1 and bell is
     "trip-test-001",
     {
       requestId: "loc-bell-1",
-      latitude: DEMO_ROUTE.stationList[2]!.latitude,
-      longitude: DEMO_ROUTE.stationList[2]!.longitude,
+      latitude: TEST_ROUTE.stationList[2]!.latitude,
+      longitude: TEST_ROUTE.stationList[2]!.longitude,
       recordedAt: "2026-07-01T14:36:00+09:00",
       source: "MOCK",
     },
@@ -188,8 +199,8 @@ test("auto-generates a bell request when remainingStations becomes 1 and bell is
         trip: baseTrip,
         status: {
           ...baseStatus,
-          currentStation: DEMO_ROUTE.stationList[1]!,
-          nextStation: DEMO_ROUTE.stationList[2]!,
+          currentStation: TEST_ROUTE.stationList[1]!,
+          nextStation: TEST_ROUTE.stationList[2]!,
           remainingStations: 2,
           tripStatus: TRIP_STATUS.NEAR_DESTINATION,
         },
@@ -233,8 +244,8 @@ test("does not generate a second bell request when bell is already PENDING", asy
     "trip-test-001",
     {
       requestId: "loc-bell-2",
-      latitude: DEMO_ROUTE.stationList[2]!.latitude,
-      longitude: DEMO_ROUTE.stationList[2]!.longitude,
+      latitude: TEST_ROUTE.stationList[2]!.latitude,
+      longitude: TEST_ROUTE.stationList[2]!.longitude,
       recordedAt: "2026-07-01T14:37:00+09:00",
       source: "MOCK",
     },
@@ -243,8 +254,8 @@ test("does not generate a second bell request when bell is already PENDING", asy
         trip: baseTrip,
         status: {
           ...baseStatus,
-          currentStation: DEMO_ROUTE.stationList[1]!,
-          nextStation: DEMO_ROUTE.stationList[2]!,
+          currentStation: TEST_ROUTE.stationList[1]!,
+          nextStation: TEST_ROUTE.stationList[2]!,
           remainingStations: 1,
           tripStatus: TRIP_STATUS.NEAR_DESTINATION,
           bellStatus: BELL_STATUS.PENDING,
@@ -277,8 +288,8 @@ test("does not generate a bell request when more than one station remains", asyn
     "trip-test-001",
     {
       requestId: "loc-bell-3",
-      latitude: DEMO_ROUTE.stationList[1]!.latitude,
-      longitude: DEMO_ROUTE.stationList[1]!.longitude,
+      latitude: TEST_ROUTE.stationList[1]!.latitude,
+      longitude: TEST_ROUTE.stationList[1]!.longitude,
       recordedAt: "2026-07-01T14:38:00+09:00",
       source: "MOCK",
     },
@@ -287,8 +298,8 @@ test("does not generate a bell request when more than one station remains", asyn
         trip: baseTrip,
         status: {
           ...baseStatus,
-          currentStation: DEMO_ROUTE.stationList[0]!,
-          nextStation: DEMO_ROUTE.stationList[1]!,
+          currentStation: TEST_ROUTE.stationList[0]!,
+          nextStation: TEST_ROUTE.stationList[1]!,
         },
       }),
       findLocationLogByRequestId: async () => null,
