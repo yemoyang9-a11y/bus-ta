@@ -8,6 +8,7 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
+    "demo:bell": "tsx src/demo/bell-demo.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
