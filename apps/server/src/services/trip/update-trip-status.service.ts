@@ -369,7 +369,7 @@ function sameStation(left: Station, right: Station) {
 
 function getTripStatus(remainingStations: number) {
   if (remainingStations === 0) return TRIP_STATUS.TRIP_DONE;
-  if (remainingStations <= 2) return TRIP_STATUS.NEAR_DESTINATION;
+  if (remainingStations === 1) return TRIP_STATUS.NEAR_DESTINATION;
   return TRIP_STATUS.ON_BUS;
 }
 

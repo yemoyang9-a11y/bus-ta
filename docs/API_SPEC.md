@@ -469,7 +469,8 @@ AND bellStatus = NOT_REQUESTED
 - 새 후보의 배열 인덱스가 기존 현재 정류장 인덱스보다 작으면 `BACKWARD_STATION_IGNORED`로 무시할 수 있습니다.
 - 새 후보의 배열 인덱스가 기존 인덱스보다 2칸 이상 앞서면 한 칸만 전진시키고 `FORWARD_JUMP_CLAMPED`로 처리할 수 있습니다.
 - 첫 mock 좌표 처리 시 `WAITING_BUS -> ON_BUS`로 변경합니다.
-- 남은 정류장이 2 이하이면 `NEAR_DESTINATION`으로 변경합니다.
+- 남은 정류장이 2이면 사전 안내만 제공하고 `ON_BUS`를 유지합니다.
+- 남은 정류장이 1이면 `NEAR_DESTINATION`으로 변경하고, `bellStatus = NOT_REQUESTED`일 때 하차벨 요청을 생성합니다.
 - 남은 정류장이 0이면 `TRIP_DONE`, `nextStation: null`로 변경합니다.
 - `bellStatus`가 `PENDING`, `SUCCESS`, `FAIL`이면 중복 하차벨 요청을 만들지 않습니다.
 

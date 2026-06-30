@@ -32,7 +32,7 @@ const MOCK_STATUSES = [
     currentStation: { stationName: '융건릉사거리', latitude: 37.207917, longitude: 126.987467, sequence: 2 },
     nextStation: { stationName: '중외제약사거리', latitude: 37.201489, longitude: 127.003042, sequence: 4 },
     remainingStations: 2,
-    tripStatus: 'NEAR_DESTINATION',
+    tripStatus: 'ON_BUS',
     shouldTriggerBell: false,
     bellStatus: 'NOT_REQUESTED',
     bellRequestId: null,

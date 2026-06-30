@@ -16,7 +16,7 @@ const baseStatus: TripProgressData["status"] = {
   currentStation: DEMO_ROUTE.stationList[1]!,
   nextStation: DEMO_ROUTE.stationList[2]!,
   remainingStations: 2,
-  tripStatus: TRIP_STATUS.NEAR_DESTINATION,
+  tripStatus: TRIP_STATUS.ON_BUS,
   bellStatus: BELL_STATUS.NOT_REQUESTED,
   bellRequestId: null,
   command: null,
@@ -34,7 +34,7 @@ test("returns the current trip status without triggering a bell", async () => {
 
   assert.equal(result.httpStatus, 200);
   if (result.httpStatus !== 200) return;
-  assert.equal(result.body.tripStatus, TRIP_STATUS.NEAR_DESTINATION);
+  assert.equal(result.body.tripStatus, TRIP_STATUS.ON_BUS);
   assert.equal(result.body.remainingStations, 2);
   assert.equal(result.body.bellStatus, BELL_STATUS.NOT_REQUESTED);
   assert.equal(result.body.shouldTriggerBell, false);
