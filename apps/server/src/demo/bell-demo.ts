@@ -10,6 +10,15 @@
  * 하드웨어가 없으므로 ②③(앱↔하드웨어 BLE)은 mock-bell.adapter 가 대역한다.
  * 부품 도착 후에는 ②③만 실제 BLE 로 교체하면 된다.
  */
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
+
+// 실행 디렉터리의 .env 자동 로드 (DEMO_USE_DB 모드에서 Supabase 키를 읽기 위함).
+const envFilePath = resolve(process.cwd(), ".env");
+if (existsSync(envFilePath)) {
+  process.loadEnvFile(envFilePath);
+}
+
 import { DEMO_ROUTE, DEMO_LOCATION_SEQUENCE } from "@bus-ta/shared";
 import { createTrip } from "../services/trip/create-trip.service.js";
 import {
