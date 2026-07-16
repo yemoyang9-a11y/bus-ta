@@ -371,6 +371,7 @@ GBIS 조회 실패 시에도 운행 생성은 계속합니다.
 - HTTP 메서드: `GET`
 - 요청 주소: `/api/beacons?routeNo=700-2`
 - 프론트엔드 사용 위치: 중간평가 mock 비콘 확인
+- 데이터 출처: Supabase `bus_beacons` 테이블(환경변수 설정 시) 또는 fixture(`DEMO_BEACONS`, 미설정 시 대체)
 
 성공 응답:
 
@@ -628,6 +629,68 @@ remainingStations = destinationStation의 stationList 배열 인덱스 - current
 
 상태 코드: `200`, `400`, `404`, `409`
 
+## POST /api/ble/detections (검토중 초안)
+
+> 미구현. 중간평가 이후 확장 API이며, 정민(ESP32 스마트지팡이) 검토 전 백엔드 초안이다.
+> 필드명·타입은 정민의 실제 BLE Scan 송신 데이터에 맞춰 바뀔 수 있다.
+
+- 기능 이름: 스마트지팡이 비콘 감지 결과 저장
+- HTTP 메서드: `POST`
+- 요청 주소: `/api/ble/detections`
+- 프론트엔드/하드웨어 사용 위치: 스마트지팡이 ESP32가 targetBeaconId 감지 시 앱을 거쳐 전송
+
+요청 Body(초안):
+
+```json
+{
+  "tripId": "trip-001",
+  "detectionId": "det-001",
+  "targetBeaconId": "MOCK_BUS_1551_001",
+  "rssi": -62,
+  "proximity": "NEAR",
+  "detectedAt": "2026-07-16T14:32:00+09:00",
+  "isMock": true
+}
+```
+
+- `detectionId`는 앱 또는 ESP32가 생성하는 멱등 키다. 같은 `detectionId` 재전송 시 새 행을 만들지 않고 기존 결과를 반환한다(`bell/result`의 재전송 처리 방식과 동일 원칙).
+- `proximity`는 `docs/DB_SCHEMA.md`·노션 최종 흐름의 RSSI 단계(약함/중간/강함)를 코드값으로 표현한 것으로, 실제 열거값은 정민과 확정한다.
+- 저장 테이블(안): `ble_logs` — `trip_id`, `detection_id`, `target_beacon_id`, `rssi`, `proximity`, `detected_at`, `is_mock`.
+
+필수 필드(안): `tripId`, `detectionId`, `targetBeaconId`, `rssi`, `detectedAt`
+
+상태 코드(안): `201`, `400`, `404`
+
+## POST /api/vibration/logs (검토중 초안)
+
+> 미구현. 중간평가 이후 확장 API이며, 정민(ESP32 스마트지팡이) 검토 전 백엔드 초안이다.
+
+- 기능 이름: 스마트지팡이 진동 작동 로그 저장
+- HTTP 메서드: `POST`
+- 요청 주소: `/api/vibration/logs`
+- 프론트엔드/하드웨어 사용 위치: 스마트지팡이 ESP32가 진동 모터 작동 시 앱을 거쳐 전송
+
+요청 Body(초안):
+
+```json
+{
+  "tripId": "trip-001",
+  "logId": "vib-001",
+  "vibrationLevel": "STRONG",
+  "rssi": -50,
+  "triggeredAt": "2026-07-16T14:32:05+09:00",
+  "isMock": true
+}
+```
+
+- `logId`는 `detectionId`와 같은 원칙의 멱등 키다.
+- `vibrationLevel`은 약한/중간/강한 3단계(노션 최종 흐름 16번 단계) 코드값이며 실제 열거값은 정민과 확정한다.
+- 저장 테이블(안): `vibration_logs` — `trip_id`, `log_id`, `vibration_level`, `rssi`, `triggered_at`, `is_mock`.
+
+필수 필드(안): `tripId`, `logId`, `vibrationLevel`, `triggeredAt`
+
+상태 코드(안): `201`, `400`, `404`
+
 ## 주요 오류 코드
 
 ```text
@@ -654,6 +717,7 @@ BELL_RESULT_ERROR
 ## 구현 전 확인 필요
 
 - `POST /api/trips`에서 직전 검색 결과를 서버 메모리, DB, 캐시 중 어디에 보관해 후보 위변조를 검증할지 확인 필요
-- `bellStatus = FAIL` 이후 자동 재시도 허용 여부와 최대 재시도 횟수 확인 필요
+- `bellStatus = FAIL` 이후 자동 재시도 허용 여부와 최대 재시도 횟수 확인 필요. 이 결정은 `POST /api/ble/detections`, `POST /api/vibration/logs` 초안의 멱등 키·append-only 여부 설계에도 그대로 적용된다.
 - `targetBeaconId`를 `routeNo`만으로 조회할지, 최종적으로 `localBusId` 또는 `vehicleId` 기반으로 바꿀지 확인 필요
+- `POST /api/ble/detections`, `POST /api/vibration/logs`의 `proximity`/`vibrationLevel` 열거값과 요청 필드는 정민의 실제 ESP32 송신 데이터 확정 후 검토 필요
 - 앱 공개 응답 필드명을 `routes`로 유지할지 `candidates`로 변경할지 팀 합의 필요. 현재 문서는 기존 프론트 흐름을 고려해 `routes`를 유지하되 내부 객체는 효린 `candidates` 형식을 따릅니다.

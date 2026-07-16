@@ -9,8 +9,9 @@ export interface BeaconRepository {
 }
 
 /**
- * 중간평가 MVP 비콘 조회 — fixture(DEMO_BEACONS) 단일 출처에서 읽는다.
- * 실제 bus_beacons 테이블 연동이 준비되면 동일 인터페이스 구현체로 교체한다.
+ * fixture(DEMO_BEACONS) 단일 출처에서 읽는 구현체.
+ * Supabase 환경변수가 없을 때 시연이 끊기지 않도록 하는 fallback으로 쓴다.
+ * 실제 bus_beacons 테이블 조회는 repositories/supabase/beacon.repository.ts 참고.
  */
 export class FixtureBeaconRepository implements BeaconRepository {
   constructor(private readonly beacons: readonly Beacon[] = DEMO_BEACONS) {}
@@ -27,5 +28,3 @@ export class FixtureBeaconRepository implements BeaconRepository {
     return this.beacons.find((beacon) => beacon.routeNo === routeNo) ?? null;
   }
 }
-
-// TODO: Supabase bus_beacons 구현체 추가 (중간평가 이후)
