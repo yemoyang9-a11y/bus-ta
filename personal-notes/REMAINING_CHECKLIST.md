@@ -37,6 +37,25 @@
 - [ ] PATCH `/status` 와 POST `/bell/result` 의 다중 쓰기를 Supabase RPC/Postgres function 으로 묶어 **진짜 트랜잭션(원자성)** 보장
   - 현재는 저장 순서 조정 + bell/result 멱등 자가치유로 완화만 적용됨 (`54b7eb4`~).
 
+## G. bus_beacons Supabase 연동 code-review 후속 (판단 불필요, 실행만 하면 됨)
+
+> 판단이 필요한 항목은 여기 대신 `PENDING_DECISIONS.md`에 있다. 결정이 끝나야 착수 가능한 항목은
+> 거기서 먼저 확정한 뒤 이 체크리스트로 옮긴다.
+
+- [ ] `docs/API_SPEC.md`의 `GET /api/beacons?routeNo=` 상태 코드 목록(`200, 400, 404`)에 `500` 추가
+  - 현재 서비스(`get-beacon.service.ts`)는 이미 500 DB_ERROR를 반환하지만 문서에 누락됨
+- [ ] `supabase/migrations/20260716_seed_bus_beacons.sql`의 `on conflict (beacon_id) do nothing`을
+      필요 시 `do update set ...`로 보강 검토 (기존 행이 fixture와 값이 어긋나 있어도 갱신되지 않는 문제)
+- [ ] `apps/server/src/repositories/supabase/beacon.repository.ts`와 `trip.repository.ts`에 중복된
+      `selectRows`/`headers()`/`readString`/`readNullableString`을 공통 모듈로 추출
+      (다음 Supabase 레포지토리(`ble_logs`, `vibration_logs`)를 만들 때 세 번째 복붙을 막기 위함)
+- [ ] `SupabaseBeaconRepository.findAll`/`findById` — 실사용처가 없으면 인터페이스에서 빼거나,
+      실제로 쓸 곳(관리자 조회 등)이 생기면 그때 유지
+  - code-review(2026-07-16)에서 발견: 테스트 외 호출처 0건
+- [ ] 정민 ESP32가 실제 `BUS_{routeToken}_{vehicleToken}` 비콘을 방송하기 시작하면
+      `bus_beacons`에 non-mock 행 추가 (현재는 `MOCK_BUS_1551_001` 1건만 시드됨)
+  - 차단 요인: 정민 하드웨어 준비 상태
+
 ## E. 관리·검증
 
 - [ ] 시연 전 Supabase 테스트 trip 데이터 정리 (선택)
