@@ -1,3 +1,4 @@
+import { TRIP_STATUS } from "@bus-ta/shared";
 import type { TripProgressData } from "./update-trip-status.service.js";
 import { buildGuideMessage } from "./guide-message.js";
 
@@ -95,7 +96,10 @@ export async function getTripStatus(
     shouldTriggerBell: false,
     // 조회 전용 — 하차벨 명령은 PATCH 자동 생성 응답에서만 전달한다(계약). 항상 null.
     command: null,
-    guideMessage: buildGuideMessage(status.remainingStations, status.bellStatus),
+    guideMessage:
+      status.tripStatus === TRIP_STATUS.CANCELLED
+        ? "운행 안내가 종료되었습니다."
+        : buildGuideMessage(status.remainingStations, status.bellStatus),
     message: "현재 이동 상태를 조회했습니다.",
     timestamp,
   };

@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { BELL_COMMAND, BELL_STATUS, TRIP_STATUS } from "@bus-ta/shared";
-import { updateTripStatus, type TripProgressData } from "./update-trip-status.service.js";
+import {
+  TripCancelledDuringUpdateError,
+  TripCompletedDuringUpdateError,
+  updateTripStatus,
+  type TripProgressData,
+} from "./update-trip-status.service.js";
 
 // 정류장 계산 검증용 4정류장 고정 노선 (시연 fixture(DEMO_ROUTE=1551)와 분리해 테스트 안정화)
 const TEST_ROUTE = {
@@ -345,5 +350,101 @@ test("rejects an unknown tripId", async () => {
     errorCode: "TRIP_NOT_FOUND",
     message: "운행 정보를 찾을 수 없습니다.",
     timestamp: "2026-07-01T14:35:05+09:00",
+  });
+});
+
+test("rejects a location update after the trip was cancelled", async () => {
+  let saved = false;
+
+  const result = await updateTripStatus(
+    "trip-test-001",
+    {
+      requestId: "loc-cancelled-1",
+      latitude: TEST_ROUTE.stationList[1]!.latitude,
+      longitude: TEST_ROUTE.stationList[1]!.longitude,
+      recordedAt: "2026-07-25T12:11:00.000Z",
+      source: "GPS",
+    },
+    {
+      findTripProgressData: async () => ({
+        trip: baseTrip,
+        status: {
+          ...baseStatus,
+          tripStatus: TRIP_STATUS.CANCELLED,
+        },
+      }),
+      findLocationLogByRequestId: async () => null,
+      saveStatusAndLocation: async () => {
+        saved = true;
+      },
+      now: () => "2026-07-25T12:11:01.000Z",
+    },
+  );
+
+  assert.equal(result.httpStatus, 409);
+  assert.deepEqual(result.body, {
+    success: false,
+    errorCode: "INVALID_TRIP_STATUS",
+    message: "종료된 운행의 위치는 갱신할 수 없습니다.",
+    timestamp: "2026-07-25T12:11:01.000Z",
+  });
+  assert.equal(saved, false);
+});
+
+test("returns 409 when cancellation wins after the location status was read", async () => {
+  const result = await updateTripStatus(
+    "trip-test-001",
+    {
+      requestId: "loc-cancel-race-1",
+      latitude: TEST_ROUTE.stationList[1]!.latitude,
+      longitude: TEST_ROUTE.stationList[1]!.longitude,
+      recordedAt: "2026-07-25T12:12:00.000Z",
+      source: "GPS",
+    },
+    {
+      findTripProgressData: async () => ({ trip: baseTrip, status: baseStatus }),
+      findLocationLogByRequestId: async () => null,
+      saveStatusAndLocation: async () => {
+        throw new TripCancelledDuringUpdateError();
+      },
+      now: () => "2026-07-25T12:12:01.000Z",
+    },
+  );
+
+  assert.equal(result.httpStatus, 409);
+  assert.deepEqual(result.body, {
+    success: false,
+    errorCode: "INVALID_TRIP_STATUS",
+    message: "종료된 운행의 위치는 갱신할 수 없습니다.",
+    timestamp: "2026-07-25T12:12:01.000Z",
+  });
+});
+
+test("returns 409 when completion wins after the location status was read", async () => {
+  const result = await updateTripStatus(
+    "trip-test-001",
+    {
+      requestId: "loc-complete-race-1",
+      latitude: TEST_ROUTE.stationList[1]!.latitude,
+      longitude: TEST_ROUTE.stationList[1]!.longitude,
+      recordedAt: "2026-07-25T12:13:00.000Z",
+      source: "GPS",
+    },
+    {
+      findTripProgressData: async () => ({ trip: baseTrip, status: baseStatus }),
+      findLocationLogByRequestId: async () => null,
+      saveStatusAndLocation: async () => {
+        throw new TripCompletedDuringUpdateError();
+      },
+      now: () => "2026-07-25T12:13:01.000Z",
+    },
+  );
+
+  assert.equal(result.httpStatus, 409);
+  assert.deepEqual(result.body, {
+    success: false,
+    errorCode: "INVALID_TRIP_STATUS",
+    message: "종료된 운행의 위치는 갱신할 수 없습니다.",
+    timestamp: "2026-07-25T12:13:01.000Z",
   });
 });

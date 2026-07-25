@@ -5,7 +5,10 @@ import type {
   TripCreateRecord,
   TripStatusCreateRecord,
 } from "../../services/trip/create-trip.service.js";
-import type {
+import {
+  TripCancelledDuringUpdateError,
+  TripCompletedDuringUpdateError,
+  type
   LocationLogLookup,
   SaveStatusAndLocationInput,
   TripProgressData,
@@ -16,6 +19,11 @@ import type {
   BellResultRepository,
   SaveBellResultInput,
 } from "../../services/trip/bell-result.service.js";
+import type {
+  EndTripRepository,
+  SaveEndTripStatusInput,
+  SaveEndTripStatusResult,
+} from "../../services/trip/end-trip.service.js";
 
 type Env = Partial<Record<string, string | undefined>>;
 type FetchLike = (input: string | URL, init?: RequestInit) => Promise<Response>;
@@ -29,7 +37,7 @@ export function createSupabaseTripRepositoryFromEnv(
 }
 
 export class SupabaseTripRepository
-  implements TripCreationRepository, UpdateTripStatusRepository, BellResultRepository
+  implements TripCreationRepository, UpdateTripStatusRepository, BellResultRepository, EndTripRepository
 {
   constructor(
     private readonly config: SupabaseConfig,
@@ -108,22 +116,40 @@ export class SupabaseTripRepository
   }
 
   async saveStatusAndLocation(data: SaveStatusAndLocationInput): Promise<void> {
-    // 부분 반영 위험 완화: 로그(location_logs, bell_logs)를 먼저 기록하고 trip_status 를
-    // 마지막에 갱신한다. 중간 실패 시 trip_status 가 전진하지 않으므로 다음 요청이
-    // 안전하게 재전진하며, "PENDING 인데 bell_logs 없음" 같은 불일치를 예방한다.
-    // (완전한 원자성은 Supabase RPC/트랜잭션으로 후속 보강 — REMAINING_CHECKLIST 참고)
-    await this.insert("location_logs", toLocationLogRow(data.locationLog));
-
-    // 5단계: 하차벨 자동 요청이 생성된 경우에만 bell_logs 에 STOP_REQUEST 요청을 기록한다.
+    // 상태, 위치 로그, 하차벨 로그를 한 DB 트랜잭션으로 저장한다.
+    // 조건부 상태 갱신이 CANCELLED 를 감지하면 로그도 함께 롤백된다.
+    const body: Record<string, unknown> = {
+      p_trip_id: data.status.tripId,
+      p_status: toTripStatusUpdateRow(data.status),
+      p_location_log: toLocationLogRow(data.locationLog),
+    };
     if (data.bellRequest) {
-      await this.insert("bell_logs", toBellLogRow(data.bellRequest));
+      body.p_bell_request = toBellLogRow(data.bellRequest);
     }
 
-    await this.patch(
-      "trip_status",
-      `trip_id=eq.${encodeURIComponent(data.status.tripId)}`,
-      toTripStatusUpdateRow(data.status),
+    const response = await this.fetchImpl(
+      `${this.config.url}/rest/v1/rpc/save_trip_status_and_location`,
+      {
+        method: "POST",
+        headers: this.headers(),
+        body: JSON.stringify(body),
+      },
     );
+
+    if (!response.ok) {
+      throw new Error(`Supabase status-and-location transaction failed: ${response.status}`);
+    }
+
+    const saved = (await response.json()) as unknown;
+    if (saved === "CANCELLED") {
+      throw new TripCancelledDuringUpdateError();
+    }
+    if (saved === "TRIP_DONE") {
+      throw new TripCompletedDuringUpdateError();
+    }
+    if (saved !== "SAVED") {
+      throw new Error("Supabase status-and-location transaction returned an invalid result");
+    }
   }
 
   async findBellRequest(tripId: string, bellRequestId: string): Promise<BellRequestLookup | null> {
@@ -177,6 +203,33 @@ export class SupabaseTripRepository
       bell_status: bellStatus,
       updated_at: completedAt,
     });
+  }
+
+  async saveTripStatus(data: SaveEndTripStatusInput): Promise<SaveEndTripStatusResult> {
+    const response = await this.fetchImpl(`${this.config.url}/rest/v1/rpc/cancel_trip`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify({
+        p_trip_id: data.tripId,
+        p_updated_at: data.updatedAt,
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Supabase cancellation transaction failed: ${response.status}`);
+    }
+
+    const result = (await response.json()) as unknown;
+    if (
+      result === "CANCELLED" ||
+      result === "ALREADY_CANCELLED" ||
+      result === "TRIP_DONE" ||
+      result === "TRIP_NOT_FOUND"
+    ) {
+      return result;
+    }
+
+    throw new Error("Supabase cancellation transaction returned an invalid result");
   }
 
   private async insert(table: string, row: Record<string, unknown>) {

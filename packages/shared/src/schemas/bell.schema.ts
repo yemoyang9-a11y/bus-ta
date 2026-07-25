@@ -44,6 +44,7 @@ export const BellStateResponseSchema = z.object({
     TRIP_STATUS.ON_BUS,
     TRIP_STATUS.NEAR_DESTINATION,
     TRIP_STATUS.TRIP_DONE,
+    TRIP_STATUS.CANCELLED,
     TRIP_STATUS.ERROR,
   ]),
   message: z.string(),

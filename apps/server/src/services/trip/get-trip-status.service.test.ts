@@ -69,6 +69,24 @@ test("returns bellRequestId and command when a bell request is pending", async (
   assert.equal(result.body.guideMessage, "하차벨 요청 결과를 기다리고 있습니다.");
 });
 
+test("returns a cancellation guide message for a cancelled trip", async () => {
+  const result = await getTripStatus("trip-test-001", {
+    findTripProgressData: async () => ({
+      trip: baseTrip,
+      status: {
+        ...baseStatus,
+        tripStatus: TRIP_STATUS.CANCELLED,
+      },
+    }),
+    now: () => "2026-07-25T12:12:00.000Z",
+  });
+
+  assert.equal(result.httpStatus, 200);
+  if (result.httpStatus !== 200) return;
+  assert.equal(result.body.tripStatus, TRIP_STATUS.CANCELLED);
+  assert.equal(result.body.guideMessage, "운행 안내가 종료되었습니다.");
+});
+
 test("returns 404 for an unknown tripId", async () => {
   const result = await getTripStatus("missing-trip", {
     findTripProgressData: async () => null,

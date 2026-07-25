@@ -108,7 +108,7 @@ ODsay `passStopList`에서 경유 정류장의 고유 `stationId`를 제공하�
 GET   /api/health
 POST  /api/routes/search
 POST  /api/trips
-PATCH /api/trips/{tripId}            # 미구현 (중간평가 범위 밖, 시연 재시작 장면 없음)
+PATCH /api/trips/{tripId}
 PATCH /api/trips/{tripId}/status
 GET   /api/trips/{tripId}/status
 GET   /api/beacons?routeNo=
@@ -598,13 +598,11 @@ remainingStations = destinationStation의 stationList 배열 인덱스 - current
 
 ## PATCH /api/trips/{tripId}
 
-> 미구현. 중간평가 범위 밖이며 시연에 운행 취소/재시작 장면이 없어 보류한다.
-> 현재 서버는 이 경로에 `501 Not implemented` 를 반환한다. 아래는 향후 구현 시 기준 명세이다.
-
-- 기능 이름: 운행 취소 또는 종료
+- 기능 이름: 운행 안내 종료
 - HTTP 메서드: `PATCH`
 - 요청 주소: `/api/trips/{tripId}`
-- 프론트엔드 사용 위치: 시연 재시작, 사용자가 운행 취소
+- 호출 조건: 사용자가 안내 종료·운행 취소·다시 경로 검색을 명시적으로 요청한 경우
+- 처리: `WAITING_BUS`, `ON_BUS`, `NEAR_DESTINATION`, `ERROR` 상태를 `CANCELLED`로 저장합니다.
 
 요청 Body:
 
@@ -620,13 +618,19 @@ remainingStations = destinationStation의 stationList 배열 인덱스 - current
 {
   "success": true,
   "tripId": "trip-001",
-  "tripStatus": "TRIP_DONE",
-  "message": "운행을 종료했습니다.",
+  "tripStatus": "CANCELLED",
+  "message": "운행 안내를 종료했습니다.",
   "timestamp": "2026-07-01T14:40:00+09:00"
 }
 ```
 
-상태 코드: `200`, `400`, `404`, `409`
+처리 규칙:
+
+- 이미 `CANCELLED`인 운행은 저장을 반복하지 않고 `200`으로 종료 상태를 반환합니다.
+- `TRIP_DONE`인 운행은 완료된 운행이므로 취소할 수 없으며 `409 INVALID_TRIP_STATUS`를 반환합니다.
+- `CANCELLED` 또는 `TRIP_DONE` 뒤 `PATCH /api/trips/{tripId}/status` 위치 업데이트는 `409 INVALID_TRIP_STATUS`를 반환합니다.
+
+상태 코드: `200`, `400`, `404`, `409`, `500`
 
 ## 주요 오류 코드
 

@@ -4,6 +4,7 @@ import { createSupabaseTripRepositoryFromEnv } from "../repositories/supabase/tr
 import { createTrip } from "../services/trip/create-trip.service.js";
 import { getTripStatus } from "../services/trip/get-trip-status.service.js";
 import { recordBellResult } from "../services/trip/bell-result.service.js";
+import { endTrip } from "../services/trip/end-trip.service.js";
 import { updateTripStatus } from "../services/trip/update-trip-status.service.js";
 
 export const tripsRouter = Router();
@@ -33,10 +34,22 @@ tripsRouter.post("/", async (req, res) => {
 });
 
 // PATCH /api/trips/:tripId
-// 미구현(보류): 운행 취소/시연 재시작용. 중간평가 범위 밖이며 시연에 해당 장면이 없다.
-// 명세는 docs/API_SPEC.md "PATCH /api/trips/{tripId}" 참고.
-tripsRouter.patch("/:tripId", (_req, res) => {
-  res.status(501).json({ message: "Not implemented" });
+// 사용자 명시 취소: WAITING_BUS | ON_BUS | NEAR_DESTINATION | ERROR → CANCELLED
+tripsRouter.patch("/:tripId", async (req, res) => {
+  const repository = createSupabaseTripRepositoryFromEnv();
+
+  if (!repository) {
+    res.status(500).json({
+      success: false,
+      errorCode: "DB_ERROR",
+      message: "Supabase is not configured",
+      timestamp: new Date().toISOString(),
+    });
+    return;
+  }
+
+  const result = await endTrip(req.params.tripId ?? "", req.body, repository);
+  res.status(result.httpStatus).json(result.body);
 });
 
 // PATCH /api/trips/:tripId/status

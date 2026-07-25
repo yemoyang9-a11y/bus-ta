@@ -93,6 +93,24 @@ export interface UpdateTripStatusDependencies extends UpdateTripStatusRepository
   generateBellRequestId?: () => string;
 }
 
+/**
+ * 위치 상태를 읽은 뒤 사용자가 운행을 종료한 경우 repository가 반환한다.
+ * 이 경우 GPS 로그와 상태 변경은 하나의 DB 트랜잭션으로 모두 롤백된다.
+ */
+export class TripCancelledDuringUpdateError extends Error {
+  constructor() {
+    super("Trip was cancelled while the location update was being saved");
+    this.name = "TripCancelledDuringUpdateError";
+  }
+}
+
+export class TripCompletedDuringUpdateError extends Error {
+  constructor() {
+    super("Trip was completed while the location update was being saved");
+    this.name = "TripCompletedDuringUpdateError";
+  }
+}
+
 type UpdateTripStatusSuccessBody = {
   success: true;
   tripId: string;
@@ -114,7 +132,7 @@ type UpdateTripStatusSuccessBody = {
 
 type UpdateTripStatusErrorBody = {
   success: false;
-  errorCode: "INVALID_REQUEST" | "TRIP_NOT_FOUND" | "DB_ERROR";
+  errorCode: "INVALID_REQUEST" | "TRIP_NOT_FOUND" | "INVALID_TRIP_STATUS" | "DB_ERROR";
   message: string;
   timestamp: string;
 };
@@ -123,6 +141,7 @@ export type UpdateTripStatusResult =
   | { httpStatus: 200; body: UpdateTripStatusSuccessBody }
   | { httpStatus: 400; body: UpdateTripStatusErrorBody }
   | { httpStatus: 404; body: UpdateTripStatusErrorBody }
+  | { httpStatus: 409; body: UpdateTripStatusErrorBody }
   | { httpStatus: 500; body: UpdateTripStatusErrorBody };
 
 const defaultNow = () => new Date().toISOString();
@@ -157,6 +176,18 @@ export async function updateTripStatus(
         success: false,
         errorCode: "TRIP_NOT_FOUND",
         message: "운행 정보를 찾을 수 없습니다.",
+        timestamp,
+      },
+    };
+  }
+
+  if (progressData.status.tripStatus === TRIP_STATUS.CANCELLED) {
+    return {
+      httpStatus: 409,
+      body: {
+        success: false,
+        errorCode: "INVALID_TRIP_STATUS",
+        message: "종료된 운행의 위치는 갱신할 수 없습니다.",
         timestamp,
       },
     };
@@ -231,7 +262,22 @@ export async function updateTripStatus(
       },
       ...(bellRequest ? { bellRequest } : {}),
     });
-  } catch {
+  } catch (error) {
+    if (
+      error instanceof TripCancelledDuringUpdateError ||
+      error instanceof TripCompletedDuringUpdateError
+    ) {
+      return {
+        httpStatus: 409,
+        body: {
+          success: false,
+          errorCode: "INVALID_TRIP_STATUS",
+          message: "종료된 운행의 위치는 갱신할 수 없습니다.",
+          timestamp,
+        },
+      };
+    }
+
     return {
       httpStatus: 500,
       body: {
