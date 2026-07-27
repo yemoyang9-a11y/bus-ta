@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { BELL_COMMAND, BELL_STATUS, TRIP_STATUS } from "@bus-ta/shared";
 import {
+  DuplicateLocationRequestError,
   TripCancelledDuringUpdateError,
   TripCompletedDuringUpdateError,
 } from "../../services/trip/update-trip-status.service.js";
@@ -113,6 +114,15 @@ test("reports completion when the atomic RPC sees a completed trip", async () =>
   );
 
   await assert.rejects(() => repository.saveStatusAndLocation(input), TripCompletedDuringUpdateError);
+});
+
+test("reports a duplicate when a concurrent request already saved the same requestId", async () => {
+  const repository = new SupabaseTripRepository(
+    { url: "https://supabase.example", apiKey: "service-key" },
+    async () => new Response('"DUPLICATE"', { status: 200, headers: { "Content-Type": "application/json" } }),
+  );
+
+  await assert.rejects(() => repository.saveStatusAndLocation(input), DuplicateLocationRequestError);
 });
 
 test("cancels through the atomic RPC and returns its terminal-state result", async () => {

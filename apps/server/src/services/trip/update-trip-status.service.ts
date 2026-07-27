@@ -111,6 +111,18 @@ export class TripCompletedDuringUpdateError extends Error {
   }
 }
 
+/**
+ * 같은 (tripId, requestId)로 두 요청이 거의 동시에 들어와, 둘 다 애플리케이션 레벨의
+ * 중복 검사(findLocationLogByRequestId)를 통과한 뒤 한쪽만 저장에 성공한 경우 repository가 반환한다.
+ * DB의 UNIQUE 제약이 최종 방어선이며, 이 경우 500이 아니라 기존 중복 요청과 동일하게 200을 반환한다.
+ */
+export class DuplicateLocationRequestError extends Error {
+  constructor() {
+    super("A concurrent request already saved this location update");
+    this.name = "DuplicateLocationRequestError";
+  }
+}
+
 type UpdateTripStatusSuccessBody = {
   success: true;
   tripId: string;
@@ -306,6 +318,27 @@ export async function updateTripStatus(
           message: "종료된 운행의 위치는 갱신할 수 없습니다.",
           timestamp,
         },
+      };
+    }
+
+    if (error instanceof DuplicateLocationRequestError) {
+      // 동시 요청 레이스: 다른 요청이 같은 requestId로 이미 저장을 마쳤다.
+      // 500 DB_ERROR로 새지 않도록, 최신 상태를 다시 읽어 기존 중복 요청 경로와
+      // 동일하게 200으로 응답한다. 재조회에 실패하면 이번 요청 시작 시점의
+      // 스냅숏(progressData)으로라도 응답한다.
+      let latest: TripProgressData | null;
+      try {
+        latest = await dependencies.findTripProgressData(tripId);
+      } catch {
+        latest = null;
+      }
+
+      return {
+        httpStatus: 200,
+        body: toResponseBody(latest ?? progressData, {
+          message: "이미 처리된 위치 업데이트입니다.",
+          timestamp,
+        }),
       };
     }
 

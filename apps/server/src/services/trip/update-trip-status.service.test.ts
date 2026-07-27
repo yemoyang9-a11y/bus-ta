@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { BELL_COMMAND, BELL_STATUS, TRIP_STATUS } from "@bus-ta/shared";
 import {
+  DuplicateLocationRequestError,
   TripCancelledDuringUpdateError,
   TripCompletedDuringUpdateError,
   updateTripStatus,
@@ -483,6 +484,88 @@ test("returns 409 when completion wins after the location status was read", asyn
     message: "종료된 운행의 위치는 갱신할 수 없습니다.",
     timestamp: "2026-07-25T12:13:01.000Z",
   });
+});
+
+test("returns cached success when a concurrent request wins the race for the same requestId", async () => {
+  let findCalls = 0;
+
+  const result = await updateTripStatus(
+    "trip-test-001",
+    {
+      requestId: "loc-race-1",
+      latitude: TEST_ROUTE.stationList[1]!.latitude,
+      longitude: TEST_ROUTE.stationList[1]!.longitude,
+      recordedAt: "2026-07-27T12:20:00.000Z",
+      source: "GPS",
+    },
+    {
+      findTripProgressData: async () => {
+        findCalls += 1;
+        if (findCalls === 1) {
+          return { trip: baseTrip, status: baseStatus };
+        }
+        // 재조회 시점에는 경쟁에서 이긴 다른 요청이 이미 저장한 최신 상태가 보인다.
+        return {
+          trip: baseTrip,
+          status: {
+            ...baseStatus,
+            currentStation: TEST_ROUTE.stationList[1]!,
+            nextStation: TEST_ROUTE.stationList[2]!,
+            remainingStations: 2,
+            tripStatus: TRIP_STATUS.ON_BUS,
+            lastRequestId: "loc-race-1",
+          },
+        };
+      },
+      findLocationLogByRequestId: async () => null,
+      saveStatusAndLocation: async () => {
+        throw new DuplicateLocationRequestError();
+      },
+      now: () => "2026-07-27T12:20:01.000Z",
+    },
+  );
+
+  assert.equal(result.httpStatus, 200);
+  assert.equal(result.body.message, "이미 처리된 위치 업데이트입니다.");
+  assert.equal(findCalls, 2);
+  if (result.httpStatus !== 200) throw new Error("expected successful status update");
+  assert.equal(result.body.remainingStations, 2);
+  assert.equal(result.body.tripStatus, TRIP_STATUS.ON_BUS);
+});
+
+test("falls back to the pre-race snapshot when the post-race refetch also fails", async () => {
+  let findCalls = 0;
+
+  const result = await updateTripStatus(
+    "trip-test-001",
+    {
+      requestId: "loc-race-2",
+      latitude: TEST_ROUTE.stationList[1]!.latitude,
+      longitude: TEST_ROUTE.stationList[1]!.longitude,
+      recordedAt: "2026-07-27T12:21:00.000Z",
+      source: "GPS",
+    },
+    {
+      findTripProgressData: async () => {
+        findCalls += 1;
+        if (findCalls === 1) {
+          return { trip: baseTrip, status: baseStatus };
+        }
+        throw new Error("Supabase network error");
+      },
+      findLocationLogByRequestId: async () => null,
+      saveStatusAndLocation: async () => {
+        throw new DuplicateLocationRequestError();
+      },
+      now: () => "2026-07-27T12:21:01.000Z",
+    },
+  );
+
+  assert.equal(result.httpStatus, 200);
+  assert.equal(result.body.message, "이미 처리된 위치 업데이트입니다.");
+  assert.equal(findCalls, 2);
+  if (result.httpStatus !== 200) throw new Error("expected successful status update");
+  assert.equal(result.body.remainingStations, baseStatus.remainingStations);
 });
 
 test("returns 500 DB_ERROR instead of throwing when findTripProgressData fails", async () => {

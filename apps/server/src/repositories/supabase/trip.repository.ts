@@ -6,6 +6,7 @@ import type {
   TripStatusCreateRecord,
 } from "../../services/trip/create-trip.service.js";
 import {
+  DuplicateLocationRequestError,
   TripCancelledDuringUpdateError,
   TripCompletedDuringUpdateError,
   type
@@ -146,6 +147,9 @@ export class SupabaseTripRepository
     }
     if (saved === "TRIP_DONE") {
       throw new TripCompletedDuringUpdateError();
+    }
+    if (saved === "DUPLICATE") {
+      throw new DuplicateLocationRequestError();
     }
     if (saved !== "SAVED") {
       throw new Error("Supabase status-and-location transaction returned an invalid result");
