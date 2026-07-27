@@ -40,6 +40,6 @@ export const apiClient = {
     },
   },
   beacons: {
-    list: () => request(API_PATHS.beacons.list),
+    list: (routeNo: string) => request(API_PATHS.beacons.list(routeNo)),
   },
 };

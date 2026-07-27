@@ -25,6 +25,6 @@ export const API_PATHS = {
   },
 
   beacons: {
-    list: `${BASE}/beacons`,
+    list: (routeNo: string) => `${BASE}/beacons?routeNo=${encodeURIComponent(routeNo)}`,
   },
 } as const;
