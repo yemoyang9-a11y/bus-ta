@@ -145,6 +145,7 @@ Supabase 환경변수가 설정되어 있지만 연결 확인에 실패하면 `5
   "success": false,
   "serverStatus": "UP",
   "dbStatus": "DOWN",
+  "errorCode": "DB_ERROR",
   "message": "Supabase connection failed",
   "timestamp": "2026-07-01T14:30:00+09:00"
 }
