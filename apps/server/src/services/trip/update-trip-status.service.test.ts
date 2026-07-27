@@ -391,6 +391,42 @@ test("rejects a location update after the trip was cancelled", async () => {
   assert.equal(saved, false);
 });
 
+test("returns cached success when a duplicate requestId is replayed after the trip was cancelled", async () => {
+  let saved = false;
+
+  const result = await updateTripStatus(
+    "trip-test-001",
+    {
+      requestId: "loc-cancelled-dup-1",
+      latitude: TEST_ROUTE.stationList[1]!.latitude,
+      longitude: TEST_ROUTE.stationList[1]!.longitude,
+      recordedAt: "2026-07-27T12:11:00.000Z",
+      source: "GPS",
+    },
+    {
+      findTripProgressData: async () => ({
+        trip: baseTrip,
+        status: {
+          ...baseStatus,
+          tripStatus: TRIP_STATUS.CANCELLED,
+        },
+      }),
+      findLocationLogByRequestId: async () => ({
+        tripId: "trip-test-001",
+        requestId: "loc-cancelled-dup-1",
+      }),
+      saveStatusAndLocation: async () => {
+        saved = true;
+      },
+      now: () => "2026-07-27T12:11:01.000Z",
+    },
+  );
+
+  assert.equal(result.httpStatus, 200);
+  assert.equal(result.body.message, "이미 처리된 위치 업데이트입니다.");
+  assert.equal(saved, false);
+});
+
 test("returns 409 when cancellation wins after the location status was read", async () => {
   const result = await updateTripStatus(
     "trip-test-001",
@@ -446,5 +482,63 @@ test("returns 409 when completion wins after the location status was read", asyn
     errorCode: "INVALID_TRIP_STATUS",
     message: "종료된 운행의 위치는 갱신할 수 없습니다.",
     timestamp: "2026-07-25T12:13:01.000Z",
+  });
+});
+
+test("returns 500 DB_ERROR instead of throwing when findTripProgressData fails", async () => {
+  const result = await updateTripStatus(
+    "trip-test-001",
+    {
+      requestId: "loc-db-error-1",
+      latitude: TEST_ROUTE.stationList[1]!.latitude,
+      longitude: TEST_ROUTE.stationList[1]!.longitude,
+      recordedAt: "2026-07-26T12:00:00.000Z",
+      source: "GPS",
+    },
+    {
+      findTripProgressData: async () => {
+        throw new Error("Supabase network error");
+      },
+      findLocationLogByRequestId: async () => null,
+      saveStatusAndLocation: async () => {},
+      now: () => "2026-07-26T12:00:01.000Z",
+    },
+  );
+
+  assert.equal(result.httpStatus, 500);
+  assert.deepEqual(result.body, {
+    success: false,
+    errorCode: "DB_ERROR",
+    message: "운행 정보를 조회하지 못했습니다.",
+    timestamp: "2026-07-26T12:00:01.000Z",
+  });
+});
+
+test("returns 500 DB_ERROR instead of throwing when findLocationLogByRequestId fails", async () => {
+  const result = await updateTripStatus(
+    "trip-test-001",
+    {
+      requestId: "loc-db-error-2",
+      latitude: TEST_ROUTE.stationList[1]!.latitude,
+      longitude: TEST_ROUTE.stationList[1]!.longitude,
+      recordedAt: "2026-07-26T12:01:00.000Z",
+      source: "GPS",
+    },
+    {
+      findTripProgressData: async () => ({ trip: baseTrip, status: baseStatus }),
+      findLocationLogByRequestId: async () => {
+        throw new Error("Supabase network error");
+      },
+      saveStatusAndLocation: async () => {},
+      now: () => "2026-07-26T12:01:01.000Z",
+    },
+  );
+
+  assert.equal(result.httpStatus, 500);
+  assert.deepEqual(result.body, {
+    success: false,
+    errorCode: "DB_ERROR",
+    message: "중복 요청 확인에 실패했습니다.",
+    timestamp: "2026-07-26T12:01:01.000Z",
   });
 });

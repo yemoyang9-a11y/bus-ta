@@ -168,7 +168,21 @@ export async function updateTripStatus(
     };
   }
 
-  const progressData = await dependencies.findTripProgressData(tripId);
+  let progressData: TripProgressData | null;
+  try {
+    progressData = await dependencies.findTripProgressData(tripId);
+  } catch {
+    return {
+      httpStatus: 500,
+      body: {
+        success: false,
+        errorCode: "DB_ERROR",
+        message: "운행 정보를 조회하지 못했습니다.",
+        timestamp,
+      },
+    };
+  }
+
   if (!progressData) {
     return {
       httpStatus: 404,
@@ -181,6 +195,34 @@ export async function updateTripStatus(
     };
   }
 
+  // 멱등성 우선: 이미 처리된 requestId는 그 사이 트립이 CANCELLED/TRIP_DONE으로
+  // 바뀌었더라도 항상 캐시된 성공 응답을 그대로 반환한다. 상태 종료 체크는
+  // "새 요청"에만 적용된다 (아래 CANCELLED 체크, 그리고 TRIP_DONE은 DB 함수에서 처리).
+  let duplicate: LocationLogLookup | null;
+  try {
+    duplicate = await dependencies.findLocationLogByRequestId(tripId, parsed.data.requestId);
+  } catch {
+    return {
+      httpStatus: 500,
+      body: {
+        success: false,
+        errorCode: "DB_ERROR",
+        message: "중복 요청 확인에 실패했습니다.",
+        timestamp,
+      },
+    };
+  }
+
+  if (duplicate) {
+    return {
+      httpStatus: 200,
+      body: toResponseBody(progressData, {
+        message: "이미 처리된 위치 업데이트입니다.",
+        timestamp,
+      }),
+    };
+  }
+
   if (progressData.status.tripStatus === TRIP_STATUS.CANCELLED) {
     return {
       httpStatus: 409,
@@ -190,17 +232,6 @@ export async function updateTripStatus(
         message: "종료된 운행의 위치는 갱신할 수 없습니다.",
         timestamp,
       },
-    };
-  }
-
-  const duplicate = await dependencies.findLocationLogByRequestId(tripId, parsed.data.requestId);
-  if (duplicate) {
-    return {
-      httpStatus: 200,
-      body: toResponseBody(progressData, {
-        message: "이미 처리된 위치 업데이트입니다.",
-        timestamp,
-      }),
     };
   }
 
