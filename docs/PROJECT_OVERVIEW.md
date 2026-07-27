@@ -31,6 +31,7 @@
 - 중간평가에서는 환승 없는 직행 버스 후보만 사용한다.
 - OpenAI가 여러 실제 후보 중 시각장애인 편의 기준으로 최종 후보 2개를 선택한다.
 - 사용자가 선택한 후보로 운행을 생성하고 GBIS 도착정보를 내부 조회한다.
+- 선택한 버스에 매칭된 비콘 ID를 스마트지팡이에 전달하고, BLE 신호 세기(RSSI)에 따라 진동으로 버스 접근을 안내한다.
 - mock GPS 또는 GPS 위치 업데이트로 현재·다음·남은 정류장을 계산한다.
 - 하차 2정거장 전에는 사전 안내만 제공하고, 1정거장 전에는 `STOP_REQUEST`를 생성한다.
 - BLE 또는 mock 하차벨로 하차 요청 흐름을 시연한다.
@@ -51,6 +52,9 @@
 -> POST /api/trips 내부에서 getArrivalInfo(selectedCandidate) 호출
 -> gbisStationId, predictedArrivalMinutes 확보 또는 null 저장
 -> 운행 생성 및 tripStatus = WAITING_BUS, bellStatus = NOT_REQUESTED
+-> 백엔드가 선택 노선에 매칭된 비콘 ID(targetBeaconId) 조회
+-> 앱이 스마트지팡이 ESP32에 targetBeaconId 전달
+-> 스마트지팡이 ESP32가 BLE 비콘 스캔 후 RSSI로 접근 판단, 진동 세기 조절
 -> 앱이 mock GPS 또는 실제 GPS 좌표를 PATCH /api/trips/{tripId}/status로 전송
 -> 백엔드가 현재·다음·남은 정류장 계산
 -> remainingStations = 2이면 사전 안내
@@ -71,11 +75,12 @@
 
 원격 `claude/nice-archimedes-iv7iu0` 브랜치 기준으로 `apps/mobile`, `apps/server`, `packages/shared` 초기 모노레포 스캐폴드가 확인되었습니다. 실제 외부 API, DB, BLE 연동 완성 여부는 코드와 실행 결과 기준으로 추가 확인이 필요합니다.
 
-- 중간평가 필수: 앱 목적지 입력, 경로 검색, 최종 후보 2개 안내, 운행 생성, mock 위치 업데이트, 하차 판단, TTS 안내
-- 중간평가 mock: 비콘 ID, 하차벨 결과, mock GPS 이동
-- 중간평가 이후: 실제 스마트지팡이 BLE 연결, RSSI 진동, 실물 하차벨, 차량 단위 비콘 매칭
+- 7/1 중간평가 완료 항목: 앱 목적지 입력, 경로 검색, 최종 후보 2개 안내, 운행 생성, mock 위치 업데이트, 하차 판단, TTS 안내
+- 현재 진행 목표: mock 데이터를 실제 데이터로 전환. 버스 비콘 실 연동이 최우선(`bus_beacons` 실DB 조회 경로는 연결됨, 정민 실물 비콘 데이터 반영 전까지는 mock 행으로 대체)
+- 아직 실물 연동 전: 스마트지팡이 BLE 연결, RSSI 진동, 실물 하차벨, 차량 단위 비콘 매칭
 
 ## 중간평가와 최종평가 범위
 
 - 중간평가: 하나의 완성된 소프트웨어 흐름을 보여준다. 실제 하드웨어 작동보다 앱·백엔드·외부 API·AI·mock 이동·하차 판단 연결을 우선한다.
 - 최종평가: 실제 ESP32, BLE, 스마트지팡이 진동, 하차벨 모형 연동까지 포함한다.
+- 현재 단계: 중간평가 완료, 최종평가를 향한 실 데이터 연동(특히 버스 비콘) 진행 중.

@@ -144,11 +144,15 @@ supabase/         DB 마이그레이션
 -> 후보 경로 검증
 -> OpenAI API가 최종 후보 2개 선택
 -> 경로와 버스 정보 반환
+-> 백엔드가 선택 노선의 비콘 ID(targetBeaconId) 조회
+-> 앱이 스마트지팡이 ESP32에 targetBeaconId 전달
+-> 스마트지팡이 ESP32가 BLE 비콘 스캔, RSSI 기반 접근 판단
+-> 스마트지팡이 진동 세기 조절로 버스 접근 안내
 -> 버스 이동 상태 추적
 -> 하차 정류장 접근 판단
 -> TTS 안내
--> BLE 또는 mock 하차벨
--> ESP32 진동 또는 하차벨 신호
+-> BLE 또는 mock 하차벨로 STOP_REQUEST 전달
+-> 버스측 ESP32 LED·부저 작동(하차벨)
 ```
 
 ## 문서 선택 기준
