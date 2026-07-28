@@ -39,6 +39,9 @@ Thumbs.db
 *.swp
 *.swo
 
+# Local Git worktrees
+.worktrees/
+
 # Logs
 *.log
 npm-debug.log*
