@@ -1,5 +1,7 @@
 ﻿# 7/1 중간평가 개발 범위
 
+> 역사 문서: 이 문서는 2026-07-01 중간평가 범위를 기록한다. 현재 API·상태·Realtime 계약은 [PROJECT_OVERVIEW.md](PROJECT_OVERVIEW.md), [API_SPEC.md](API_SPEC.md), [DB_SCHEMA.md](DB_SCHEMA.md)를 우선한다.
+
 이 문서는 2026년 7월 1일 중간평가에서 구현하고 시연할 범위를 정리합니다. 목표는 기능 수를 늘리는 것이 아니라, 사용자 입력부터 하차 판단까지 하나의 핵심 흐름이 실제로 연결되어 동작하는 모습을 보여주는 것입니다.
 
 > 중간평가는 완료되었습니다. 이 문서는 당시 범위를 기록한 것이며, 현재 목표(mock 데이터를 실제 데이터로 전환, 버스 비콘 실 연동 우선)는 [PROJECT_OVERVIEW.md](PROJECT_OVERVIEW.md)의 "현재 구현 범위"를 기준으로 합니다.
