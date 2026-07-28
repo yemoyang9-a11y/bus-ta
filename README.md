@@ -2,7 +2,7 @@
 
 이 저장소는 시각장애인이 버스를 이용할 때 겪는 버스 식별, 경로 선택, 이동 중 위치 확인, 하차 시점 판단의 어려움을 줄이기 위한 한이음 프로젝트입니다.
 
-현재 문서는 Notion의 최신 확정 내용과 2026-06-25 ODsay 연동 규칙을 기준으로 동기화한 GitHub 문서입니다. 원격 `claude/nice-archimedes-iv7iu0` 브랜치에는 `apps/mobile`, `apps/server`, `packages/shared` 기반 초기 모노레포 스캐폴드가 포함되어 있습니다.
+최종 개발 계약은 Notion 프로젝트 관리의 6개 핵심 문서와 아래 GitHub `docs/` 동기화 문서입니다. 코드의 현재 동작은 `claude/nice-archimedes-iv7iu0`와 실제 Supabase 적용 상태로 별도 확인합니다.
 
 ## 주요 기능
 
@@ -123,15 +123,20 @@ cp .env.example .env
 - `GBIS_SERVICE_KEY`
 - `OPENAI_API_KEY`
 
-## 주요 문서 링크
+## 최종 개발 문서
 
-- [프로젝트 개요](docs/PROJECT_OVERVIEW.md)
+- [프로젝트 개요 및 전체 흐름](docs/PROJECT_OVERVIEW.md)
+- [공통 API 및 Function Calling 명세](docs/API_SPEC.md)
+- [공통 데이터 모델 및 상태 명세](docs/DB_SCHEMA.md)
+- [모듈 계약과 책임 경계](docs/MODULE_CONTRACTS.md)
+- [프론트엔드 개발 지침](docs/FRONTEND_GUIDE.md)
+- [GPT-Realtime mini 개발 가이드](docs/REALTIME_GUIDE.md)
+- [개발 규칙 및 협업 컨벤션](docs/DEVELOPMENT_RULES.md)
+
+## 참고·이력 문서
+
 - [7/1 중간평가 범위](docs/MIDTERM_SCOPE.md)
 - [아키텍처](docs/ARCHITECTURE.md)
-- [API 명세](docs/API_SPEC.md)
-- [DB 스키마](docs/DB_SCHEMA.md)
-- [개발 규칙](docs/DEVELOPMENT_RULES.md)
-- [모듈 계약](docs/MODULE_CONTRACTS.md)
 - [시연 시나리오](docs/DEMO_SCENARIO.md)
 - [오류 해결 기록](docs/TROUBLESHOOTING.md)
 - [기여 가이드](CONTRIBUTING.md)

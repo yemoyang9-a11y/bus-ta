@@ -1,5 +1,7 @@
 ﻿# 아키텍처
 
+> 참고 문서: 과거 구조 설명을 보존한다. 현재 역할·Realtime·상태 계약은 [PROJECT_OVERVIEW.md](PROJECT_OVERVIEW.md), [API_SPEC.md](API_SPEC.md), [DB_SCHEMA.md](DB_SCHEMA.md)를 우선한다.
+
 이 문서는 React Native 앱, Node.js/Express 백엔드, 외부 API, DB, BLE/ESP32 연동 구조를 설명합니다.
 
 ## 전체 흐름
