@@ -16,7 +16,7 @@ const baseStatus: TripProgressData["status"] = {
   currentStation: DEMO_ROUTE.stationList[1]!,
   nextStation: DEMO_ROUTE.stationList[2]!,
   remainingStations: 2,
-  tripStatus: TRIP_STATUS.NEAR_DESTINATION,
+  tripStatus: TRIP_STATUS.ON_BUS,
   bellStatus: BELL_STATUS.NOT_REQUESTED,
   bellRequestId: null,
   command: null,
@@ -34,7 +34,7 @@ test("returns the current trip status without triggering a bell", async () => {
 
   assert.equal(result.httpStatus, 200);
   if (result.httpStatus !== 200) return;
-  assert.equal(result.body.tripStatus, TRIP_STATUS.NEAR_DESTINATION);
+  assert.equal(result.body.tripStatus, TRIP_STATUS.ON_BUS);
   assert.equal(result.body.remainingStations, 2);
   assert.equal(result.body.bellStatus, BELL_STATUS.NOT_REQUESTED);
   assert.equal(result.body.shouldTriggerBell, false);
@@ -67,6 +67,24 @@ test("returns bellRequestId and command when a bell request is pending", async (
   assert.equal(result.body.command, null);
   assert.equal(result.body.shouldTriggerBell, false);
   assert.equal(result.body.guideMessage, "하차벨 요청 결과를 기다리고 있습니다.");
+});
+
+test("returns a cancellation guide message for a cancelled trip", async () => {
+  const result = await getTripStatus("trip-test-001", {
+    findTripProgressData: async () => ({
+      trip: baseTrip,
+      status: {
+        ...baseStatus,
+        tripStatus: TRIP_STATUS.CANCELLED,
+      },
+    }),
+    now: () => "2026-07-25T12:12:00.000Z",
+  });
+
+  assert.equal(result.httpStatus, 200);
+  if (result.httpStatus !== 200) return;
+  assert.equal(result.body.tripStatus, TRIP_STATUS.CANCELLED);
+  assert.equal(result.body.guideMessage, "운행 안내가 종료되었습니다.");
 });
 
 test("returns 404 for an unknown tripId", async () => {

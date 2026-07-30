@@ -115,8 +115,8 @@ apps/server/src/
 ### 로컬 실행 방법
 ```bash
 # apps/server/.env (커밋 금지)
-SUPABASE_URL=https://nsbemlqidbepttjfyumt.supabase.co
-SUPABASE_SERVICE_ROLE_KEY=sb_secret_...   # 대시보드 Settings > API Keys > Secret keys
+SUPABASE_URL=<Supabase 프로젝트 URL, 대시보드 Settings > API Keys 에서 확인>
+SUPABASE_SERVICE_ROLE_KEY=<Secret key, 대시보드 Settings > API Keys > Secret keys 에서 확인>
 PORT=3000
 # 실행
 pnpm --filter @bus-ta/server dev

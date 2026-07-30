@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import type { Route } from "@bus-ta/shared";
 import { searchRoutes } from "./search-routes.service.js";
 import { mockSearchRoutes } from "../../adapters/routes/mock-route-search.adapter.js";
 
@@ -9,27 +10,90 @@ const validRequest = {
   longitude: 127.03,
 };
 
-test("returns mock route candidates for a valid request", async () => {
+test("returns guided route candidates for a valid request", async () => {
   const result = await searchRoutes(validRequest, {
     searchRoutes: mockSearchRoutes,
+    generateRouteGuide: async () => ({
+      selectedCandidates: [
+        { candidateId: 2, guideMessage: "2번 후보 안내입니다." },
+        { candidateId: 1, guideMessage: "1번 후보 안내입니다." },
+      ],
+    }),
     now: () => "2026-07-01T15:10:00+09:00",
   });
 
   assert.equal(result.httpStatus, 200);
   if (result.httpStatus !== 200) return;
   assert.equal(result.body.success, true);
-  assert.equal(result.body.destination, "수원대");
+  assert.deepEqual(
+    result.body.routes.map((route) => route.candidateId),
+    [2, 1],
+  );
+  assert.deepEqual(
+    result.body.routes.map((route) => route.guideMessage),
+    ["2번 후보 안내입니다.", "1번 후보 안내입니다."],
+  );
+  assert.equal(result.body.routes[0]?.recommendationReason, undefined);
+});
+
+test("limits guided route candidates to at most 2", async () => {
+  const baseRoutes = await mockSearchRoutes(validRequest);
+  const firstRoute = baseRoutes[0];
+  assert.ok(firstRoute);
+
+  const routes: Route[] = [
+    ...baseRoutes,
+    { ...firstRoute, candidateId: 3, routeNo: "3" },
+  ];
+
+  const result = await searchRoutes(validRequest, {
+    searchRoutes: async () => routes,
+    generateRouteGuide: async () => ({
+      selectedCandidates: [
+        { candidateId: 1, guideMessage: "1번 후보 안내입니다." },
+        { candidateId: 2, guideMessage: "2번 후보 안내입니다." },
+        { candidateId: 3, guideMessage: "3번 후보 안내입니다." },
+      ],
+    }),
+  });
+
+  assert.equal(result.httpStatus, 200);
+  if (result.httpStatus !== 200) return;
   assert.equal(result.body.routes.length, 2);
   assert.deepEqual(
     result.body.routes.map((route) => route.candidateId),
     [1, 2],
   );
-  for (const route of result.body.routes) {
-    assert.ok(route.routeNo);
-    assert.ok(route.localBusId);
-    assert.ok(route.gbisStationId);
-    assert.ok(route.stationList.length >= 2);
-  }
+});
+
+test("falls back to the first 2 routes when guide selection is empty", async () => {
+  const result = await searchRoutes(validRequest, {
+    searchRoutes: mockSearchRoutes,
+    generateRouteGuide: async () => ({ selectedCandidates: [] }),
+  });
+
+  assert.equal(result.httpStatus, 200);
+  if (result.httpStatus !== 200) return;
+  assert.deepEqual(
+    result.body.routes.map((route) => route.candidateId),
+    [1, 2],
+  );
+});
+
+test("falls back when guide returns unknown candidate ids", async () => {
+  const result = await searchRoutes(validRequest, {
+    searchRoutes: mockSearchRoutes,
+    generateRouteGuide: async () => ({
+      selectedCandidates: [{ candidateId: 999, guideMessage: "없는 후보입니다." }],
+    }),
+  });
+
+  assert.equal(result.httpStatus, 200);
+  if (result.httpStatus !== 200) return;
+  assert.deepEqual(
+    result.body.routes.map((route) => route.candidateId),
+    [1, 2],
+  );
 });
 
 test("returns 400 for an invalid request", async () => {

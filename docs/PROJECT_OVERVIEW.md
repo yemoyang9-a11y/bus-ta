@@ -1,81 +1,45 @@
-﻿# 프로젝트 개요
+# 프로젝트 개요 및 전체 흐름
 
-이 문서는 프로젝트의 배경, 목표, 사용자, 전체 서비스 흐름을 설명합니다. 세부 API는 [API_SPEC.md](API_SPEC.md), DB 구조는 [DB_SCHEMA.md](DB_SCHEMA.md), 7/1 중간평가 범위는 [MIDTERM_SCOPE.md](MIDTERM_SCOPE.md)를 기준으로 합니다.
+> 문서 상태: 최종 개발 기준. 세부 API와 데이터 계약은 [API_SPEC.md](API_SPEC.md), [DB_SCHEMA.md](DB_SCHEMA.md)를 따른다.
 
-## 프로젝트 배경
+## 목적
 
-시각장애인은 버스를 이용할 때 버스 번호 식별, 탑승 판단, 이동 중 현재 위치 확인, 하차 시점 인지에 어려움을 겪습니다. 특히 여러 버스가 동시에 정류장에 진입하거나 안내 방송을 놓치는 경우, 잘못 탑승하거나 하차 시점을 놓칠 위험이 있습니다.
+시각장애인이 음성 대화로 목적지를 입력하고, 버스 탐색·탑승·이동·하차를 안내받도록 모바일 앱, 백엔드, GPT-Realtime mini, BLE 하드웨어를 연결한다. AI는 사용자의 의도를 이해하고 안내하지만, 경로·운행 상태·하차 시점의 사실 판단은 백엔드가 담당한다.
 
-본 프로젝트는 모바일 앱, 백엔드, 지도·버스 API, OpenAI 안내 모듈, BLE·ESP32 하드웨어를 결합해 버스 탑승과 하차를 보조하는 접근성 지원 시스템을 목표로 합니다.
-
-## 해결하려는 문제
-
-- 화면 조작 없이 목적지를 입력하기 어려운 문제
-- 목적지까지 이동 가능한 버스 경로를 빠르게 파악하기 어려운 문제
-- 버스 탑승 후 현재 정류장과 남은 정류장 수를 확인하기 어려운 문제
-- 하차 1정거장 전 안내와 하차벨 신호를 놓칠 수 있는 문제
-- 스마트지팡이, 버스 비콘, 하차벨 모형을 앱 흐름과 연결해야 하는 문제
-
-## 주요 사용자
-
-- 버스를 이용하는 시각장애인
-- 시각장애인 이동 보조 서비스를 검증하는 팀원
-- 한이음 멘토와 중간·최종평가 평가자
-- 향후 스마트지팡이 및 대중교통 접근성 서비스를 연구하는 사용자
-
-## 프로젝트 목표
-
-- 사용자가 음성으로 목적지를 입력한다.
-- 카카오 로컬 API로 목적지 좌표를 변환한다.
-- ODsay로 대중교통 경로 후보를 조회한다.
-- 중간평가에서는 환승 없는 직행 버스 후보만 사용한다.
-- OpenAI가 여러 실제 후보 중 시각장애인 편의 기준으로 최종 후보 2개를 선택한다.
-- 사용자가 선택한 후보로 운행을 생성하고 GBIS 도착정보를 내부 조회한다.
-- mock GPS 또는 GPS 위치 업데이트로 현재·다음·남은 정류장을 계산한다.
-- 하차 2정거장 전에는 사전 안내만 제공하고, 1정거장 전에는 `STOP_REQUEST`를 생성한다.
-- BLE 또는 mock 하차벨로 하차 요청 흐름을 시연한다.
-
-## 전체 서비스 흐름
+## 최종 사용자 흐름
 
 ```text
-사용자가 앱에서 목적지를 음성으로 입력
--> STT가 목적지 텍스트로 변환
--> 앱이 destination, latitude, longitude를 백엔드에 전송
--> 백엔드가 카카오 로컬 API로 목적지 좌표 변환
--> 백엔드가 효린 searchRoutes(destination, latitude, longitude) 호출
--> 효린 모듈이 ODsay로 경로 후보 조회
--> 백엔드가 직행 버스 후보와 stationList 검증
--> 유나 OpenAI 모듈이 최종 후보 2개 선택 및 안내 문장 생성
--> 앱이 최종 후보 2개를 표시하고 TTS로 안내
--> 사용자가 노선 선택
--> POST /api/trips 내부에서 getArrivalInfo(selectedCandidate) 호출
--> gbisStationId, predictedArrivalMinutes 확보 또는 null 저장
--> 운행 생성 및 tripStatus = WAITING_BUS, bellStatus = NOT_REQUESTED
--> 앱이 mock GPS 또는 실제 GPS 좌표를 PATCH /api/trips/{tripId}/status로 전송
--> 백엔드가 현재·다음·남은 정류장 계산
--> remainingStations = 2이면 사전 안내
--> remainingStations = 1이면 bellRequestId와 STOP_REQUEST 생성
--> 앱이 BLE 또는 mock 하차벨에 명령 전달
--> 앱이 POST /bell/result로 결과 저장
--> TTS 하차 안내 제공
+앱 실행 → 권한 확인 → Realtime 음성 세션 연결 → 목적지 대화 입력
+→ 경로 후보 안내 → 사용자 선택 → 운행 생성 → 버스 접근 안내
+→ GPS 상태 업데이트 → 하차 준비 안내·하차벨 요청 → 도착 또는 운행 취소
 ```
 
-## 기대 효과
+## 구성 요소와 책임
 
-- 시각장애인의 버스 이용 독립성을 높인다.
-- 음성 안내와 촉각·하차벨 신호를 결합해 하차 실패 가능성을 줄인다.
-- 앱, 백엔드, 외부 API, AI, BLE 하드웨어가 연결된 시연 가능한 프로토타입을 만든다.
-- 중간평가에서는 하드웨어 없이도 핵심 소프트웨어 흐름을 검증할 수 있다.
+- **프론트엔드**: 접근성 UI, 마이크·위치·BLE 권한, Realtime WebRTC 연결, Function/Event Dispatcher, GPS·BLE 결과 전송.
+- **GPT-Realtime mini (`gpt-realtime-mini`)**: 음성 대화, 의도 파악, 정의된 Function 선택, 백엔드 결과의 음성 안내. 운행 정보를 임의 생성하거나 상태를 확정하지 않는다.
+- **백엔드**: Realtime 단기 키 발급, 경로·도착 정보 조회, 운행·상태·하차벨 관리, DB 저장, 외부 API 오류 처리.
+- **하드웨어**: 버스 비콘 송출, 스마트지팡이의 대상 비콘 감지·진동, 하차벨 BLE 명령 처리. 감지 결과를 서버에 저장하는 공개 API는 아직 확정되지 않았다.
 
-## 현재 구현 범위
+## 시스템 흐름
 
-원격 `claude/nice-archimedes-iv7iu0` 브랜치 기준으로 `apps/mobile`, `apps/server`, `packages/shared` 초기 모노레포 스캐폴드가 확인되었습니다. 실제 외부 API, DB, BLE 연동 완성 여부는 코드와 실행 결과 기준으로 추가 확인이 필요합니다.
+1. 앱은 `POST /api/realtime/session`으로 단기 키를 받고 WebRTC 세션을 연다. OpenAI API 키는 백엔드에만 둔다.
+2. 모델의 Function 호출을 앱 내부 Dispatcher가 받아 REST API를 호출하고, 결과를 Realtime 세션에 반환한다.
+3. `search_routes` → `POST /api/routes/search`, `create_trip` → `POST /api/trips`, `get_trip_status` → `GET /api/trips/{tripId}`, `end_trip` → `PATCH /api/trips/{tripId}`로 연결한다.
+4. 탑승 후 앱은 약 3초 간격으로 `PATCH /api/trips/{tripId}/status`를 호출한다. 백엔드가 상태와 하차벨 생성 여부를 결정한다.
+5. `remainingStations = 1`에서 새 하차벨 요청이 생성되면 앱은 `STOP_REQUEST`를 BLE 또는 mock 장치에 전달하고, 결과를 `POST /api/trips/{tripId}/bell/result`로 기록한다.
 
-- 중간평가 필수: 앱 목적지 입력, 경로 검색, 최종 후보 2개 안내, 운행 생성, mock 위치 업데이트, 하차 판단, TTS 안내
-- 중간평가 mock: 비콘 ID, 하차벨 결과, mock GPS 이동
-- 중간평가 이후: 실제 스마트지팡이 BLE 연결, RSSI 진동, 실물 하차벨, 차량 단위 비콘 매칭
+## 구현 상태 표기
 
-## 중간평가와 최종평가 범위
+- 문서의 계약과 현재 구현 사실은 구분한다. 현재 사실은 `claude/nice-archimedes-iv7iu0` 코드, `packages/shared`, 테스트 및 실제 Supabase 적용 상태로 확인한다.
+- `POST /api/realtime/session`은 계약이 확정됐지만 구현 여부는 별도 확인 대상이다.
+- 중간평가·mock 중심 문서는 역사적 범위 설명이며, 현재 계약 판단에는 이 문서와 아래의 최종 명세를 사용한다.
 
-- 중간평가: 하나의 완성된 소프트웨어 흐름을 보여준다. 실제 하드웨어 작동보다 앱·백엔드·외부 API·AI·mock 이동·하차 판단 연결을 우선한다.
-- 최종평가: 실제 ESP32, BLE, 스마트지팡이 진동, 하차벨 모형 연동까지 포함한다.
+## 문서 체계
+
+- [API 및 Function Calling 명세](API_SPEC.md)
+- [공통 데이터 모델 및 상태 명세](DB_SCHEMA.md)
+- [모듈 계약과 책임 경계](MODULE_CONTRACTS.md)
+- [프론트엔드 개발 지침](FRONTEND_GUIDE.md)
+- [GPT-Realtime mini 개발 가이드](REALTIME_GUIDE.md)
+- [개발 규칙 및 협업 컨벤션](DEVELOPMENT_RULES.md)

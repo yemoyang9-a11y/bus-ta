@@ -137,7 +137,7 @@ created_at              datetime    로그 생성 시각
 
 ## bus_beacons
 
-노선·차량과 비콘 ID를 매칭합니다.
+노선·차량과 비콘 ID를 매칭합니다. `GET /api/beacons?routeNo=`는 Supabase 환경변수가 설정된 경우 이 테이블에서 `status = ACTIVE`인 최신 행을 조회하고, 설정되지 않은 경우에만 `packages/shared/src/fixtures/demo-beacon.ts`의 fixture로 대체합니다. 현재 이 테이블에는 시연 노선 1551의 mock 행 1건만 시드되어 있습니다(`supabase/migrations/20260716_seed_bus_beacons.sql`).
 
 ```text
 beacon_id               string      PK

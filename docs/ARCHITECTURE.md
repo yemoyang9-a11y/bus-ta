@@ -1,5 +1,7 @@
 ﻿# 아키텍처
 
+> 참고 문서: 과거 구조 설명을 보존한다. 현재 역할·Realtime·상태 계약은 [PROJECT_OVERVIEW.md](PROJECT_OVERVIEW.md), [API_SPEC.md](API_SPEC.md), [DB_SCHEMA.md](DB_SCHEMA.md)를 우선한다.
+
 이 문서는 React Native 앱, Node.js/Express 백엔드, 외부 API, DB, BLE/ESP32 연동 구조를 설명합니다.
 
 ## 전체 흐름
@@ -16,6 +18,9 @@
 -> 사용자가 경로 선택
 -> POST /api/trips 내부에서 GBIS 도착정보 조회
 -> DB에 운행 생성
+-> 백엔드가 선택 노선의 비콘 ID(targetBeaconId) 조회
+-> 앱이 스마트지팡이 ESP32에 targetBeaconId 전달
+-> 스마트지팡이 ESP32가 BLE 비콘 스캔, RSSI 기반 접근 판단 및 진동 안내
 -> mock GPS 또는 GPS 위치 업데이트
 -> 하차 정류장 접근 판단
 -> TTS 안내
@@ -107,15 +112,22 @@ DB는 Supabase PostgreSQL 기준입니다.
 - `trips`: 선택한 노선, 목적지, 탑승·하차 정류장, 전체 정류장 목록 저장
 - `trip_status`: 현재 정류장, 다음 정류장, 남은 정류장 수, `trip_status`, `bell_status` 저장
 - `bell_logs`: 하차벨 요청과 결과 기록
-- `bus_beacons`: 노선·차량과 비콘 ID 매칭, 중간평가에서는 mock 가능
+- `bus_beacons`: 노선·차량과 비콘 ID 매칭, 실DB 조회 경로 연결됨(중간평가 이후 실 데이터 연동 진행 중, 정민 실물 비콘 준비 전까지는 mock 행 유지)
 - `location_logs`: 위치 업데이트 로그, 선택
 - `system_logs`: 서버 및 외부 API 오류 기록, 선택
 
 상세 스키마는 [DB_SCHEMA.md](DB_SCHEMA.md)를 기준으로 합니다.
 
+## 하드웨어 구성
+
+ESP32는 총 2대로 구성됩니다.
+
+- 버스측 ESP32(비콘 + 하차벨 겸용): 고유 비콘 ID(`BUS_{routeToken}_{vehicleToken}`) 송출과, 앱의 `STOP_REQUEST` 신호 수신 후 LED·부저 작동을 함께 담당
+- 스마트지팡이 ESP32: `targetBeaconId` 수신, 주변 BLE 비콘 스캔, RSSI 측정, 진동 모터 제어 담당
+
 ## BLE 및 ESP32 연동 구조
 
-중간평가에서는 실제 BLE 하드웨어 연동을 필수 구현 범위에서 제외하고 mock 비콘과 mock 하차벨로 연결 구조를 검증합니다.
+7/1 중간평가에서는 실제 BLE 하드웨어 연동을 필수 구현 범위에서 제외하고 mock 비콘과 mock 하차벨로 연결 구조를 검증했습니다. 중간평가 완료 이후 현재는 실제 비콘 데이터 연동이 목표이며, 정민의 실물 비콘 준비가 끝나는 대로 `bus_beacons` 실 데이터로 전환합니다.
 
 최종 구조:
 

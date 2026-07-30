@@ -1,4 +1,4 @@
-import { API_PATHS } from "@bus-ta/shared";
+import { API_PATHS, type BeaconsListResponse } from "@bus-ta/shared";
 
 declare const process: {
   env: {
@@ -84,6 +84,7 @@ export const apiClient = {
     },
   },
   beacons: {
-    list: () => request(API_PATHS.beacons.list),
+    list: (routeNo: string) =>
+      request<BeaconsListResponse>(API_PATHS.beacons.list(routeNo)),
   },
 };

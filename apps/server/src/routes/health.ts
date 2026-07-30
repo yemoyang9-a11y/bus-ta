@@ -10,6 +10,7 @@ export interface HealthResponseBody {
   success: boolean;
   serverStatus: "UP";
   dbStatus: SupabaseConnectionStatus["dbStatus"];
+  errorCode?: "DB_ERROR";
   message: string;
   timestamp: string;
 }
@@ -30,6 +31,7 @@ export function buildHealthResponse(
         success: false,
         serverStatus: "UP",
         dbStatus: dbConnection.dbStatus,
+        errorCode: "DB_ERROR",
         message: dbConnection.message,
         timestamp,
       },

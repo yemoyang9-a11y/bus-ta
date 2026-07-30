@@ -54,6 +54,7 @@ test("returns a failed health response when Supabase is configured but unreachab
     success: false,
     serverStatus: "UP",
     dbStatus: "DOWN",
+    errorCode: "DB_ERROR",
     message: "Supabase connection failed",
     timestamp: "2026-07-01T14:30:00+09:00",
   });
