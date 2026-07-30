@@ -1,31 +1,23 @@
 import React, { useRef } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import * as Speech from 'expo-speech';
-import axios from 'axios';
 import { useFocusEffect } from '@react-navigation/native';
-
-// =============================================
-// [백엔드 연결 시 수정 1] API 주소 변경
-// 'http://백엔드IP:포트' → ngrok 주소로 변경
-// 예: 'https://abc123.ngrok.io'
-// =============================================
-const API_BASE_URL = 'http://백엔드IP:포트';
+import { apiClient, ApiError } from '../api/client';
 
 export default function AlightScreen({ route, navigation }) {
   // RidingScreen에서 전달받은 값들
   // - tripId: 운행 ID
   // - bellRequestId: 백엔드가 PATCH /status에서 생성한 하차벨 요청 ID
   // - command: 백엔드가 반환한 STOP_REQUEST 값
-  // - guideMessage: 백엔드 안내 문장 (유나 AI 모듈 생성)
+  // - guideMessage: 백엔드 안내 문장 (유나 AI 모듈 생성, 탑승 중 화면용 문장)
   const { tripId, bellRequestId, command, guideMessage } = route.params;
   const resultSentRef = useRef(false); // 중복 전송 방지
 
   useFocusEffect(
     React.useCallback(() => {
       const timer = setTimeout(() => {
-        // guideMessage가 있으면 백엔드(유나) 안내 문장 우선 출력
-        // 없으면 기본 안내 문장 출력
-        const ttsMessage = guideMessage || '하차까지 한 정류장 남았습니다. 다음 정류장에서 하차하세요.';
+        // 하차 안내 화면 전용 TTS 문장 (탑승 중 화면과 중복되지 않도록 별도 문장 사용)
+        const ttsMessage = '하차벨을 요청했습니다. 안전하게 하차하세요.';
         Speech.speak(ttsMessage, {
           language: 'ko',
           onDone: () => {
@@ -46,26 +38,35 @@ export default function AlightScreen({ route, navigation }) {
   // - bellRequestId: 백엔드가 PATCH /status에서 생성한 값 (프론트에서 생성 금지)
   // - command: 백엔드가 반환한 STOP_REQUEST 값
   // - bellStatus: PENDING → SUCCESS 로 변경됨
+  // TODO(Phase 7): 실제 BLE 스마트지팡이 결과로 대체. 현재는 mock 성공 결과를 보낸다.
   const sendBellResult = async () => {
     if (resultSentRef.current) return; // 중복 전송 방지
     resultSentRef.current = true;
 
     try {
-      // =============================================
-      // [백엔드 연결 시 수정 2] 아래 주석 해제
-      // =============================================
-      // await axios.post(`${API_BASE_URL}/api/trips/${tripId}/bell/result`, {
-      //   bellRequestId,   // 백엔드가 생성한 bellRequestId (프론트 생성 금지)
-      //   command,         // 백엔드가 반환한 STOP_REQUEST
-      //   result: 'SUCCESS',
-      //   resultMessage: 'mock 하차벨 작동 성공',
-      //   isMock: true,
-      //   timestamp: new Date().toISOString(),
-      // });
-
-      // [백엔드 연결 시 수정 3] 아래 console.log 삭제
-      console.log('bell/result 전송 완료 (mock):', { tripId, bellRequestId, command });
+      await apiClient.trips.bell.result(tripId, {
+        bellRequestId,
+        command,
+        result: 'SUCCESS',
+        resultMessage: 'mock 하차벨 작동 성공',
+        isMock: true,
+        timestamp: new Date().toISOString(),
+      });
     } catch (error) {
+      // errorCode별 처리 (13.2)
+      if (error instanceof ApiError) {
+        if (error.errorCode === 'BELL_REQUEST_NOT_FOUND') {
+          // bellRequestId가 유효하지 않음 — 재시도해도 소용없으므로 재전송하지 않는다
+          console.log('하차벨 요청을 찾을 수 없습니다:', bellRequestId);
+          return;
+        }
+        if (error.errorCode === 'INVALID_BELL_STATE') {
+          // 이미 SUCCESS·FAIL로 처리됨 — 재전송하지 않는다
+          console.log('이미 처리된 하차벨 요청입니다:', bellRequestId);
+          return;
+        }
+      }
+      // 네트워크 실패 등은 재시도 가능하도록 플래그 되돌림
       console.log('bell/result 전송 실패:', error);
       resultSentRef.current = false;
     }
@@ -76,7 +77,7 @@ export default function AlightScreen({ route, navigation }) {
       <Text style={styles.emoji}>🚨</Text>
       <Text style={styles.title}>하차 안내</Text>
       <Text style={styles.message}>
-        {guideMessage || '다음 정류장에서 하차하세요.'}
+        하차벨을 요청했습니다. 안전하게 하차하세요.
       </Text>
 
       <View style={styles.infoBox}>

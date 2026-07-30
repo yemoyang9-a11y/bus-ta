@@ -2,14 +2,7 @@ import React, { useState } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, FlatList, ActivityIndicator } from 'react-native';
 import * as Speech from 'expo-speech';
 import { useFocusEffect } from '@react-navigation/native';
-import axios from 'axios';
-
-// =============================================
-// [백엔드 연결 시 수정 1] API 주소 변경
-// 'http://백엔드IP:포트' → ngrok 주소로 변경
-// 예: 'https://abc123.ngrok.io'
-// =============================================
-const API_BASE_URL = 'http://백엔드IP:포트';
+import { apiClient, ApiError } from '../api/client';
 
 export default function RouteListScreen({ route, navigation }) {
   // ConfirmScreen에서 전달받은 값들
@@ -37,32 +30,41 @@ export default function RouteListScreen({ route, navigation }) {
 
   // 노선 선택 시 POST /api/trips 호출 후 탑승 중 화면으로 이동
   const selectRoute = async (selectedRoute) => {
+    Speech.stop();
+    setLoading(true);
+
     try {
-      Speech.stop();
+      // 공통 API 명세서 5.2 기준 필드만 전달 (guideMessage·recommendationReason 등
+      // 스펙에 없는 필드는 보내지 않는다 — 백엔드 스키마 검증 대상이 아님)
+      const tripRequest = {
+        destination: destinationText || selectedRoute.destinationStation?.stationName,
+        candidateId: selectedRoute.candidateId,
+        routeNo: selectedRoute.routeNo,
+        localBusId: selectedRoute.localBusId,
+        gbisStationId: selectedRoute.gbisStationId,
+        boardingStation: selectedRoute.boardingStation,
+        destinationStation: selectedRoute.destinationStation,
+        stationList: selectedRoute.stationList,
+        totalTime: selectedRoute.totalTime,
+        totalWalk: selectedRoute.totalWalk,
+        payment: selectedRoute.payment,
+        busTransitCount: selectedRoute.busTransitCount,
+        busStationCount: selectedRoute.busStationCount,
+        totalDistance: selectedRoute.totalDistance,
+        intervalTime: selectedRoute.intervalTime,
+      };
 
-      // =============================================
-      // [백엔드 연결 시 수정 2] 아래 주석 해제
-      // POST /api/trips 호출
-      // API_SPEC.md 기준 필드:
-      // - candidateId, localBusId, gbisStationId 사용
-      // - routeId, routeDirection, endStationName 사용 안 함
-      // - destination 필드 필수 (백엔드 400 오류 방지)
-      // =============================================
-      // const tripRequest = {
-      //   ...selectedRoute,
-      //   destination: destinationText || '병점역후문',
-      // };
-      // const res = await axios.post(`${API_BASE_URL}/api/trips`, tripRequest);
-      // const tripId = res.data.tripId;
+      const data = await apiClient.trips.create(tripRequest);
 
-      // =============================================
-      // [백엔드 연결 시 수정 3] 아래 줄 주석처리
-      // =============================================
-      const tripId = 'trip-001';
-
-      navigation.navigate('Riding', { tripId, selectedRoute });
+      navigation.navigate('Riding', { tripId: data.tripId, selectedRoute });
     } catch (error) {
+      // errorCode별 분기 (13.2)
+      if (error instanceof ApiError && error.errorCode === 'INVALID_STATION_LIST') {
+        // 선택한 후보 자체가 규칙을 어긴 경우. 임의로 보정하지 않고 오류 화면으로.
+      }
       navigation.navigate('Error');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -70,7 +72,7 @@ export default function RouteListScreen({ route, navigation }) {
     return (
       <View style={styles.container}>
         <ActivityIndicator size="large" color="#2196F3" />
-        <Text style={{ marginTop: 20 }}>노선 검색 중...</Text>
+        <Text style={{ marginTop: 20 }}>운행을 준비하는 중...</Text>
       </View>
     );
   }

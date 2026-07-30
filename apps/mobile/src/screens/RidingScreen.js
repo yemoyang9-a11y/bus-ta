@@ -1,89 +1,34 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import * as Speech from 'expo-speech';
+import * as Location from 'expo-location';
 import { useFocusEffect } from '@react-navigation/native';
-import axios from 'axios';
+import { apiClient, ApiError } from '../api/client';
 
-// =============================================
-// [백엔드 연결 시 수정 1] API 주소 변경
-// 'http://백엔드IP:포트' → ngrok 주소로 변경
-// 예: 'https://abc123.ngrok.io'
-// =============================================
-const API_BASE_URL = 'http://백엔드IP:포트';
-
-// =============================================
-// 백엔드 연결 전 임시 mock 데이터
-// 백엔드 연결 후에는 PATCH /api/trips/{tripId}/status 응답으로 대체됨
-// [백엔드 연결 시 수정 2] isBackendConnected = true로 변경하면 이 데이터 안 쓰임
-// =============================================
-const MOCK_STATUSES = [
-  {
-    currentStation: { stationName: '수원대학교', latitude: 37.213789, longitude: 126.979772, sequence: 0 },
-    nextStation: { stationName: '융건릉사거리', latitude: 37.207917, longitude: 126.987467, sequence: 2 },
-    remainingStations: 3,
-    tripStatus: 'ON_BUS',
-    shouldTriggerBell: false,
-    bellStatus: 'NOT_REQUESTED',
-    bellRequestId: null,
-    command: null,
-    guideMessage: '버스에 탑승했습니다. 3정거장 남았습니다.',
-  },
-  {
-    currentStation: { stationName: '융건릉사거리', latitude: 37.207917, longitude: 126.987467, sequence: 2 },
-    nextStation: { stationName: '중외제약사거리', latitude: 37.201489, longitude: 127.003042, sequence: 4 },
-    remainingStations: 2,
-    tripStatus: 'NEAR_DESTINATION',
-    shouldTriggerBell: false,
-    bellStatus: 'NOT_REQUESTED',
-    bellRequestId: null,
-    command: null,
-    guideMessage: '2정거장 남았습니다. 하차 준비를 시작하세요.',
-  },
-  {
-    currentStation: { stationName: '중외제약사거리', latitude: 37.201489, longitude: 127.003042, sequence: 4 },
-    nextStation: { stationName: '병점역후문', latitude: 37.20601, longitude: 127.032047, sequence: 10 },
-    remainingStations: 1,
-    tripStatus: 'NEAR_DESTINATION',
-    shouldTriggerBell: true,
-    bellStatus: 'PENDING',
-    bellRequestId: 'bell-request-001',
-    command: 'STOP_REQUEST',
-    guideMessage: '하차까지 한 정류장 남았습니다. 다음 정류장에서 하차하세요.',
-  },
-];
-
-// mock GPS 좌표 시퀀스
-// 백엔드 연결 후 isBackendConnected = true로 변경하면 실제 PATCH /status 호출 시 사용됨
-const MOCK_COORDINATES = [
-  { latitude: 37.213789, longitude: 126.979772 },
-  { latitude: 37.207917, longitude: 126.987467 },
-  { latitude: 37.201489, longitude: 127.003042 },
-];
+const INITIAL_STATUS = {
+  currentStation: null,
+  nextStation: null,
+  remainingStations: null,
+  tripStatus: 'WAITING_BUS',
+  shouldTriggerBell: false,
+  bellStatus: 'NOT_REQUESTED',
+  bellRequestId: null,
+  command: null,
+  guideMessage: '버스 위치를 확인하는 중입니다.',
+};
 
 export default function RidingScreen({ route, navigation }) {
   const { tripId, selectedRoute } = route.params;
-  const [status, setStatus] = useState(MOCK_STATUSES[0]);
-  const [mockIndex, setMockIndex] = useState(0);
+  const [status, setStatus] = useState(INITIAL_STATUS);
   const bellHandledRef = useRef(false);
-  const mockCoordIndexRef = useRef(0);
+  const requestCounterRef = useRef(0);
+  const stoppedRef = useRef(false);
 
-  // =============================================
-  // [백엔드 연결 시 수정 2] false → true로 변경
-  // true로 변경하면:
-  // - 시연용 버튼 자동으로 사라짐
-  // - 3초마다 PATCH /api/trips/{tripId}/status 자동 호출
-  // - mock 데이터 대신 백엔드 실제 데이터 사용
-  // =============================================
-  const isBackendConnected = false;
-
-  // 처음 탑승 중 화면 들어올 때 TTS 실행
-  // 이전 화면 TTS와 겹치지 않도록 500ms 딜레이 적용
+  // 최초 진입 안내
   useFocusEffect(
     React.useCallback(() => {
       const timer = setTimeout(() => {
-        if (MOCK_STATUSES[0].guideMessage) {
-          Speech.speak(MOCK_STATUSES[0].guideMessage, { language: 'ko' });
-        }
+        Speech.speak('버스 위치를 확인하는 중입니다.', { language: 'ko' });
       }, 500);
 
       return () => {
@@ -93,23 +38,19 @@ export default function RidingScreen({ route, navigation }) {
     }, [])
   );
 
-  // 정류장 바뀔 때마다 TTS 실행
-  // 1정거장은 아래 useEffect에서 TTS + 하차 안내 처리를 같이 하므로 여기서 제외
-  // 첫 화면(mockIndex === 0)은 useFocusEffect에서 처리하므로 여기서 제외
+  // 정류장·상태 바뀔 때마다 TTS (1정거장 남은 경우는 아래 하차 안내 useEffect가 별도 처리)
   useEffect(() => {
-    if (mockIndex === 0) return;
     if (status.guideMessage && status.remainingStations !== 1) {
       const timer = setTimeout(() => {
         Speech.speak(status.guideMessage, { language: 'ko' });
       }, 500);
       return () => clearTimeout(timer);
     }
-  }, [status]);
+  }, [status.guideMessage, status.remainingStations]);
 
   // 1정거장 남았을 때 TTS 출력 후 하차 안내 화면 전환
   // API_SPEC.md 기준:
   // - bellRequestId는 백엔드가 PATCH /status 응답에서 생성한 값 (프론트 생성 금지)
-  // - /bell/request API는 사용하지 않음
   // - shouldTriggerBell: true + bellStatus: PENDING + bellRequestId 존재 시 실행
   useEffect(() => {
     if (
@@ -132,46 +73,77 @@ export default function RidingScreen({ route, navigation }) {
     }
   }, [status]);
 
-  // 백엔드 연결 후 3초마다 PATCH /status 자동 호출
-  // isBackendConnected = true일 때만 실행됨
+  // 실제 GPS로 3초 간격 PATCH /status 전송
   useEffect(() => {
-    if (!isBackendConnected) return;
+    let interval;
+    let isMounted = true;
 
-    const interval = setInterval(async () => {
-      await patchStatus();
-    }, 3000);
+    (async () => {
+      const { status: permStatus } = await Location.requestForegroundPermissionsAsync();
+      if (permStatus !== 'granted') {
+        Speech.speak('위치 권한이 없어 운행 추적을 시작할 수 없습니다.', { language: 'ko' });
+        navigation.navigate('Error');
+        return;
+      }
 
-    return () => clearInterval(interval);
-  }, [isBackendConnected]);
+      interval = setInterval(async () => {
+        if (!isMounted || stoppedRef.current) return;
+        await patchStatus();
+      }, 3000);
+    })();
 
-  // PATCH /api/trips/{tripId}/status 호출 함수
-  // mock GPS 좌표를 순서대로 전송
-  // 백엔드가 좌표 기반으로 현재/다음 정류장, 남은 정류장 수, 하차벨 여부 계산해서 반환
+    return () => {
+      isMounted = false;
+      if (interval) clearInterval(interval);
+    };
+  }, [tripId]);
+
+  // PATCH /api/trips/{tripId}/status 호출
+  // requestId는 앱이 생성하는 멱등 키 — 같은 좌표 재전송 시에는 재사용하지 않고 매 전송마다 새로 발급한다
   const patchStatus = async () => {
-    const coord = MOCK_COORDINATES[mockCoordIndexRef.current];
-    if (!coord) return;
-
     try {
-      const res = await axios.patch(`${API_BASE_URL}/api/trips/${tripId}/status`, {
-        requestId: `location-${mockCoordIndexRef.current + 1}`,
-        latitude: coord.latitude,
-        longitude: coord.longitude,
+      const location = await Location.getCurrentPositionAsync({});
+      requestCounterRef.current += 1;
+
+      const data = await apiClient.trips.updateStatus(tripId, {
+        requestId: `location-${tripId}-${requestCounterRef.current}`,
+        latitude: location.coords.latitude,
+        longitude: location.coords.longitude,
         recordedAt: new Date().toISOString(),
-        source: 'MOCK',
+        source: 'GPS',
       });
 
-      setStatus(res.data);
+      setStatus(data);
 
-      if (mockCoordIndexRef.current < MOCK_COORDINATES.length - 1) {
-        mockCoordIndexRef.current += 1;
+      // 9.2: 종료된 운행이면 전송 중단
+      if (data.tripStatus === 'TRIP_DONE' || data.tripStatus === 'CANCELLED') {
+        stoppedRef.current = true;
       }
     } catch (error) {
+      if (error instanceof ApiError) {
+        if (error.errorCode === 'INVALID_TRIP_STATUS') {
+          // 앱 상태가 실제 운행 상태보다 뒤처짐 — 전송 중단하고 최신 상태로 맞춤
+          stoppedRef.current = true;
+          try {
+            const latest = await apiClient.trips.getStatus(tripId);
+            setStatus(latest);
+          } catch {
+            // 최신 상태 조회도 실패하면 오류 화면으로
+          }
+          return;
+        }
+        if (error.errorCode === 'TRIP_NOT_FOUND') {
+          stoppedRef.current = true;
+          navigation.navigate('Error');
+          return;
+        }
+      }
+      // 네트워크 실패 등은 다음 주기에 재시도 (requestId는 다음 좌표에 새로 발급되므로 중복 걱정 없음)
       console.log('위치 업데이트 실패:', error);
     }
   };
 
   // 하차 안내 화면으로 이동
-  // bellRequestId, command, guideMessage를 AlightScreen에 전달
   const handleAlightNavigation = () => {
     if (bellHandledRef.current) return;
     bellHandledRef.current = true;
@@ -184,16 +156,16 @@ export default function RidingScreen({ route, navigation }) {
     });
   };
 
-  // 시연용 버튼 함수
-  // isBackendConnected = false일 때만 버튼 표시
-  // isBackendConnected = true로 변경하면 버튼 자동으로 사라짐
-  const goNextStation = () => {
-    const nextIndex = mockIndex + 1;
-    if (nextIndex < MOCK_STATUSES.length) {
-      setMockIndex(nextIndex);
-      setStatus(MOCK_STATUSES[nextIndex]);
-    }
-  };
+  if (!status.currentStation || !status.nextStation) {
+    return (
+      <View style={styles.container}>
+        <Text style={styles.title}>탑승 중</Text>
+        <View style={styles.guideBox}>
+          <Text style={styles.guideText}>{status.guideMessage}</Text>
+        </View>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.container}>
@@ -222,13 +194,6 @@ export default function RidingScreen({ route, navigation }) {
         <View style={styles.prepareBox}>
           <Text style={styles.prepareText}>⚠️ 곧 하차 준비하세요</Text>
         </View>
-      )}
-
-      {/* 백엔드 연결 전까지만 표시되는 시연용 버튼 */}
-      {!isBackendConnected && (
-        <TouchableOpacity style={styles.button} onPress={goNextStation}>
-          <Text style={styles.buttonText}>다음 정류장 이동 (시연용)</Text>
-        </TouchableOpacity>
       )}
     </View>
   );
@@ -297,18 +262,6 @@ const styles = StyleSheet.create({
   prepareText: {
     fontSize: 16,
     color: '#E65100',
-    fontWeight: 'bold',
-  },
-  button: {
-    backgroundColor: '#4CAF50',
-    padding: 15,
-    borderRadius: 10,
-    alignItems: 'center',
-    marginTop: 10,
-  },
-  buttonText: {
-    color: '#fff',
-    fontSize: 16,
     fontWeight: 'bold',
   },
 });
