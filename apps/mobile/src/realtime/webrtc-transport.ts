@@ -8,7 +8,6 @@ import type { RealtimeTransport } from "./types";
 
 type RealtimeWebRTCTransportOptions = {
   clientSecret: string;
-  model: string;
   onServerEvent?: (event: unknown) => void;
   onOpen?: () => void;
   onClose?: () => void;
@@ -60,17 +59,17 @@ export class RealtimeWebRTCTransport implements RealtimeTransport {
     const offer = await peerConnection.createOffer({});
     await peerConnection.setLocalDescription(offer);
 
-    const response = await fetch(
-      `https://api.openai.com/v1/realtime?model=${encodeURIComponent(this.options.model)}`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${this.options.clientSecret}`,
-          "Content-Type": "application/sdp",
-        },
-        body: offer.sdp,
+    const formData = new FormData();
+    formData.append("sdp", offer.sdp ?? "");
+
+    const response = await fetch("https://api.openai.com/v1/realtime/calls", {
+      method: "POST",
+      headers: {
+        Accept: "application/sdp",
+        Authorization: `Bearer ${this.options.clientSecret}`,
       },
-    );
+      body: formData,
+    });
 
     if (!response.ok) {
       throw new Error(`Realtime WebRTC 연결에 실패했습니다. status=${response.status}`);

@@ -1,7 +1,7 @@
 import { apiClient } from "../api/client";
 import { createRealtimeGuideContext } from "./context";
 import { dispatchRealtimeFunctionCall, isRealtimeFunctionCallEvent } from "./function-dispatcher";
-import { createRealtimeSessionUpdateEvent, HANEUM_REALTIME_MODEL } from "./guide";
+import { createRealtimeSessionUpdateEvent } from "./guide";
 import type {
   CreateRealtimeSessionResponse,
   RealtimeGuideContext,
@@ -25,11 +25,10 @@ export class HaneumRealtimeSession {
   }
 
   async connectWebRTC(sharedSecret?: string): Promise<RealtimeWebRTCTransport> {
-    const { clientSecret, model } = await this.createClientSecret(sharedSecret);
+    const { clientSecret } = await this.createClientSecret(sharedSecret);
     let transport: RealtimeWebRTCTransport;
     transport = new RealtimeWebRTCTransport({
       clientSecret,
-      model: model || HANEUM_REALTIME_MODEL,
       onServerEvent: (event) => {
         this.handleServerEvent(event, transport).catch(() => {});
       },
