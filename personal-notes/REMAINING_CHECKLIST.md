@@ -14,8 +14,8 @@
 
 ## B. 외부 모듈 연동 (자리는 마련됨, 차단요인 아님)
 
-- [ ] 효린 `searchRoutes(destination, lat, lng)` 실모듈 → `routes/routes.ts` 의 `mockSearchRoutes` 주입 교체
-- [ ] 효린 `getArrivalInfo(selectedCandidate)` → `create-trip.service` 연결, 실패 시 `predictedArrivalMinutes:null` 유지 재확인
+- [x] 효린 `searchRoutes(destination, lat, lng)` 실모듈 → `routes/routes.ts` 의 `mockSearchRoutes` 주입 교체 (`34f52d2`)
+- [x] 효린 `getArrivalInfo(selectedCandidate)` → `create-trip.service` 연결, 실패 시 `predictedArrivalMinutes:null` 유지 재확인 (`34f52d2`)
 - [ ] 유나 OpenAI 최종 후보 2개 선택 로직 → 현재 mock 2개 대체 중
 
 ## C. mock 데이터 값 통일 (보류 — 시연용 ODsay 노선 확정이 선행)

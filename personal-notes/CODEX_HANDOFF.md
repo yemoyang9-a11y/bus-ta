@@ -32,14 +32,14 @@ cd apps/server && node --import tsx --test $(find src -name '*.test.ts')   # 33 
 |---|---|---|---|
 | 0 | 공통 토대 (shared 상수·스키마·타입, `/bell/request`·RING/CANCEL 제거) | ✅ 완료 | |
 | 1 | `GET /api/health` + Supabase 연결 상태 | ✅ 완료 | |
-| 2 | DB migration (trips/trip_status/bell_logs/bus_beacons/location_logs) | ✅ 완료 | Supabase 적용됨, ref `nsbemlqidbepttjfyumt` |
-| 3 | `POST /api/trips` 운행 생성 | ✅ 완료 | `getArrivalInfo` 는 미연결(null) |
+| 2 | DB migration (trips/trip_status/bell_logs/bus_beacons/location_logs) | ✅ 완료 | Supabase 적용됨 |
+| 3 | `POST /api/trips` 운행 생성 | ✅ 완료 | |
 | 4 | `PATCH /api/trips/{tripId}/status` 이동 상태 추적 | ✅ 완료 | |
 | 5 | 하차벨 자동 요청 생성 (PATCH 내부) | ✅ 완료 | `remainingStations=1 & NOT_REQUESTED` |
 | 6 | `GET /api/trips/{tripId}/status` 조회 전용 | ✅ 완료 | |
 | 7 | `POST /api/trips/{tripId}/bell/result` 결과 저장 | ✅ 완료 | PENDING→SUCCESS/FAIL, 멱등 |
 | 8 | `GET /api/beacons?routeNo=` mock 비콘 | ✅ 완료 | fixture 기반, DB 미사용 |
-| 9 | `POST /api/routes/search` 노선 검색 | 🟡 골격(mock) | 효린 모듈 자리만 마련 |
+| 9 | `POST /api/routes/search` 노선 검색 | ✅ 완료 | 효린 실모듈(Kakao/ODsay/GBIS) 연결됨 (`34f52d2`) |
 | 10 | 통합 점검 + 문서 정합 | ✅ 완료 | 체크리스트 7항목 통과 |
 
 추가 작업: `.env` 자동 로드, getGuideMessage 공통화, dead code/스텁 제거, 문서 정합.
@@ -88,7 +88,8 @@ apps/server/src/
     beacon.repository.ts                 # FixtureBeaconRepository (DEMO_BEACONS)
   adapters/
     bell/mock-bell.adapter.ts            # mock 하차벨 결과 생성
-    routes/mock-route-search.adapter.ts  # mock 노선 후보 (효린 모듈 대체)
+    routes/hyorin-route-search.adapter.ts # 실모듈 (Kakao/ODsay/GBIS), 현재 연결됨
+    routes/mock-route-search.adapter.ts  # mock 노선 후보 (테스트 전용)
 ```
 
 핵심 계약(재검토 시 확인):
@@ -131,10 +132,10 @@ pnpm --filter @bus-ta/server dev
 - `PATCH /api/trips/{tripId}` (운행 취소/재시작): **보류 확정**. 문서에 "미구현" 표기됨(501).
   시연에 취소 장면 없음. 필요해지면 `action:"CANCEL"` 스키마로 구현.
 
-### B. 외부 모듈 연동 (자리는 마련됨, 차단요인 아님)
-- 효린 `searchRoutes(destination, lat, lng)` → `routes/routes.ts` 의 `mockSearchRoutes` 주입 교체.
-- 효린 `getArrivalInfo(selectedCandidate)` → `create-trip.service` 에 연결, 실패 시 `predictedArrivalMinutes:null` 유지 재확인.
-- 유나 OpenAI 최종 후보 2개 선택 → 현재 mock 2개로 대체 중.
+### B. 외부 모듈 연동
+- [x] 효린 `searchRoutes(destination, lat, lng)` → `routes/routes.ts` 의 `mockSearchRoutes` 주입 교체 (`34f52d2`).
+- [x] 효린 `getArrivalInfo(selectedCandidate)` → `create-trip.service` 에 연결, 실패 시 `predictedArrivalMinutes:null` 유지 재확인 (`34f52d2`).
+- [ ] 유나 OpenAI 최종 후보 2개 선택 → 현재 mock 2개로 대체 중.
 
 ### C. mock 데이터 값 통일 — **보류(나). 시연용 ODsay 노선 1개 확정이 선행 차단 의존성.**
 순서: 노선 확정 → `demo-route.ts` 실제 노선 교체 → `demo-locations.ts` GPS열을
