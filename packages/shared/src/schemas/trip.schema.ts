@@ -39,10 +39,35 @@ export const CreateTripRequestSchema = z.object({
 });
 export type CreateTripRequest = z.infer<typeof CreateTripRequestSchema>;
 
+export const CreateTripResponseSchema = z.object({
+  success: z.literal(true),
+  tripId: z.string().min(1),
+  routeNo: z.string().min(1),
+  localBusId: z.string().min(1),
+  gbisStationId: z.string().min(1),
+  predictedArrivalMinutes: z.number().int().nonnegative().nullable(),
+  tripStatus: z.literal(TRIP_STATUS.WAITING_BUS),
+  bellStatus: z.literal(BELL_STATUS.NOT_REQUESTED),
+  shouldTriggerBell: z.literal(false),
+  createdAt: z.string().min(1),
+  message: z.string(),
+  timestamp: z.string(),
+});
+export type CreateTripResponse = z.infer<typeof CreateTripResponseSchema>;
+
 export const UpdateTripRequestSchema = z.object({
   action: z.enum(["CANCEL"]),
 });
 export type UpdateTripRequest = z.infer<typeof UpdateTripRequestSchema>;
+
+export const EndTripResponseSchema = z.object({
+  success: z.literal(true),
+  tripId: z.string().min(1),
+  tripStatus: z.literal(TRIP_STATUS.CANCELLED),
+  message: z.string(),
+  timestamp: z.string(),
+});
+export type EndTripResponse = z.infer<typeof EndTripResponseSchema>;
 
 export const UpdateTripStatusRequestSchema = z.object({
   requestId: z.string().min(1),

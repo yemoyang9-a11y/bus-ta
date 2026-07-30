@@ -2,8 +2,11 @@ import type {
   BeaconsListResponse,
   BellResultInput,
   CreateTripRequest,
+  CreateTripResponse,
+  EndTripResponse,
   RoutesSearchRequest,
   RoutesSearchResponse,
+  RealtimeSessionResponse,
   Station,
   StationListItem,
   TripStatusResponse,
@@ -86,6 +89,29 @@ const createTripRequest: CreateTripRequest = {
   intervalTime: 15,
 };
 
+const createTripResponse: CreateTripResponse = {
+  success: true,
+  tripId: "trip-001",
+  routeNo: "700-2",
+  localBusId: "234000021",
+  gbisStationId: "201000166",
+  predictedArrivalMinutes: 6,
+  tripStatus: "WAITING_BUS",
+  bellStatus: "NOT_REQUESTED",
+  shouldTriggerBell: false,
+  createdAt: "2026-07-01T14:31:00+09:00",
+  message: "선택한 노선으로 운행을 생성했습니다.",
+  timestamp: "2026-07-01T14:31:00+09:00",
+};
+
+const endTripResponse: EndTripResponse = {
+  success: true,
+  tripId: "trip-001",
+  tripStatus: "CANCELLED",
+  message: "운행 안내를 종료했습니다.",
+  timestamp: "2026-07-01T14:45:00+09:00",
+};
+
 const updateTripStatusRequest: UpdateTripStatusRequest = {
   requestId: "location-001",
   latitude: 37.237447,
@@ -129,9 +155,21 @@ const beaconsListResponse: BeaconsListResponse = {
   timestamp: "2026-07-01T14:32:00+09:00",
 };
 
+const realtimeSessionResponse: RealtimeSessionResponse = {
+  success: true,
+  clientSecret: "ek_mock",
+  model: "gpt-realtime-mini",
+  expiresAt: "2026-07-01T14:40:00+09:00",
+  message: "Realtime 세션 키를 발급했습니다.",
+  timestamp: "2026-07-01T14:30:00+09:00",
+};
+
 void routesSearchResponse;
 void createTripRequest;
+void createTripResponse;
+void endTripResponse;
 void updateTripStatusRequest;
 void tripStatusResponse;
 void bellResultInput;
 void beaconsListResponse;
+void realtimeSessionResponse;
