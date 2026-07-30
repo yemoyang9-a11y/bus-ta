@@ -10,10 +10,6 @@ import type {
   UpdateTripRequest,
 } from "@bus-ta/shared";
 import { clearActiveTripContext } from "./context";
-import {
-  realtimeMockFunctionClient,
-  shouldUseRealtimeMockFunctions,
-} from "./mock-function-client";
 import type {
   ApiErrorResult,
   RealtimeClientEvent,
@@ -79,22 +75,14 @@ async function callBackendFunction(
 ): Promise<FunctionResult> {
   switch (name) {
     case "search_routes":
-      return shouldUseRealtimeMockFunctions()
-        ? realtimeMockFunctionClient.searchRoutes(assertRoutesSearchRequest(args))
-        : apiClient.routes.search(assertRoutesSearchRequest(args));
+      return apiClient.routes.search(assertRoutesSearchRequest(args));
     case "create_trip":
-      return shouldUseRealtimeMockFunctions()
-        ? realtimeMockFunctionClient.createTrip(assertCreateTripRequest(args, context))
-        : apiClient.trips.create(assertCreateTripRequest(args, context));
+      return apiClient.trips.create(assertCreateTripRequest(args, context));
     case "get_trip_status":
-      return shouldUseRealtimeMockFunctions()
-        ? realtimeMockFunctionClient.getTripStatus(assertTripId(args))
-        : apiClient.trips.getStatus(assertTripId(args));
+      return apiClient.trips.getStatus(assertTripId(args));
     case "end_trip": {
       const { tripId, body } = assertEndTripRequest(args);
-      return shouldUseRealtimeMockFunctions()
-        ? realtimeMockFunctionClient.endTrip(tripId, body)
-        : apiClient.trips.end(tripId, body);
+      return apiClient.trips.end(tripId, body);
     }
   }
 }

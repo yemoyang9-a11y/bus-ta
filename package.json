@@ -11,8 +11,7 @@
   "scripts": {
     "typecheck": "pnpm -r typecheck",
     "build": "pnpm -r --filter=!./apps/mobile run build",
-    "lint": "pnpm -r run lint",
-    "realtime:dialogue": "node scripts/realtime-dialogue-smoke.mjs"
+    "lint": "pnpm -r run lint"
   },
   "devDependencies": {
     "supabase": "2.108.0"
