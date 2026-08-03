@@ -37,7 +37,7 @@ export class RealtimeWebRTCTransport implements RealtimeTransport {
   async connect() {
     const peerConnection = new RTCPeerConnection();
     const mediaStream = await mediaDevices.getUserMedia({ audio: true, video: false });
-    const dataChannel = peerConnection.createDataChannel("oai-events") as RealtimeDataChannel;
+    const dataChannel = peerConnection.createDataChannel("oai-events") as unknown as RealtimeDataChannel;
 
     mediaStream.getTracks().forEach((track) => {
       peerConnection.addTrack(track, mediaStream);
@@ -59,16 +59,14 @@ export class RealtimeWebRTCTransport implements RealtimeTransport {
     const offer = await peerConnection.createOffer({});
     await peerConnection.setLocalDescription(offer);
 
-    const formData = new FormData();
-    formData.append("sdp", offer.sdp ?? "");
-
     const response = await fetch("https://api.openai.com/v1/realtime/calls", {
       method: "POST",
       headers: {
         Accept: "application/sdp",
         Authorization: `Bearer ${this.options.clientSecret}`,
+        "Content-Type": "application/sdp",
       },
-      body: formData,
+      body: offer.sdp ?? "",
     });
 
     if (!response.ok) {

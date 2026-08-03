@@ -7,6 +7,7 @@ import type {
   RealtimeGuideContext,
   RealtimeTransport,
 } from "./types";
+import { getRealtimeSharedSecret } from "./runtime-config";
 import { RealtimeWebRTCTransport } from "./webrtc-transport";
 
 export class HaneumRealtimeSession {
@@ -17,7 +18,7 @@ export class HaneumRealtimeSession {
   }
 
   async createClientSecret(sharedSecret?: string): Promise<CreateRealtimeSessionResponse> {
-    return apiClient.realtime.createSession(sharedSecret);
+    return apiClient.realtime.createSession(sharedSecret ?? getRealtimeSharedSecret());
   }
 
   sendSessionUpdate(transport: RealtimeTransport) {

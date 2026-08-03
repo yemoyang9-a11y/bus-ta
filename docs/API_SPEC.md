@@ -36,7 +36,47 @@ Function은 사용자 의도를 처리하는 경로다. 자동 GPS·하차벨 �
 
 ## Realtime 세션
 
-`POST /api/realtime/session`은 백엔드가 OpenAI `POST /v1/realtime/client_secrets`를 호출해 단기 키를 반환하는 계약이다. 요청에는 `session.model`과 `expires_after`만 전달하고, `instructions`와 `tools`는 WebRTC 연결 후 앱이 설정한다. 장기 OpenAI API 키·공유 비밀은 앱 번들에 포함하지 않는다.
+`POST /api/realtime/session`은 백엔드가 OpenAI `POST /v1/realtime/client_secrets`를 호출해 단기 키를 반환하는 계약이다. 요청에는 `session.model`과 `expires_after`만 전달하고, `instructions`와 `tools`는 WebRTC 연결 후 앱이 설정한다. 장기 OpenAI API 키는 앱 번들에 포함하지 않고, 공유 비밀은 `EXPO_PUBLIC_`로 노출하지 않는다.
+
+### `POST /api/realtime/session`
+
+앱이 OpenAI Realtime WebRTC 연결 직전에 호출하는 서버 API다. 서버는 `OPENAI_API_KEY`로 OpenAI 단기 키를 발급하고, 앱은 반환된 `clientSecret`만 OpenAI WebRTC 연결에 사용한다.
+
+#### 요청
+
+| 항목 | 위치 | 필수 | 설명 |
+| --- | --- | --- | --- |
+| `x-realtime-shared-secret` | Header | 예 | 서버 `REALTIME_SHARED_SECRET`과 동일해야 하는 내부 인증 값 |
+
+요청 body는 사용하지 않는다.
+
+#### 성공 응답
+
+```json
+{
+  "success": true,
+  "clientSecret": "ek_...",
+  "model": "gpt-realtime-mini",
+  "expiresAt": "2026-08-01T12:10:00.000Z",
+  "message": "Realtime 세션 키를 발급했습니다.",
+  "timestamp": "2026-08-01T12:00:00.000Z"
+}
+```
+
+#### 실패 응답
+
+| HTTP | `errorCode` | 조건 |
+| --- | --- | --- |
+| `401` | `UNAUTHORIZED` | 요청 헤더의 공유 비밀이 없거나 서버 값과 다름 |
+| `401` | `UNAUTHORIZED` | 서버 `OPENAI_API_KEY`가 비어 있음 |
+| `500` | `SERVER_CONFIG_ERROR` | 서버 `REALTIME_SHARED_SECRET`이 설정되지 않아 세션 발급을 거부함 |
+| `502` | `REALTIME_SESSION_FAILED` | OpenAI 단기 키 발급 실패 또는 응답 형식 오류 |
+
+`REALTIME_SHARED_SECRET`은 비어 있으면 안 된다. 값이 없을 때 세션 발급 API를 인증 없이 열지 않고 서버 설정 오류로 거부한다.
+
+### Realtime WebRTC 연결
+
+앱은 `/api/realtime/session`에서 받은 `clientSecret`을 Bearer 토큰으로 사용해 OpenAI Realtime WebRTC에 연결한다. ephemeral key 방식에서는 SDP offer 원문을 `Content-Type: application/sdp` body로 전송하고, SDP answer를 받아 `RTCPeerConnection`에 설정한다. WebRTC 연결 이후 앱이 `instructions`와 Function schema를 세션에 등록한다.
 
 ## 상태·하차벨 계약
 

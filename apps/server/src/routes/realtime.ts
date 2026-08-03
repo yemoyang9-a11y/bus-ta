@@ -9,7 +9,17 @@ realtimeRouter.post("/session", async (req, res) => {
   const expectedSharedSecret = process.env["REALTIME_SHARED_SECRET"]?.trim();
   const requestSharedSecret = req.header("x-realtime-shared-secret")?.trim();
 
-  if (expectedSharedSecret && requestSharedSecret !== expectedSharedSecret) {
+  if (!expectedSharedSecret) {
+    res.status(500).json({
+      success: false,
+      errorCode: "SERVER_CONFIG_ERROR",
+      message: "Realtime 세션 인증 설정이 없습니다.",
+      timestamp: new Date().toISOString(),
+    });
+    return;
+  }
+
+  if (requestSharedSecret !== expectedSharedSecret) {
     res.status(401).json({
       success: false,
       errorCode: "UNAUTHORIZED",
