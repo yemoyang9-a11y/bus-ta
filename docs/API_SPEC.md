@@ -36,7 +36,31 @@ Function은 사용자 의도를 처리하는 경로다. 자동 GPS·하차벨 �
 
 ## Realtime 세션
 
-`POST /api/realtime/session`은 백엔드가 OpenAI `POST /v1/realtime/client_secrets`를 호출해 단기 키를 반환하는 계약이다. 요청에는 `session.model`과 `expires_after`만 전달하고, `instructions`와 `tools`는 WebRTC 연결 후 앱이 설정한다. 장기 OpenAI API 키·공유 비밀은 앱 번들에 포함하지 않는다.
+`POST /api/realtime/session`은 백엔드가 OpenAI `POST /v1/realtime/client_secrets`를 호출해 단기 키를 반환하는 계약이다. 요청 본문은 사용하지 않으며, `x-realtime-shared-secret` 헤더가 서버의 `REALTIME_SHARED_SECRET`과 일치할 때만 발급한다. 장기 OpenAI API 키와 공유 비밀은 앱 번들에 포함하지 않는다.
+
+백엔드의 OpenAI 요청은 다음 필드만 포함한다.
+
+```json
+{
+  "session": { "type": "realtime", "model": "gpt-realtime-mini" },
+  "expires_after": { "anchor": "created_at", "seconds": 600 }
+}
+```
+
+`instructions`와 `tools`는 포함하지 않으며 WebRTC 연결 후 앱이 설정한다. 정상 응답은 다음 필드를 포함한다.
+
+```json
+{
+  "success": true,
+  "clientSecret": "<short-lived-secret>",
+  "model": "gpt-realtime-mini",
+  "expiresAt": "2026-08-04T12:10:00.000Z",
+  "message": "Realtime 세션 단기 키를 발급했습니다.",
+  "timestamp": "2026-08-04T12:00:00.000Z"
+}
+```
+
+공유 시크릿이 누락·불일치하거나 서버에 `REALTIME_SHARED_SECRET`이 설정되지 않은 경우 `401`과 `errorCode: "UNAUTHORIZED"`를 반환한다. `OPENAI_API_KEY` 미설정, OpenAI 비정상 응답·네트워크 오류·응답 형식 오류는 `502`와 `errorCode: "REALTIME_SESSION_FAILED"`로 변환한다. 모든 오류 응답은 `success`, `errorCode`, `message`, `timestamp`를 포함하며 장기·단기 키를 오류 메시지에 넣지 않는다.
 
 ## 상태·하차벨 계약
 

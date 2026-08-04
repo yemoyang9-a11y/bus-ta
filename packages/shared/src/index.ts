@@ -4,6 +4,7 @@ export * from "./constants/trip-status.js";
 export * from "./constants/bell-status.js";
 export * from "./constants/bell-command.js";
 export * from "./constants/beacon-id.js";
+export * from "./constants/realtime.js";
 
 // types
 export * from "./types/ids.js";
@@ -20,6 +21,7 @@ export * from "./schemas/trip.schema.js";
 export * from "./schemas/location.schema.js";
 export * from "./schemas/bell.schema.js";
 export * from "./schemas/beacon.schema.js";
+export * from "./schemas/realtime.schema.js";
 
 // fixtures
 export * from "./fixtures/demo-route.js";

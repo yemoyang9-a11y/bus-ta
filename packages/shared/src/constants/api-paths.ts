@@ -27,4 +27,8 @@ export const API_PATHS = {
   beacons: {
     list: `${BASE}/beacons`,
   },
+
+  realtime: {
+    session: `${BASE}/realtime/session`,
+  },
 } as const;
