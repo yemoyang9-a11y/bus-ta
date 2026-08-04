@@ -1,4 +1,6 @@
-export type DbStatus = "UP" | "NOT_CONFIGURED" | "DOWN";
+import type { DbStatus } from "@bus-ta/shared";
+
+export type { DbStatus } from "@bus-ta/shared";
 
 export interface SupabaseConnectionStatus {
   dbStatus: DbStatus;

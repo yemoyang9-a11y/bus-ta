@@ -34,6 +34,18 @@ Function은 사용자 의도를 처리하는 경로다. 자동 GPS·하차벨 �
 | `GET` | `/api/health` | 없음 |
 | `POST` | `/api/realtime/session` | Realtime용 단기 키 발급 |
 
+## Health 상태 조회
+
+`GET /api/health`는 요청 query/body를 사용하지 않고 서버와 Supabase 연결 상태를 확인한다. 공개 응답은 `packages/shared`의 health Schema를 단일 계약으로 사용하며 `timestamp`는 ISO 8601 문자열이다.
+
+| Supabase 상태 | HTTP | `success` | `serverStatus` | `dbStatus` | `errorCode` |
+| --- | ---: | --- | --- | --- | --- |
+| 연결 성공 | 200 | `true` | `UP` | `UP` | 없음 |
+| 환경변수 미설정 | 200 | `true` | `UP` | `NOT_CONFIGURED` | 없음 |
+| 연결 실패 | 500 | `false` | `UP` | `DOWN` | `DB_ERROR` |
+
+성공 응답은 `success: true`, `serverStatus: "UP"`, `dbStatus: "UP" | "NOT_CONFIGURED"`, `message`, `timestamp`를 포함한다. 장애 응답은 `success: false`, `serverStatus: "UP"`, `dbStatus: "DOWN"`, `errorCode: "DB_ERROR"`, `message`, `timestamp`를 포함한다. 이 조합과 다른 모순된 상태 조합은 shared Schema에서 허용하지 않는다.
+
 ## Realtime 세션
 
 `POST /api/realtime/session`은 백엔드가 OpenAI `POST /v1/realtime/client_secrets`를 호출해 단기 키를 반환하는 계약이다. 요청 본문은 사용하지 않으며, `x-realtime-shared-secret` 헤더가 서버의 `REALTIME_SHARED_SECRET`과 일치할 때만 발급한다. 장기 OpenAI API 키와 공유 비밀은 앱 번들에 포함하지 않는다.
