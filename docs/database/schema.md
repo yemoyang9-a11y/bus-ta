@@ -50,7 +50,7 @@ destination_station.stationName
 trip_id                      string      PK, 서버가 발급한 운행 ID
 user_id                      string      nullable, 사용자 인증 전까지 임시값 또는 null
 destination                  string      사용자가 입력한 목적지 텍스트
-candidate_id                 integer     nullable, 효린 searchRoutes 후보 식별자
+candidate_id                 integer     NOT NULL, 양의 정수(> 0), 효린 searchRoutes 후보 식별자
 route_no                     string      사용자에게 표시할 노선 번호
 local_bus_id                 string      ODsay busLocalBlID, GBIS routeId 형식
 gbis_station_id              string      ODsay startLocalStationID, GBIS stationId
