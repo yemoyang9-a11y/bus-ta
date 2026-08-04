@@ -66,6 +66,6 @@
 - 증상: 백엔드가 Supabase 테이블·RPC를 호출하지 못하거나 anon 키를 사용하는 것처럼 보인다.
 - 원인: 백엔드는 서버 전용 `SUPABASE_SERVICE_ROLE_KEY`만 사용한다. `SUPABASE_ANON_KEY`는 지원하지 않으며, 대상 테이블과 RPC는 anon/authenticated 역할에 공개하지 않는다.
 - 해결 방법: `SUPABASE_URL`에는 `/rest/v1/`가 붙지 않은 프로젝트 기본 URL을 설정하고, `SUPABASE_SERVICE_ROLE_KEY`는 Render/server secret에만 설정한다. 모바일 앱과 `EXPO_PUBLIC_*` 환경변수에는 service-role 키를 넣지 않는다.
-- 수정 파일: `apps/server/src/config/supabase.ts`, `.env.example`, `apps/server/.env.example`, `supabase/migrations/20260804105954_secure_data_api_access.sql`
+- 수정 파일: `apps/server/src/config/supabase.ts`, `.env.example`, `apps/server/.env.example`, `supabase/migrations/20260804112643_secure_data_api_access.sql`
 - 재발 방지 방법: 배포 환경에 service-role 키 설정 여부를 확인하고, anon 키를 사용한 직접 Data API 접근과 Supabase security advisor 결과를 별도로 점검한다.
 - 관련 커밋 또는 Pull Request: 확인 필요
