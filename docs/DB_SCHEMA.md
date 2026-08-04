@@ -56,6 +56,20 @@ PENDING --(POST /bell/result)--> SUCCESS | FAIL
 
 공개 API의 `tripId`, `candidateId`, `routeNo`, `localBusId`, `gbisStationId`, `requestId`, `bellRequestId`, `tripStatus`, `bellStatus`, `remainingStations`는 각각 같은 의미의 `snake_case` 컬럼으로 매핑한다. 위치 로그는 `UNIQUE(trip_id, request_id)` 제약을 권장하며, 제약 오류를 그대로 500으로 누출하지 않도록 멱등 처리 경로를 둔다.
 
+## Data API와 DB 역할 권한 계약
+
+`20260804112643_secure_data_api_access.sql`과 `20260804142432_restrict_future_data_api_access.sql` 적용 후의 목표 권한은 다음과 같다. migration 파일 작성과 원격 DB 적용은 별도 상태로 기록한다.
+
+| 대상 | `public`·`anon`·`authenticated` | `service_role` | 추가 보호 |
+| --- | --- | --- | --- |
+| `trips`, `trip_status`, `location_logs`, `bell_logs`, `bus_beacons` | 테이블 권한 없음 | `SELECT`, `INSERT`, `UPDATE`, `DELETE` | RLS 활성화, 클라이언트 policy 없음 |
+| `save_trip_status_and_location`, `cancel_trip` RPC | `EXECUTE` 없음 | `EXECUTE` | `SECURITY INVOKER`, 빈 `search_path`, 스키마 한정 참조 |
+
+- 앱은 위 테이블과 RPC를 anon/authenticated 키로 직접 호출하지 않는다. 백엔드만 서버 비밀인 `SUPABASE_SERVICE_ROLE_KEY`로 Data API를 사용한다.
+- 사용자 인증과 소유권 모델이 공통 계약으로 확정되기 전에는 anon/authenticated RLS policy를 추가하지 않는다. policy 없는 RLS는 해당 역할에 대해 deny-all이다.
+- `postgres` 역할이 `public`에 새로 만드는 테이블·함수·시퀀스의 Data API 기본 권한은 제거한다. 새 객체를 노출해야 할 때는 생성 migration에서 RLS와 최소 grant를 명시한다.
+- 이 권한 변경은 공개 API 경로, JSON 필드 이름, enum과 상태 전이를 변경하지 않는다.
+
 ## 검증 기준
 
 상태 변경은 정상·잘못된 입력·없는 운행·종료 운행·동일 `requestId` 재전송·하차벨 중복·결과 재전송을 검증한다. migration 작성, 실제 적용, RPC 존재, API-DB 통합 검증은 별도 상태로 기록한다.

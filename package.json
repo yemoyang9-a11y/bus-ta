@@ -11,7 +11,9 @@
   "scripts": {
     "typecheck": "pnpm -r typecheck",
     "build": "pnpm -r --filter=!./apps/mobile run build",
-    "lint": "pnpm -r run lint"
+    "lint": "pnpm -r run lint",
+    "test:supabase-security": "node --test scripts/verify-supabase-security.test.mjs",
+    "verify:supabase-security": "node scripts/verify-supabase-security.mjs"
   },
   "devDependencies": {
     "supabase": "2.108.0",
