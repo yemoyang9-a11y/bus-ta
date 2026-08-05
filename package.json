@@ -12,6 +12,7 @@
     "typecheck": "pnpm -r typecheck",
     "build": "pnpm -r --filter=!./apps/mobile run build",
     "lint": "pnpm -r run lint",
+    "test:render-config": "node --test scripts/verify-render-config.test.mjs",
     "test:supabase-security": "node --test scripts/verify-supabase-security.test.mjs",
     "verify:supabase-security": "node scripts/verify-supabase-security.mjs"
   },
