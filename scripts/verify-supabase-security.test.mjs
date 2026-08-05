@@ -65,6 +65,8 @@ test("requires fail-closed default privileges for future Data API objects", asyn
     "missing default sequence privilege revocation for anon, authenticated, service_role",
     "missing default function EXECUTE revocation for PUBLIC",
     "missing full privilege revocation on existing server-only tables for public, anon, authenticated",
+    "missing service_role non-DML privilege revocation on existing server-only tables",
+    "missing explicit CRUD grant for service_role on existing server-only tables",
   ]);
 });
 
@@ -87,6 +89,14 @@ test("recognizes security statements that follow SQL comments", async () => {
           on table public.trips, public.trip_status, public.location_logs,
             public.bell_logs, public.bus_beacons
           from public, anon, authenticated;
+        revoke all privileges
+          on table public.trips, public.trip_status, public.location_logs,
+            public.bell_logs, public.bus_beacons
+          from service_role;
+        grant select, insert, update, delete
+          on table public.trips, public.trip_status, public.location_logs,
+            public.bell_logs, public.bus_beacons
+          to service_role;
       `,
     },
   ]);
@@ -110,6 +120,14 @@ test("reports later migrations that reopen server-only Data API access", async (
           on table public.trips, public.trip_status, public.location_logs,
             public.bell_logs, public.bus_beacons
           from public, anon, authenticated;
+        revoke all privileges
+          on table public.trips, public.trip_status, public.location_logs,
+            public.bell_logs, public.bus_beacons
+          from service_role;
+        grant select, insert, update, delete
+          on table public.trips, public.trip_status, public.location_logs,
+            public.bell_logs, public.bus_beacons
+          to service_role;
       `,
     },
     {
@@ -125,6 +143,35 @@ test("reports later migrations that reopen server-only Data API access", async (
   assert.deepEqual(issues, [
     "missing default table privilege revocation for anon, authenticated, service_role",
     "missing full privilege revocation on existing server-only tables for public, anon, authenticated",
+  ]);
+});
+
+test("reports missing service_role non-DML revocation on existing server-only tables", async () => {
+  const { inspectDefaultPrivilegePosture } = await loadVerifier();
+  const issues = inspectDefaultPrivilegePosture([
+    {
+      name: "20260804142432_restrict_future_data_api_access.sql",
+      sql: `
+        alter default privileges for role postgres in schema public
+          revoke all privileges on tables from public, anon, authenticated, service_role;
+        alter default privileges for role postgres in schema public
+          revoke all privileges on functions from public, anon, authenticated, service_role;
+        alter default privileges for role postgres in schema public
+          revoke all privileges on sequences from public, anon, authenticated, service_role;
+        revoke all privileges
+          on table public.trips, public.trip_status, public.location_logs,
+            public.bell_logs, public.bus_beacons
+          from public, anon, authenticated;
+        grant select, insert, update, delete
+          on table public.trips, public.trip_status, public.location_logs,
+            public.bell_logs, public.bus_beacons
+          to service_role;
+      `,
+    },
+  ]);
+
+  assert.deepEqual(issues, [
+    "missing service_role non-DML privilege revocation on existing server-only tables",
   ]);
 });
 
