@@ -58,7 +58,7 @@ PENDING --(POST /bell/result)--> SUCCESS | FAIL
 
 ## Data API와 DB 역할 권한 계약
 
-`20260804112643_secure_data_api_access.sql`과 `20260804142432_restrict_future_data_api_access.sql` 적용 후의 목표 권한은 다음과 같다. migration 파일 작성과 원격 DB 적용은 별도 상태로 기록한다.
+`20260804112643_secure_data_api_access.sql`과 `20260805045657_restrict_future_data_api_access.sql` 적용 후의 목표 권한은 다음과 같다. migration 파일 작성과 원격 DB 적용은 별도 상태로 기록한다.
 
 | 대상 | `public`·`anon`·`authenticated` | `service_role` | 추가 보호 |
 | --- | --- | --- | --- |

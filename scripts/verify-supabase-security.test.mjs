@@ -74,7 +74,7 @@ test("recognizes security statements that follow SQL comments", async () => {
   const { inspectDefaultPrivilegePosture } = await loadVerifier();
   const issues = inspectDefaultPrivilegePosture([
     {
-      name: "20260804142432_restrict_future_data_api_access.sql",
+      name: "20260805045657_restrict_future_data_api_access.sql",
       sql: `
         -- Default privileges are fail-closed.
         alter default privileges for role postgres in schema public
@@ -108,7 +108,7 @@ test("reports later migrations that reopen server-only Data API access", async (
   const { inspectDefaultPrivilegePosture } = await loadVerifier();
   const issues = inspectDefaultPrivilegePosture([
     {
-      name: "20260804142432_restrict_future_data_api_access.sql",
+      name: "20260805045657_restrict_future_data_api_access.sql",
       sql: `
         alter default privileges for role postgres in schema public
           revoke all privileges on tables from public, anon, authenticated, service_role;
@@ -150,7 +150,7 @@ test("reports missing service_role non-DML revocation on existing server-only ta
   const { inspectDefaultPrivilegePosture } = await loadVerifier();
   const issues = inspectDefaultPrivilegePosture([
     {
-      name: "20260804142432_restrict_future_data_api_access.sql",
+      name: "20260805045657_restrict_future_data_api_access.sql",
       sql: `
         alter default privileges for role postgres in schema public
           revoke all privileges on tables from public, anon, authenticated, service_role;
