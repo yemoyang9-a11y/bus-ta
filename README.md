@@ -2,7 +2,7 @@
 
 이 저장소는 시각장애인이 버스를 이용할 때 겪는 버스 식별, 경로 선택, 이동 중 위치 확인, 하차 시점 판단의 어려움을 줄이기 위한 한이음 프로젝트입니다.
 
-최종 개발 계약은 Notion 프로젝트 관리의 6개 핵심 문서와 아래 GitHub `docs/` 동기화 문서입니다. 코드의 현재 동작은 `claude/nice-archimedes-iv7iu0`와 실제 Supabase 적용 상태로 별도 확인합니다.
+최종 개발 계약은 Notion 프로젝트 관리의 6개 핵심 문서와 아래 GitHub `docs/` 동기화 문서입니다. 코드의 현재 동작은 `yemo-develop`의 코드·현재 테스트와 실제 Supabase 적용 상태로 별도 확인합니다. `claude/nice-archimedes-iv7iu0`는 초기 모노레포 스캐폴드를 담은 역사적 참고 브랜치입니다.
 
 ## 주요 기능
 
@@ -146,7 +146,7 @@ cp .env.example .env
 
 - GitHub 원격 연결: 완료
 - GitHub Markdown 문서 초안 작성: 완료 후 Notion 최신 규칙 반영 중
-- 원격 `claude/nice-archimedes-iv7iu0` 브랜치 초기 모노레포 스캐폴드: 확인됨
+- 원격 `claude/nice-archimedes-iv7iu0` 브랜치 초기 모노레포 스캐폴드: 역사적 참고로 확인됨
 - 실제 외부 API, DB, BLE 연동 구현 상태: 코드 기준 추가 확인 필요
 - 중간평가 목표: 앱 목적지 입력부터 노선 선택, mock 이동, 하차 판단, TTS 안내까지 하나의 소프트웨어 흐름 연결
 - 하드웨어 실제 BLE/ESP32 연동: 7/1 중간평가 이후 범위

@@ -4,7 +4,7 @@
 
 ## 기준과 구현 상태
 
-현재 구현 사실은 `claude/nice-archimedes-iv7iu0`의 서버·`packages/shared`·테스트와 실제 Supabase 상태를 기준으로 한다. 이 문서는 합의된 목표 계약이다. 둘이 다르면 어느 한쪽을 묵시적으로 고치지 않고 차이, 영향 소비자, 결정 및 검증 계획을 PR에 남긴다.
+현재 구현 사실은 `yemo-develop`의 서버·`packages/shared`·현재 테스트를 기준으로 하며, 실제 DB 적용 여부는 저장소 migration 이력과 분리해 Supabase 적용 기록 또는 조회로 검증한다. 이 문서는 합의된 목표 계약이다. 둘이 다르면 어느 한쪽을 묵시적으로 고치지 않고 차이, 영향 소비자, 결정 및 검증 계획을 PR에 남긴다.
 
 ## 공통 식별자와 모델
 
@@ -18,6 +18,8 @@
 | Beacon | `routeNo`, `localBusId`, `vehicleId`, `targetBeaconId`, `isMock` |
 
 `requestId`는 `tripId` 안에서 위치 업데이트 멱등 키이고, `bellRequestId`는 하차벨 요청과 결과를 잇는 키다. `recordedAt`은 ISO 8601 시간으로 전달한다. ODsay 내부 경로 유형 값은 공개 API·DB·공통 계약에 포함하지 않는다.
+
+`candidateId`(공개 API)와 `candidate_id`(DB)는 필수 양의 정수(1 이상) 계약이다.
 
 ## Enum
 
