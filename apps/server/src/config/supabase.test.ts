@@ -31,11 +31,28 @@ test("returns UP when the Supabase REST endpoint responds successfully", async (
   });
 });
 
-test("returns DOWN when the Supabase REST endpoint cannot be reached", async () => {
+test("returns NOT_CONFIGURED and does not call Supabase when only the anon key is available", async () => {
   const status = await getSupabaseConnectionStatus(
     {
       SUPABASE_URL: "https://example.supabase.co",
       SUPABASE_ANON_KEY: "anon-key",
+    },
+    async () => {
+      throw new Error("fetch should not be called with only the anon key");
+    },
+  );
+
+  assert.deepEqual(status, {
+    dbStatus: "NOT_CONFIGURED",
+    message: "Supabase is not configured",
+  });
+});
+
+test("returns DOWN when the Supabase REST endpoint cannot be reached with the service-role key", async () => {
+  const status = await getSupabaseConnectionStatus(
+    {
+      SUPABASE_URL: "https://example.supabase.co",
+      SUPABASE_SERVICE_ROLE_KEY: "service-role-key",
     },
     async () =>
       new Response(null, {

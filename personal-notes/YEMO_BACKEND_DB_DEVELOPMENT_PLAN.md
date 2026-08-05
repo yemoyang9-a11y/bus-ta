@@ -454,7 +454,7 @@ GET /api/beacons?routeNo=
 
 ## 나중에 해야 할 것
 
-- 서버 실행 환경에 `SUPABASE_URL`과 `SUPABASE_SERVICE_ROLE_KEY` 또는 `SUPABASE_ANON_KEY`를 설정한 뒤 실제 API 호출로 DB 저장 흐름을 확인한다.
+- 서버 실행 환경에 `SUPABASE_URL`과 `SUPABASE_SERVICE_ROLE_KEY`를 설정한 뒤 실제 API 호출로 DB 저장 흐름을 확인한다. 백엔드는 service-role 전용이며 `SUPABASE_ANON_KEY`를 사용하지 않는다.
 - 효린 `getArrivalInfo(selectedCandidate)` 실제 모듈이 repo에 들어오면 `POST /api/trips` 생성 흐름에 연결하고, 실패 시 `predictedArrivalMinutes: null`로 계속 진행되는지 재확인한다.
 
 ## 커밋 단위 제안

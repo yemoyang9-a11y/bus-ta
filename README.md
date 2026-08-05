@@ -116,6 +116,10 @@ pnpm start
 cp .env.example .env
 ```
 
+백엔드는 Supabase 프로젝트 기본 URL(`SUPABASE_URL`, `/rest/v1/` 미포함)과
+`SUPABASE_SERVICE_ROLE_KEY`만 사용합니다. service-role 키는 Render 등 서버 secret으로만
+설정하고 모바일 앱이나 `EXPO_PUBLIC_*` 환경변수에 넣지 않습니다.
+
 필수 외부 API 키:
 
 - `KAKAO_REST_API_KEY`
