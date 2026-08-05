@@ -127,6 +127,16 @@ cp .env.example .env
 - `GBIS_SERVICE_KEY`
 - `OPENAI_API_KEY`
 
+## Render 배포
+
+Render Blueprint 진입점은 저장소 루트의 `render.yaml`이며, `yemo-develop` 브랜치를
+대상으로 `bus-ta` 서비스를 구성합니다. Blueprint에는 secret 값이 들어가지 않고
+필요한 secret 이름만 선언되는 secret-name-only 규칙이 적용되므로 실제 값은 Render
+환경변수 화면에서 입력합니다.
+
+배포 완료 기준은 `GET /api/health`가 HTTP 200을 반환하고 응답에
+`serverStatus: UP` 및 `dbStatus: UP`이 포함되는 것입니다.
+
 ## 최종 개발 문서
 
 - [프로젝트 개요 및 전체 흐름](docs/PROJECT_OVERVIEW.md)
