@@ -15,7 +15,7 @@ alter default privileges for role postgres in schema public
 revoke all privileges
   on table public.trips, public.trip_status, public.location_logs,
     public.bell_logs, public.bus_beacons
-  from public, anon, authenticated;
+  from public, anon, authenticated, service_role;
 
 grant select, insert, update, delete
   on table public.trips, public.trip_status, public.location_logs,

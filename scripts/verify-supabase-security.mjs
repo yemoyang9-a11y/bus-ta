@@ -24,6 +24,13 @@ const OBJECT_PRIVILEGES = {
   functions: ["execute"],
   sequences: ["usage", "select", "update"],
 };
+const SERVICE_ROLE_TABLE_CRUD_PRIVILEGES = ["select", "insert", "update", "delete"];
+const SERVICE_ROLE_TABLE_NON_DML_PRIVILEGES = [
+  "truncate",
+  "references",
+  "trigger",
+  "maintain",
+];
 
 function splitSqlStatements(sql) {
   const statements = [];
@@ -201,6 +208,8 @@ export function inspectDefaultPrivilegePosture(files) {
     sequences: new Map(),
   };
   const revokedTablePrivileges = new Map();
+  const grantedTablePrivileges = new Map();
+  const explicitGrantedTablePrivileges = new Map();
 
   for (const file of files) {
     for (const statement of splitSqlStatements(file.sql)) {
@@ -234,21 +243,48 @@ export function inspectDefaultPrivilegePosture(files) {
       if (tablePrivilegeMatch) {
         const action = tablePrivilegeMatch[1];
         const privileges = parsePrivileges(tablePrivilegeMatch[2], "tables");
+        const explicitPrivileges = splitNames(
+          tablePrivilegeMatch[2].replace(/\bprivileges\b/g, ""),
+        );
         const tables = splitNames(tablePrivilegeMatch[3]);
         const roles = splitNames(tablePrivilegeMatch[4]);
 
         for (const role of roles) {
           for (const table of tables) {
             const key = `${role}:${table}`;
-            const tablePrivileges = revokedTablePrivileges.get(key) ?? new Set();
+            const revokedPrivileges = revokedTablePrivileges.get(key) ?? new Set();
+            const grantedPrivileges = grantedTablePrivileges.get(key) ?? new Set();
+            const explicitGrantedPrivileges =
+              explicitGrantedTablePrivileges.get(key) ?? new Set();
             for (const privilege of privileges) {
               if (action === "revoke") {
-                tablePrivileges.add(privilege);
+                revokedPrivileges.add(privilege);
+                grantedPrivileges.delete(privilege);
               } else {
-                tablePrivileges.delete(privilege);
+                revokedPrivileges.delete(privilege);
+                grantedPrivileges.add(privilege);
               }
             }
-            revokedTablePrivileges.set(key, tablePrivileges);
+
+            if (action === "revoke") {
+              if (explicitPrivileges.has("all")) {
+                explicitGrantedPrivileges.clear();
+              } else {
+                for (const privilege of explicitPrivileges) {
+                  explicitGrantedPrivileges.delete(privilege);
+                }
+              }
+            } else if (explicitPrivileges.has("all")) {
+              explicitGrantedPrivileges.add("all");
+            } else {
+              for (const privilege of explicitPrivileges) {
+                explicitGrantedPrivileges.add(privilege);
+              }
+            }
+
+            revokedTablePrivileges.set(key, revokedPrivileges);
+            grantedTablePrivileges.set(key, grantedPrivileges);
+            explicitGrantedTablePrivileges.set(key, explicitGrantedPrivileges);
           }
         }
       }
@@ -298,6 +334,36 @@ export function inspectDefaultPrivilegePosture(files) {
   if (!hasFullTableRevocation) {
     issues.push(
       "missing full privilege revocation on existing server-only tables for public, anon, authenticated",
+    );
+  }
+
+  const hasServiceRoleNonDmlRevocation = SERVER_ONLY_TABLES.every((table) =>
+    includesPrivileges(
+      revokedTablePrivileges.get(`service_role:${table}`) ?? new Set(),
+      SERVICE_ROLE_TABLE_NON_DML_PRIVILEGES,
+    ),
+  );
+  if (!hasServiceRoleNonDmlRevocation) {
+    issues.push(
+      "missing service_role non-DML privilege revocation on existing server-only tables",
+    );
+  }
+
+  const hasServiceRoleExplicitCrudGrant = SERVER_ONLY_TABLES.every((table) => {
+    const grantedPrivileges = grantedTablePrivileges.get(`service_role:${table}`) ?? new Set();
+    const explicitGrantedPrivileges =
+      explicitGrantedTablePrivileges.get(`service_role:${table}`) ?? new Set();
+
+    return (
+      grantedPrivileges.size === SERVICE_ROLE_TABLE_CRUD_PRIVILEGES.length &&
+      SERVICE_ROLE_TABLE_CRUD_PRIVILEGES.every((privilege) => grantedPrivileges.has(privilege)) &&
+      explicitGrantedPrivileges.size === SERVICE_ROLE_TABLE_CRUD_PRIVILEGES.length &&
+      SERVICE_ROLE_TABLE_CRUD_PRIVILEGES.every((privilege) => explicitGrantedPrivileges.has(privilege))
+    );
+  });
+  if (!hasServiceRoleExplicitCrudGrant) {
+    issues.push(
+      "missing explicit CRUD grant for service_role on existing server-only tables",
     );
   }
 
