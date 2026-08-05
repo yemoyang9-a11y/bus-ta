@@ -189,3 +189,72 @@ test("rejects an invalid request body", async () => {
   if (result.body.success) return;
   assert.equal(result.body.errorCode, "INVALID_REQUEST");
 });
+
+test("returns 500 DB_ERROR when looking up the bell request fails", async () => {
+  const result = await recordBellResult("trip-test-001", successBody, {
+    findBellRequest: async () => {
+      throw new Error("Supabase unavailable");
+    },
+    saveBellResult: async () => {
+      throw new Error("should not be called");
+    },
+    reconcileBellStatus: async () => {
+      throw new Error("should not be called");
+    },
+    now: () => "2026-07-01T14:46:00+09:00",
+  });
+
+  assert.equal(result.httpStatus, 500);
+  assert.deepEqual(result.body, {
+    success: false,
+    errorCode: "DB_ERROR",
+    message: "하차벨 결과를 저장하지 못했습니다.",
+    timestamp: "2026-07-01T14:46:00+09:00",
+  });
+});
+
+test("returns 500 DB_ERROR when saving the bell result fails", async () => {
+  const result = await recordBellResult("trip-test-001", successBody, {
+    findBellRequest: async () => pendingLookup,
+    saveBellResult: async () => {
+      throw new Error("Supabase unavailable");
+    },
+    reconcileBellStatus: async () => {
+      throw new Error("should not be called");
+    },
+    now: () => "2026-07-01T14:47:00+09:00",
+  });
+
+  assert.equal(result.httpStatus, 500);
+  assert.deepEqual(result.body, {
+    success: false,
+    errorCode: "DB_ERROR",
+    message: "하차벨 결과를 저장하지 못했습니다.",
+    timestamp: "2026-07-01T14:47:00+09:00",
+  });
+});
+
+test("returns 500 DB_ERROR when reconciling a lagged bell status fails", async () => {
+  const result = await recordBellResult("trip-test-001", successBody, {
+    findBellRequest: async () => ({
+      ...pendingLookup,
+      result: BELL_STATUS.SUCCESS,
+      bellStatus: BELL_STATUS.PENDING,
+    }),
+    saveBellResult: async () => {
+      throw new Error("should not be called");
+    },
+    reconcileBellStatus: async () => {
+      throw new Error("Supabase unavailable");
+    },
+    now: () => "2026-07-01T14:48:00+09:00",
+  });
+
+  assert.equal(result.httpStatus, 500);
+  assert.deepEqual(result.body, {
+    success: false,
+    errorCode: "DB_ERROR",
+    message: "하차벨 결과를 저장하지 못했습니다.",
+    timestamp: "2026-07-01T14:48:00+09:00",
+  });
+});
