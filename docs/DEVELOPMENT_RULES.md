@@ -44,7 +44,7 @@
 - `public` 함수를 새로 만들거나 `create or replace function`으로 재정의할 때는 함수 선언에 `security invoker`와 `set search_path = ''`를 함께 작성한다. 함수 본문의 테이블·함수 참조는 `public.trips`처럼 스키마를 한정한다.
 - 기존 migration이 설정한 함수 ACL은 `create or replace function` 후에도 유지될 수 있지만, 빈 `search_path` 같은 함수 설정은 선언에서 빠지면 조용히 사라질 수 있다. 이전 하드닝에 의존하지 말고 재정의 migration마다 다시 선언한다.
 - 함수는 기본 `PUBLIC EXECUTE`에 의존하지 않는다. 같은 migration에서 `public`, `anon`, `authenticated`의 실행 권한을 제거하고 필요한 함수에만 `service_role` 실행 권한을 명시한다.
-- `20260804142432_restrict_future_data_api_access.sql` 이후 `postgres` 역할이 `public`에 만드는 테이블·함수·시퀀스는 기본 Data API 권한이 없다. 새 객체를 사용하는 migration은 RLS와 명시적 `grant`를 한 변경 단위로 작성한다.
+- `20260805045657_restrict_future_data_api_access.sql` 이후 `postgres` 역할이 `public`에 만드는 테이블·함수·시퀀스는 기본 Data API 권한이 없다. 새 객체를 사용하는 migration은 RLS와 명시적 `grant`를 한 변경 단위로 작성한다.
 - 위 기본 권한은 객체 소유자별 설정이다. Dashboard 등 다른 소유자 역할이 객체를 만들었다면 `pg_default_acl`, Data API 설정과 객체별 grant를 별도로 확인한다.
 - migration 변경 후 `pnpm test:supabase-security`와 `pnpm verify:supabase-security`를 실행한다. 원격 적용 후에는 RPC의 `prosecdef`·`proconfig`·ACL, 테이블 RLS·grant와 Supabase Security Advisor를 다시 확인한다.
 
