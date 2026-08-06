@@ -4,18 +4,18 @@ import { createRealtimeClientSecret } from "./create-realtime-session.service.js
 
 const now = () => "2026-07-30T12:00:00.000Z";
 
-test("returns UNAUTHORIZED when OpenAI API key is missing", async () => {
+test("returns REALTIME_SESSION_FAILED when OpenAI API key is missing", async () => {
   const result = await createRealtimeClientSecret({
     apiKey: "",
     model: "gpt-realtime-mini",
     now,
   });
 
-  assert.equal(result.httpStatus, 401);
+  assert.equal(result.httpStatus, 502);
   assert.deepEqual(result.body, {
     success: false,
-    errorCode: "UNAUTHORIZED",
-    message: "OpenAI API 키가 설정되어 있지 않습니다.",
+    errorCode: "REALTIME_SESSION_FAILED",
+    message: "Realtime 세션 키 발급에 실패했습니다.",
     timestamp: "2026-07-30T12:00:00.000Z",
   });
 });

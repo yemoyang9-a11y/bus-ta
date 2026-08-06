@@ -1,6 +1,6 @@
 # 공통 API 및 Function Calling 명세
 
-> **문서 상태: 구버전 — 작업 기준으로 참고하지 않는다.** 이 문서는 7/1 중간평가 기준으로 작성됐고 이후 갱신되지 않았다. 개발 문서의 단일 출처는 노션이다 — API·Function Calling 계약은 노션 「공통 API 및 Function Calling 명세서」를, 데이터 모델·상태 전이는 노션 「공통 데이터 모델 및 상태 명세서」를 기준으로 작업한다. 코드 작업·리뷰·문서 대조는 반드시 노션 문서를 기준으로 하고, 이 파일의 내용을 판단 근거로 삼지 않는다.
+> 문서 상태: 최종 계약. 데이터 모델·상태 전이는 [DB_SCHEMA.md](DB_SCHEMA.md)가 단일 출처다.
 
 ## 공통 규칙
 
@@ -33,6 +33,18 @@ Function은 사용자 의도를 처리하는 경로다. 자동 GPS·하차벨 �
 | `GET` | `/api/beacons?routeNo=` | 없음 |
 | `GET` | `/api/health` | 없음 |
 | `POST` | `/api/realtime/session` | Realtime용 단기 키 발급 |
+
+## Health 상태 조회
+
+`GET /api/health`는 요청 query/body를 사용하지 않고 서버와 Supabase 연결 상태를 확인한다. 공개 응답은 `packages/shared`의 health Schema를 단일 계약으로 사용하며 `timestamp`는 ISO 8601 문자열이다.
+
+| Supabase 상태 | HTTP | `success` | `serverStatus` | `dbStatus` | `errorCode` |
+| --- | ---: | --- | --- | --- | --- |
+| 연결 성공 | 200 | `true` | `UP` | `UP` | 없음 |
+| 환경변수 미설정 | 200 | `true` | `UP` | `NOT_CONFIGURED` | 없음 |
+| 연결 실패 | 500 | `false` | `UP` | `DOWN` | `DB_ERROR` |
+
+성공 응답은 `success: true`, `serverStatus: "UP"`, `dbStatus: "UP" | "NOT_CONFIGURED"`, `message`, `timestamp`를 포함한다. 장애 응답은 `success: false`, `serverStatus: "UP"`, `dbStatus: "DOWN"`, `errorCode: "DB_ERROR"`, `message`, `timestamp`를 포함한다. 이 조합과 다른 모순된 상태 조합은 shared Schema에서 허용하지 않는다.
 
 ## Realtime 세션
 
@@ -68,11 +80,11 @@ Function은 사용자 의도를 처리하는 경로다. 자동 GPS·하차벨 �
 | HTTP | `errorCode` | 조건 |
 | --- | --- | --- |
 | `401` | `UNAUTHORIZED` | 요청 헤더의 공유 비밀이 없거나 서버 값과 다름 |
-| `401` | `UNAUTHORIZED` | 서버 `OPENAI_API_KEY`가 비어 있음 |
-| `500` | `SERVER_CONFIG_ERROR` | 서버 `REALTIME_SHARED_SECRET`이 설정되지 않아 세션 발급을 거부함 |
-| `502` | `REALTIME_SESSION_FAILED` | OpenAI 단기 키 발급 실패 또는 응답 형식 오류 |
+| `401` | `UNAUTHORIZED` | 서버 `REALTIME_SHARED_SECRET`이 설정되지 않음 |
+| `502` | `REALTIME_SESSION_FAILED` | 서버 `OPENAI_API_KEY`가 설정되지 않음 |
+| `502` | `REALTIME_SESSION_FAILED` | OpenAI 호출 실패, 비2xx 응답 또는 응답 형식 오류 |
 
-`REALTIME_SHARED_SECRET`은 비어 있으면 안 된다. 값이 없을 때 세션 발급 API를 인증 없이 열지 않고 서버 설정 오류로 거부한다.
+`REALTIME_SHARED_SECRET`은 비어 있으면 안 된다. 값이 없더라도 세션 발급 API를 인증 없이 열지 않고, 요청 헤더 불일치와 동일하게 `401 UNAUTHORIZED`로 거부한다. 모든 오류 응답은 `success`, `errorCode`, `message`, `timestamp`를 포함하며 장기·단기 키나 서버 설정 상세를 오류 메시지에 넣지 않는다.
 
 ### Realtime WebRTC 연결
 

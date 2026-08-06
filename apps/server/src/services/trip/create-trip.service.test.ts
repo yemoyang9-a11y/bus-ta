@@ -100,6 +100,56 @@ test("continues trip creation with null predicted arrival minutes when arrival l
   assert.equal((saved[0] as { trip: { predictedArrivalMinutes: number | null } }).trip.predictedArrivalMinutes, null);
 });
 
+test("returns 400 INVALID_REQUEST for an invalid create-trip payload without saving", async () => {
+  let createCalls = 0;
+
+  const result = await createTrip(
+    { destination: "도착정류장" },
+    {
+      createTripWithStatus: async () => {
+        createCalls += 1;
+      },
+      getPredictedArrivalMinutes: async () => 6,
+      generateTripId: () => "trip-invalid-request",
+      now: () => "2026-07-01T14:32:00+09:00",
+    },
+  );
+
+  assert.equal(result.httpStatus, 400);
+  assert.deepEqual(result.body, {
+    success: false,
+    errorCode: "INVALID_REQUEST",
+    message: "요청 데이터가 올바르지 않습니다.",
+    timestamp: "2026-07-01T14:32:00+09:00",
+  });
+  assert.equal(createCalls, 0);
+});
+
+test("returns 500 DB_ERROR when saving the trip fails", async () => {
+  const result = await createTrip(
+    {
+      ...DEMO_ROUTE,
+      destination: "도착정류장",
+    },
+    {
+      createTripWithStatus: async () => {
+        throw new Error("Supabase unavailable");
+      },
+      getPredictedArrivalMinutes: async () => 6,
+      generateTripId: () => "trip-db-error",
+      now: () => "2026-07-01T14:33:00+09:00",
+    },
+  );
+
+  assert.equal(result.httpStatus, 500);
+  assert.deepEqual(result.body, {
+    success: false,
+    errorCode: "DB_ERROR",
+    message: "운행 정보를 저장하지 못했습니다.",
+    timestamp: "2026-07-01T14:33:00+09:00",
+  });
+});
+
 test("rejects a selected candidate when boarding station does not match the station list start", async () => {
   let called = false;
 

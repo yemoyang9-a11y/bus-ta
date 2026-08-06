@@ -6,7 +6,7 @@
 --       반면 packages/shared/src/schemas/route.schema.ts 의 Zod 는 int().positive() 로
 --       0 과 누락을 거부한다. 계약과 코드는 같고 DB 만 느슨하므로 DB 를 좁힌다.
 --
--- 적용 상태: 2026-08-04 Supabase 원격(nsbemlqidbepttjfyumt) 적용 완료.
+-- 적용 상태: 2026-08-04 Supabase 원격 프로젝트 적용 완료.
 --       적용 시점 위반 행 0건, 적용 후 candidate_id NOT NULL + trips_candidate_id_positive 확인.
 --       로컬/신규 환경에 적용할 때는 아래 사전 점검을 먼저 수행한다.
 --

@@ -5,8 +5,8 @@
 ## 브랜치와 PR
 
 - 각 담당자는 자신의 개발 브랜치에서 한 가지 목적의 변경만 작업한다.
-- PR base는 반드시 `claude/nice-archimedes-iv7iu0`이다. `claude` 브랜치에 직접 push하지 않는다.
-- 작업 시작과 PR 생성 전 `claude` 최신 상태와 변경 파일을 확인한다.
+- PR base는 반드시 `claude/nice-archimedes-iv7iu0`이다. `claude/nice-archimedes-iv7iu0`에 직접 push하지 않는다.
+- 작업 시작과 PR 생성 전 `claude/nice-archimedes-iv7iu0` 최신 상태와 변경 파일을 확인한다.
 - 관련 없는 포맷 변경, 개인 설정, 임시 파일, 실제 키·토큰·위치 정보는 포함하지 않는다.
 
 ## 계약 변경 절차
@@ -27,13 +27,14 @@
 | Function·Dispatcher 변환 | API 명세, `FRONTEND_GUIDE.md`, `REALTIME_GUIDE.md` |
 | 역할·이벤트 흐름 | `PROJECT_OVERVIEW.md`, 관련 API·상태 문서 |
 | 신규 환경 변수 | `.env.example`, 서버 검증, API 명세 |
+| RLS·DB 역할·Data API 권한 | migration, 보안 검증, `docs/DB_SCHEMA.md`, 실제 DB 권한·Security Advisor |
 
 문서만 바꾸는 작업은 코드·패키지 설정·migration을 같이 바꾸지 않는다. 코드와 문서가 다르면 조용히 한쪽을 변경하지 말고, 실제 동작과 목표 계약 및 영향 범위를 PR 또는 이슈에 남긴다.
 
 ## Realtime 보안 환경변수
 
 - 서버는 `OPENAI_API_KEY`와 `REALTIME_SHARED_SECRET`이 모두 설정된 경우에만 `POST /api/realtime/session`에서 단기 키를 발급한다.
-- `REALTIME_SHARED_SECRET`이 비어 있으면 인증 실패가 아니라 서버 설정 오류로 보고 세션 발급을 거부한다.
+- `REALTIME_SHARED_SECRET`이 비어 있어도 세션 발급 API를 인증 없이 열지 않고, 요청 헤더 불일치와 동일하게 `401 UNAUTHORIZED`로 거부한다. 응답으로 서버 설정 상태를 구분할 수 있게 하지 않는다.
 - 모바일은 `EXPO_PUBLIC_` 접두사로 공유 비밀을 노출하지 않는다. EAS 또는 로컬 빌드 환경의 `REALTIME_SHARED_SECRET`을 Expo config `extra`를 통해 런타임에서 읽어 요청 헤더 `x-realtime-shared-secret`로 전달한다.
 - 실제 공유 비밀, OpenAI API 키, 단기 키는 코드·문서·로그·PR 설명에 기록하지 않는다.
 
@@ -44,8 +45,18 @@
 - migration 작성됨, 실제 DB 적용됨, RPC 확인됨, API-DB 통합 검증 완료는 별도 상태다.
 - API 키·토큰·비밀번호·실제 위치 정보는 코드, 문서, 커밋 메시지와 PR 설명에 기록하지 않는다.
 
+## Supabase migration 보안 규칙
+
+- `public` 스키마에 테이블을 추가하는 migration은 RLS를 명시적으로 활성화하고, 같은 migration에서 Data API 역할의 권한을 최소 범위로 `grant`한다. 현재 서버 전용 모델에서는 `public`, `anon`, `authenticated`에 테이블 권한이나 RLS policy를 부여하지 않고, 백엔드가 필요한 권한만 `service_role`에 부여한다.
+- `public` 함수를 새로 만들거나 `create or replace function`으로 재정의할 때는 함수 선언에 `security invoker`와 `set search_path = ''`를 함께 작성한다. 함수 본문의 테이블·함수 참조는 `public.trips`처럼 스키마를 한정한다.
+- 기존 migration이 설정한 함수 ACL은 `create or replace function` 후에도 유지될 수 있지만, 빈 `search_path` 같은 함수 설정은 선언에서 빠지면 조용히 사라질 수 있다. 이전 하드닝에 의존하지 말고 재정의 migration마다 다시 선언한다.
+- 함수는 기본 `PUBLIC EXECUTE`에 의존하지 않는다. 같은 migration에서 `public`, `anon`, `authenticated`의 실행 권한을 제거하고 필요한 함수에만 `service_role` 실행 권한을 명시한다.
+- `20260805045657_restrict_future_data_api_access.sql` 이후 `postgres` 역할이 `public`에 만드는 테이블·함수·시퀀스는 기본 Data API 권한이 없다. 새 객체를 사용하는 migration은 RLS와 명시적 `grant`를 한 변경 단위로 작성한다.
+- 위 기본 권한은 객체 소유자별 설정이다. Dashboard 등 다른 소유자 역할이 객체를 만들었다면 `pg_default_acl`, Data API 설정과 객체별 grant를 별도로 확인한다.
+- migration 변경 후 `pnpm test:supabase-security`와 `pnpm verify:supabase-security`를 실행한다. 원격 적용 후에는 RPC의 `prosecdef`·`proconfig`·ACL, 테이블 RLS·grant와 Supabase Security Advisor를 다시 확인한다.
+
 ## 충돌 처리와 완료 보고
 
-현재 구현 사실은 `claude` 코드·shared 타입·테스트·실제 DB 상태로, 합의된 목표는 최신 Notion 공통 계약으로 판단한다. 충돌 시 파일·브랜치·DB 상태, 실제 동작, 목표 계약, 영향과 수정·검증 계획을 남긴다.
+현재 구현 사실은 `claude/nice-archimedes-iv7iu0` 코드·shared 타입·현재 테스트·실제 Supabase 상태로, 합의된 목표는 최신 Notion 공통 계약으로 판단한다. 충돌 시 파일·브랜치·DB 상태, 실제 동작, 목표 계약, 영향과 수정·검증 계획을 남긴다.
 
 완료 보고에는 변경 파일, 변경 목적, API·DB·shared 영향, 검증 명령·결과, migration 상태, Notion 동기화, 남은 위험을 포함한다.

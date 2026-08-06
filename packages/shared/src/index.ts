@@ -21,6 +21,7 @@ export * from "./schemas/location.schema.js";
 export * from "./schemas/bell.schema.js";
 export * from "./schemas/beacon.schema.js";
 export * from "./schemas/realtime.schema.js";
+export * from "./schemas/health.schema.js";
 
 // fixtures
 export * from "./fixtures/demo-route.js";

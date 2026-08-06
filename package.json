@@ -11,9 +11,13 @@
   "scripts": {
     "typecheck": "pnpm -r typecheck",
     "build": "pnpm -r --filter=!./apps/mobile run build",
-    "lint": "pnpm -r run lint"
+    "lint": "pnpm -r run lint",
+    "test:render-config": "node --test scripts/verify-render-config.test.mjs",
+    "test:supabase-security": "node --test scripts/verify-supabase-security.test.mjs",
+    "verify:supabase-security": "node scripts/verify-supabase-security.mjs"
   },
   "devDependencies": {
-    "supabase": "2.108.0"
+    "supabase": "2.108.0",
+    "typescript": "^5.4.5"
   }
 }

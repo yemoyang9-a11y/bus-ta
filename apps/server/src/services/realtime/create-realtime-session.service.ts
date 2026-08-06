@@ -12,14 +12,14 @@ type CreateRealtimeClientSecretOptions = {
 
 type RealtimeSessionErrorResponse = {
   success: false;
-  errorCode: "UNAUTHORIZED" | "REALTIME_SESSION_FAILED";
+  errorCode: "REALTIME_SESSION_FAILED";
   message: string;
   timestamp: string;
 };
 
 type CreateRealtimeClientSecretResult =
   | { httpStatus: 200; body: RealtimeSessionResponse }
-  | { httpStatus: 401 | 502; body: RealtimeSessionErrorResponse };
+  | { httpStatus: 502; body: RealtimeSessionErrorResponse };
 
 type OpenAIClientSecretResponse = {
   value?: string;
@@ -39,15 +39,7 @@ export async function createRealtimeClientSecret({
   const trimmedApiKey = apiKey?.trim();
 
   if (!trimmedApiKey) {
-    return {
-      httpStatus: 401,
-      body: {
-        success: false,
-        errorCode: "UNAUTHORIZED",
-        message: "OpenAI API 키가 설정되어 있지 않습니다.",
-        timestamp,
-      },
-    };
+    return buildRealtimeSessionFailed(timestamp);
   }
 
   try {

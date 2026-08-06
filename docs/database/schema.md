@@ -1,6 +1,6 @@
-﻿# DB 스키마
+﻿# DB 스키마 (역사적·지원용 MVP 초안)
 
-이 문서는 Supabase PostgreSQL 기준 MVP DB 스키마 초안입니다. 최신 기준은 2026-06-25 Notion 확정 내용과 효린 `routeSearch.js` 현재 명세입니다.
+이 문서는 Supabase PostgreSQL 기준의 역사적·지원용 MVP DB 스키마 초안입니다. 현재 권위 문서는 [../DB_SCHEMA.md](../DB_SCHEMA.md)이며, 이 문서는 과거 구현 맥락과 보조 참고용으로만 사용합니다.
 
 API 필드는 `camelCase`, DB 컬럼은 같은 의미의 `snake_case`를 사용합니다.
 
@@ -50,7 +50,7 @@ destination_station.stationName
 trip_id                      string      PK, 서버가 발급한 운행 ID
 user_id                      string      nullable, 사용자 인증 전까지 임시값 또는 null
 destination                  string      사용자가 입력한 목적지 텍스트
-candidate_id                 integer     NOT NULL, 양의 정수(> 0), 효린 searchRoutes 후보 식별자
+candidate_id                 integer     필수 양의 정수(1 이상), 효린 searchRoutes 후보 식별자
 route_no                     string      사용자에게 표시할 노선 번호
 local_bus_id                 string      ODsay busLocalBlID, GBIS routeId 형식
 gbis_station_id              string      ODsay startLocalStationID, GBIS stationId
