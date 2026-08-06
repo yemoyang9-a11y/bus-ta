@@ -54,6 +54,7 @@
   - ODsay `searchPubTransPathT`: 출발지부터 목적지까지의 대중교통 경로 후보 조회
   - GBIS `getBusArrivalListv2`: 선택 후보의 `gbisStationId`와 `localBusId`로 실시간 도착정보 조회
   - OpenAI API: 최종 후보 2개 선택, 추천 이유와 음성 안내 문장 생성
+  - OpenAI Realtime API: `gpt-realtime-mini` 기반 음성 대화와 Function Calling 안내
 - 하드웨어: ESP32, BLE, 스마트지팡이, 하차벨 모형
 - 데이터 형식: JSON, API 필드는 `camelCase`
 - 환경변수: `.env`, 예시는 `.env.example`
@@ -130,6 +131,7 @@ cp .env.example .env
 - `ODSAY_API_KEY`
 - `GBIS_SERVICE_KEY`
 - `OPENAI_API_KEY`
+- `REALTIME_SHARED_SECRET`
 
 ## Render 배포
 

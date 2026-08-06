@@ -1,58 +1,30 @@
-import { REALTIME_SHARED_SECRET_HEADER } from "@bus-ta/shared";
 import { Router } from "express";
-import {
-  createRealtimeSession,
-  type RealtimeSessionServiceDependencies,
-} from "../services/realtime/realtime-session.service.js";
+import { HANEUM_REALTIME_MODEL } from "../services/realtime/config.js";
+import { createRealtimeClientSecret } from "../services/realtime/create-realtime-session.service.js";
 
-export interface RealtimeRouterConfig {
-  configuredSharedSecret?: string;
-  openAiApiKey?: string;
-}
+export const realtimeRouter = Router();
 
-export interface RealtimeRouterDependencies extends RealtimeSessionServiceDependencies {
-  getConfig?: () => RealtimeRouterConfig;
-}
+// POST /api/realtime/session
+realtimeRouter.post("/session", async (req, res) => {
+  const expectedSharedSecret = process.env["REALTIME_SHARED_SECRET"]?.trim();
+  const requestSharedSecret = req.header("x-realtime-shared-secret")?.trim();
 
-function readConfigFromEnvironment(): RealtimeRouterConfig {
-  const config: RealtimeRouterConfig = {};
-  const configuredSharedSecret = process.env["REALTIME_SHARED_SECRET"];
-  const openAiApiKey = process.env["OPENAI_API_KEY"];
-
-  if (configuredSharedSecret !== undefined) {
-    config.configuredSharedSecret = configuredSharedSecret;
-  }
-  if (openAiApiKey !== undefined) {
-    config.openAiApiKey = openAiApiKey;
+  // 서버에 공유 시크릿이 없거나 요청 값이 다르면 동일하게 401 UNAUTHORIZED 로 거부한다.
+  // 설정 상태를 응답으로 구분할 수 있게 하지 않는다.
+  if (!expectedSharedSecret || requestSharedSecret !== expectedSharedSecret) {
+    res.status(401).json({
+      success: false,
+      errorCode: "UNAUTHORIZED",
+      message: "Realtime 세션 요청 권한이 없습니다.",
+      timestamp: new Date().toISOString(),
+    });
+    return;
   }
 
-  return config;
-}
-
-export function createRealtimeRouter(
-  dependencies: RealtimeRouterDependencies = {},
-): Router {
-  const router = Router();
-
-  // POST /api/realtime/session (the router is mounted at the complete path)
-  router.post("/", async (req, res) => {
-    const config = (dependencies.getConfig ?? readConfigFromEnvironment)();
-    const providedSharedSecret = req.get(REALTIME_SHARED_SECRET_HEADER);
-    const result = await createRealtimeSession(
-      {
-        ...(providedSharedSecret === undefined ? {} : { providedSharedSecret }),
-        ...(config.configuredSharedSecret === undefined
-          ? {}
-          : { configuredSharedSecret: config.configuredSharedSecret }),
-        ...(config.openAiApiKey === undefined ? {} : { openAiApiKey: config.openAiApiKey }),
-      },
-      dependencies,
-    );
-
-    res.status(result.httpStatus).json(result.body);
+  const result = await createRealtimeClientSecret({
+    apiKey: process.env["OPENAI_API_KEY"],
+    model: HANEUM_REALTIME_MODEL,
   });
 
-  return router;
-}
-
-export const realtimeRouter = createRealtimeRouter();
+  res.status(result.httpStatus).json(result.body);
+});

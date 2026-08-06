@@ -4,7 +4,6 @@ export * from "./constants/trip-status.js";
 export * from "./constants/bell-status.js";
 export * from "./constants/bell-command.js";
 export * from "./constants/beacon-id.js";
-export * from "./constants/realtime.js";
 
 // types
 export * from "./types/ids.js";

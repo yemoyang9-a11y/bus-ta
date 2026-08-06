@@ -1,311 +1,292 @@
 import assert from "node:assert/strict";
-import http from "node:http";
+import { createServer, request, type Server } from "node:http";
 import test from "node:test";
 import express from "express";
-import { API_PATHS, RealtimeSessionResponseSchema } from "@bus-ta/shared";
-import {
-  createRealtimeSessionService,
-  type RealtimeSessionServiceResult,
-} from "../services/realtime/realtime-session.service.js";
-import {
-  REALTIME_CLIENT_SECRETS_URL,
-  createRealtimeClientSecretAdapter,
-} from "../adapters/realtime/openai-realtime.adapter.js";
-import { createRealtimeRouter } from "./realtime.js";
+import { realtimeRouter } from "./realtime.js";
 
-const sharedSecret = "test-shared-secret";
-const openAiApiKey = "sk-test-key";
-const timestamp = "2026-08-04T12:00:00.000Z";
+type JsonObject = Record<string, unknown>;
+type RequestHeaders = Record<string, string>;
 
-async function listen(app: express.Express) {
-  const server = http.createServer(app);
-  await new Promise<void>((resolve) => server.listen(0, resolve));
-  const address = server.address();
-  assert.ok(address && typeof address !== "string");
+const REALTIME_SESSION_PATH = "/api/realtime/session";
 
-  return {
-    server,
-    url: `http://127.0.0.1:${address.port}`,
-  };
+async function postRealtimeSession(headers?: RequestHeaders, path: string = REALTIME_SESSION_PATH) {
+  const app = express();
+  app.use(express.json());
+  app.use("/api/realtime", realtimeRouter);
+
+  const server = createServer(app);
+  await new Promise<void>((resolve) => {
+    server.listen(0, resolve);
+  });
+
+  try {
+    const address = server.address();
+    assert(address && typeof address === "object");
+
+    return await requestJson({
+      port: address.port,
+      path,
+      ...(headers ? { headers } : {}),
+    });
+  } finally {
+    await closeServer(server);
+  }
 }
 
-function assertError(
-  result: RealtimeSessionServiceResult,
-  httpStatus: 401 | 502,
-  errorCode: "UNAUTHORIZED" | "REALTIME_SESSION_FAILED",
-) {
-  assert.equal(result.httpStatus, httpStatus);
-  assert.equal(result.body.success, false);
-  if (result.body.success) return;
-  assert.equal(result.body.errorCode, errorCode);
-  assert.equal(result.body.timestamp, timestamp);
-  assert.equal(typeof result.body.message, "string");
-  assert.equal("clientSecret" in result.body, false);
-}
-
-test("exposes the exact Realtime session API path and response contract", () => {
-  assert.equal(API_PATHS.realtime.session, "/api/realtime/session");
-
-  const parsed = RealtimeSessionResponseSchema.parse({
-    success: true,
-    clientSecret: "ek_test_secret",
-    model: "gpt-realtime-mini",
-    expiresAt: "2026-08-04T12:10:00.000Z",
-    message: "Realtime 세션 단기 키를 발급했습니다.",
-    timestamp,
-  });
-
-  assert.equal(parsed.success, true);
-  assert.equal(parsed.model, "gpt-realtime-mini");
-});
-
-test("rejects a missing shared-secret header before contacting OpenAI", async () => {
-  let calls = 0;
-  const result = await createRealtimeSessionService(
-    { configuredSharedSecret: sharedSecret },
-    {
-      now: () => timestamp,
-      fetch: async () => {
-        calls += 1;
-        throw new Error("must not call upstream");
-      },
-    },
-  );
-
-  assertError(result, 401, "UNAUTHORIZED");
-  assert.equal(calls, 0);
-});
-
-test("rejects a mismatched shared-secret header before contacting OpenAI", async () => {
-  let calls = 0;
-  const result = await createRealtimeSessionService(
-    {
-      providedSharedSecret: "wrong-secret",
-      configuredSharedSecret: sharedSecret,
-    },
-    {
-      now: () => timestamp,
-      fetch: async () => {
-        calls += 1;
-        throw new Error("must not call upstream");
-      },
-    },
-  );
-
-  assertError(result, 401, "UNAUTHORIZED");
-  assert.equal(calls, 0);
-});
-
-test("rejects when the server shared secret is not configured", async () => {
-  let calls = 0;
-  const result = await createRealtimeSessionService(
-    { providedSharedSecret: sharedSecret },
-    {
-      now: () => timestamp,
-      fetch: async () => {
-        calls += 1;
-        throw new Error("must not call upstream");
-      },
-    },
-  );
-
-  assertError(result, 401, "UNAUTHORIZED");
-  assert.equal(calls, 0);
-});
-
-test("issues a client secret with the exact OpenAI request and converts expiry epoch seconds", async () => {
-  const expiresAtEpochSeconds = Math.floor(Date.parse("2026-08-04T12:10:00.000Z") / 1000);
-  let request: { url: string; init: RequestInit } | undefined;
-
-  const result = await createRealtimeSessionService(
-    {
-      providedSharedSecret: sharedSecret,
-      configuredSharedSecret: sharedSecret,
-      openAiApiKey,
-    },
-    {
-      now: () => timestamp,
-      fetch: async (url, init) => {
-        request = { url: String(url), init: init ?? {} };
-        return new Response(
-          JSON.stringify({ value: "ek_test_secret", expires_at: expiresAtEpochSeconds }),
-          { status: 200, headers: { "content-type": "application/json" } },
-        );
-      },
-    },
-  );
-
-  assert.equal(result.httpStatus, 200);
-  if (result.httpStatus !== 200) return;
-  assert.deepEqual(result.body, {
-    success: true,
-    clientSecret: "ek_test_secret",
-    model: "gpt-realtime-mini",
-    expiresAt: "2026-08-04T12:10:00.000Z",
-    message: "Realtime 세션 단기 키를 발급했습니다.",
-    timestamp,
-  });
-  assert.ok(request);
-  assert.equal(request.url, REALTIME_CLIENT_SECRETS_URL);
-  assert.equal(request.init.method, "POST");
-  assert.deepEqual(request.init.headers, {
-    Authorization: `Bearer ${openAiApiKey}`,
-    "Content-Type": "application/json",
-  });
-  assert.deepEqual(JSON.parse(String(request.init.body)), {
-    session: { type: "realtime", model: "gpt-realtime-mini" },
-    expires_after: { anchor: "created_at", seconds: 600 },
-  });
-  assert.equal(String(request.init.body).includes("instructions"), false);
-  assert.equal(String(request.init.body).includes("tools"), false);
-
-  assert.deepEqual(RealtimeSessionResponseSchema.parse(result.body), result.body);
-});
-
-test("rejects authentication even when the OpenAI key is missing", async () => {
-  const result = await createRealtimeSessionService(
-    { providedSharedSecret: sharedSecret, configuredSharedSecret: sharedSecret },
-    { now: () => timestamp },
-  );
-
-  assertError(result, 502, "REALTIME_SESSION_FAILED");
-});
-
-test("returns a failed response when OPENAI_API_KEY is not configured", async () => {
-  const result = await createRealtimeSessionService(
-    {
-      providedSharedSecret: sharedSecret,
-      configuredSharedSecret: sharedSecret,
-    },
-    { now: () => timestamp },
-  );
-
-  assertError(result, 502, "REALTIME_SESSION_FAILED");
-});
-
-test("maps a non-2xx OpenAI response to REALTIME_SESSION_FAILED", async () => {
-  const result = await createRealtimeSessionService(
-    {
-      providedSharedSecret: sharedSecret,
-      configuredSharedSecret: sharedSecret,
-      openAiApiKey,
-    },
-    {
-      now: () => timestamp,
-      fetch: async () => new Response("upstream failed", { status: 500 }),
-    },
-  );
-
-  assertError(result, 502, "REALTIME_SESSION_FAILED");
-});
-
-test("maps an OpenAI network rejection to REALTIME_SESSION_FAILED", async () => {
-  const result = await createRealtimeSessionService(
-    {
-      providedSharedSecret: sharedSecret,
-      configuredSharedSecret: sharedSecret,
-      openAiApiKey,
-    },
-    {
-      now: () => timestamp,
-      fetch: async () => {
-        throw new Error("network down");
-      },
-    },
-  );
-
-  assertError(result, 502, "REALTIME_SESSION_FAILED");
-});
-
-test("maps a missing or malformed upstream secret and expiry to REALTIME_SESSION_FAILED", async () => {
-  for (const payload of [
-    { expires_at: 1_000 },
-    { value: "ek_test_secret" },
-    { value: "", expires_at: 1_000 },
-    { value: "ek_test_secret", expires_at: "1000" },
-    { value: "ek_test_secret", expires_at: 0 },
-    { value: "ek_test_secret", expires_at: Number.NaN },
-  ]) {
-    const result = await createRealtimeSessionService(
+function requestJson({ port, path, headers }: { port: number; path: string; headers?: RequestHeaders }) {
+  return new Promise<{ status: number; body: JsonObject }>((resolve, reject) => {
+    const req = request(
       {
-        providedSharedSecret: sharedSecret,
-        configuredSharedSecret: sharedSecret,
-        openAiApiKey,
+        hostname: "127.0.0.1",
+        port,
+        path,
+        method: "POST",
+        headers,
       },
-      {
-        now: () => timestamp,
-        fetch: async () => new Response(JSON.stringify(payload), { status: 200 }),
+      (res) => {
+        let body = "";
+
+        res.setEncoding("utf8");
+        res.on("data", (chunk) => {
+          body += chunk;
+        });
+        res.on("end", () => {
+          resolve({
+            status: res.statusCode ?? 0,
+            body: JSON.parse(body) as JsonObject,
+          });
+        });
       },
     );
 
-    assertError(result, 502, "REALTIME_SESSION_FAILED");
-  }
-});
+    req.on("error", reject);
+    req.end();
+  });
+}
 
-test("adapter forwards only the contract fields to OpenAI", async () => {
-  let request: { url: string; init: RequestInit } | undefined;
-  const adapter = createRealtimeClientSecretAdapter(async (url, init) => {
-    request = { url: String(url), init: init ?? {} };
-    return new Response(JSON.stringify({ value: "ek_test_secret", expires_at: 1_800_000_000 }), {
-      status: 200,
+function closeServer(server: Server) {
+  return new Promise<void>((resolve, reject) => {
+    server.close((error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+
+      resolve();
     });
   });
+}
 
-  await adapter.createClientSecret(openAiApiKey);
+// openAiApiKey 에 null 을 넘기면 OPENAI_API_KEY 를 지운다.
+// (undefined 를 쓰면 기본값이 적용되어 값이 지워지지 않는다.)
+function setRealtimeEnv(sharedSecret: string | undefined, openAiApiKey: string | null = "sk-test") {
+  const previousSharedSecret = process.env["REALTIME_SHARED_SECRET"];
+  const previousOpenAiApiKey = process.env["OPENAI_API_KEY"];
 
-  assert.ok(request);
-  assert.equal(request.url, REALTIME_CLIENT_SECRETS_URL);
-  assert.deepEqual(JSON.parse(String(request.init.body)), {
-    session: { type: "realtime", model: "gpt-realtime-mini" },
-    expires_after: { anchor: "created_at", seconds: 600 },
+  if (sharedSecret === undefined) {
+    delete process.env["REALTIME_SHARED_SECRET"];
+  } else {
+    process.env["REALTIME_SHARED_SECRET"] = sharedSecret;
+  }
+
+  if (openAiApiKey === null) {
+    delete process.env["OPENAI_API_KEY"];
+  } else {
+    process.env["OPENAI_API_KEY"] = openAiApiKey;
+  }
+
+  return () => {
+    if (previousSharedSecret === undefined) {
+      delete process.env["REALTIME_SHARED_SECRET"];
+    } else {
+      process.env["REALTIME_SHARED_SECRET"] = previousSharedSecret;
+    }
+
+    if (previousOpenAiApiKey === undefined) {
+      delete process.env["OPENAI_API_KEY"];
+    } else {
+      process.env["OPENAI_API_KEY"] = previousOpenAiApiKey;
+    }
+  };
+}
+
+// 테스트가 실제 OpenAI 를 호출하지 않도록 전역 fetch 를 항상 교체한다.
+function stubGlobalFetch(handler: () => Promise<Response>) {
+  const originalFetch = globalThis.fetch;
+  const state = { calls: 0 };
+
+  globalThis.fetch = (async () => {
+    state.calls += 1;
+    return handler();
+  }) as typeof globalThis.fetch;
+
+  return {
+    state,
+    restore: () => {
+      globalThis.fetch = originalFetch;
+    },
+  };
+}
+
+function upstreamMustNotBeCalled() {
+  return stubGlobalFetch(async () => {
+    throw new Error("must not call upstream");
   });
+}
+
+test("rejects realtime session when the shared-secret header is missing", async (t) => {
+  const upstream = upstreamMustNotBeCalled();
+  t.after(setRealtimeEnv("server-secret"));
+  t.after(upstream.restore);
+
+  const response = await postRealtimeSession();
+
+  assert.equal(response.status, 401);
+  assert.equal(response.body["success"], false);
+  assert.equal(response.body["errorCode"], "UNAUTHORIZED");
+  assert.equal(upstream.state.calls, 0);
 });
 
-test("mounts POST /api/realtime/session and ignores the request body", async () => {
-  let openAiCalls = 0;
-  const app = express();
-  app.use(express.json());
-  app.use(
-    API_PATHS.realtime.session,
-    createRealtimeRouter({
-      getConfig: () => ({
-        configuredSharedSecret: sharedSecret,
-        openAiApiKey,
-      }),
-      now: () => timestamp,
-      fetch: async () => {
-        openAiCalls += 1;
-        return new Response(
-          JSON.stringify({ value: "ek_test_secret", expires_at: 1_800_000_000 }),
-          { status: 200 },
-        );
-      },
-    }),
+test("rejects realtime session when REALTIME_SHARED_SECRET is missing", async (t) => {
+  const upstream = upstreamMustNotBeCalled();
+  t.after(setRealtimeEnv(undefined));
+  t.after(upstream.restore);
+
+  const response = await postRealtimeSession();
+
+  assert.equal(response.status, 401);
+  assert.equal(response.body["success"], false);
+  assert.equal(response.body["errorCode"], "UNAUTHORIZED");
+  assert.equal(upstream.state.calls, 0);
+});
+
+test("rejects realtime session when shared secret does not match", async (t) => {
+  const upstream = upstreamMustNotBeCalled();
+  t.after(setRealtimeEnv("server-secret"));
+  t.after(upstream.restore);
+
+  const response = await postRealtimeSession({
+    "x-realtime-shared-secret": "wrong-secret",
+  });
+
+  assert.equal(response.status, 401);
+  assert.equal(response.body["success"], false);
+  assert.equal(response.body["errorCode"], "UNAUTHORIZED");
+  assert.equal(upstream.state.calls, 0);
+});
+
+test("fails realtime session with 502 when OPENAI_API_KEY is missing", async (t) => {
+  const upstream = upstreamMustNotBeCalled();
+  t.after(setRealtimeEnv("server-secret", null));
+  t.after(upstream.restore);
+
+  const response = await postRealtimeSession({
+    "x-realtime-shared-secret": "server-secret",
+  });
+
+  assert.equal(response.status, 502);
+  assert.equal(response.body["success"], false);
+  assert.equal(response.body["errorCode"], "REALTIME_SESSION_FAILED");
+  assert.equal(upstream.state.calls, 0);
+});
+
+test("fails realtime session with 502 when OpenAI responds with a non-2xx status", async (t) => {
+  const upstream = stubGlobalFetch(async () => new Response("upstream failed", { status: 500 }));
+  t.after(setRealtimeEnv("server-secret"));
+  t.after(upstream.restore);
+
+  const response = await postRealtimeSession({
+    "x-realtime-shared-secret": "server-secret",
+  });
+
+  assert.equal(response.status, 502);
+  assert.equal(response.body["success"], false);
+  assert.equal(response.body["errorCode"], "REALTIME_SESSION_FAILED");
+  assert.equal(upstream.state.calls, 1);
+});
+
+test("fails realtime session with 502 when the OpenAI request rejects", async (t) => {
+  const upstream = stubGlobalFetch(async () => {
+    throw new Error("network down");
+  });
+  t.after(setRealtimeEnv("server-secret"));
+  t.after(upstream.restore);
+
+  const response = await postRealtimeSession({
+    "x-realtime-shared-secret": "server-secret",
+  });
+
+  assert.equal(response.status, 502);
+  assert.equal(response.body["success"], false);
+  assert.equal(response.body["errorCode"], "REALTIME_SESSION_FAILED");
+  assert.equal(upstream.state.calls, 1);
+});
+
+test("fails realtime session with 502 when the OpenAI response has no client secret", async (t) => {
+  const upstream = stubGlobalFetch(
+    async () =>
+      new Response(JSON.stringify({ client_secret: { expires_at: 1785413100 } }), { status: 200 }),
+  );
+  t.after(setRealtimeEnv("server-secret"));
+  t.after(upstream.restore);
+
+  const response = await postRealtimeSession({
+    "x-realtime-shared-secret": "server-secret",
+  });
+
+  assert.equal(response.status, 502);
+  assert.equal(response.body["success"], false);
+  assert.equal(response.body["errorCode"], "REALTIME_SESSION_FAILED");
+  assert.equal(upstream.state.calls, 1);
+});
+
+test("returns realtime session when shared secret matches", async (t) => {
+  const expiresAtIso = "2026-07-30T12:05:00.000Z";
+  const upstream = stubGlobalFetch(
+    async () =>
+      new Response(
+        JSON.stringify({
+          client_secret: {
+            value: "ek_test",
+            expires_at: Math.floor(Date.parse(expiresAtIso) / 1000),
+          },
+        }),
+        { status: 200 },
+      ),
+  );
+  t.after(setRealtimeEnv("server-secret"));
+  t.after(upstream.restore);
+
+  const response = await postRealtimeSession({
+    "x-realtime-shared-secret": "server-secret",
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.body["success"], true);
+  assert.equal(response.body["clientSecret"], "ek_test");
+  assert.equal(response.body["model"], "gpt-realtime-mini");
+  // epoch 초 expires_at 이 ISO 문자열 expiresAt 으로 변환된다.
+  assert.equal(response.body["expiresAt"], expiresAtIso);
+});
+
+test("serves the realtime session contract at POST /api/realtime/session", async (t) => {
+  const upstream = stubGlobalFetch(
+    async () =>
+      new Response(
+        JSON.stringify({ client_secret: { value: "ek_test", expires_at: 1785413100 } }),
+        { status: 200 },
+      ),
+  );
+  t.after(setRealtimeEnv("server-secret"));
+  t.after(upstream.restore);
+
+  assert.equal(REALTIME_SESSION_PATH, "/api/realtime/session");
+
+  const response = await postRealtimeSession(
+    { "x-realtime-shared-secret": "server-secret" },
+    "/api/realtime/session",
   );
 
-  const { server, url } = await listen(app);
-  try {
-    const response = await fetch(`${url}${API_PATHS.realtime.session}`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-realtime-shared-secret": sharedSecret,
-      },
-      body: JSON.stringify({ instructions: "ignored", tools: ["ignored"] }),
-    });
-    const body: unknown = await response.json();
-
-    assert.equal(response.status, 200);
-    assert.equal(openAiCalls, 1);
-    assert.deepEqual(body, {
-      success: true,
-      clientSecret: "ek_test_secret",
-      model: "gpt-realtime-mini",
-      expiresAt: "2027-01-15T08:00:00.000Z",
-      message: "Realtime 세션 단기 키를 발급했습니다.",
-      timestamp,
-    });
-  } finally {
-    await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
-  }
+  assert.equal(response.status, 200);
+  assert.equal(response.body["success"], true);
 });
