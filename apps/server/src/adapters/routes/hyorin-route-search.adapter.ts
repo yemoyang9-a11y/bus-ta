@@ -80,9 +80,12 @@ export async function searchRoutes(request: RoutesSearchRequest): Promise<Route[
     const stations = subPath.passStopList?.stations || [];
     if (stations.length < 2) continue;
 
-    const lane = subPath.lane?.[0] ?? {};
-    const routeNo = String(lane.busNo ?? "");
-    const localBusId = String(lane.busLocalBlID ?? "");
+    // subPath 하나를 여러 버스 노선이 공유할 수 있다 (같은 도로 구간을 지나는 버스들).
+    // lane[0]만 쓰면 나머지 노선이 후보에서 통째로 빠지므로, lane 전체를 순회해
+    // 노선마다 별도 후보를 만든다. 정류장 정보는 subPath 공통이라 그대로 공유한다.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const lanes = (subPath.lane ?? []) as any[];
+    if (lanes.length === 0) continue;
 
     // ODsay startLocalStationID = GBIS stationId (테스트로 동일 확인, 역조회 불필요)
     const gbisStationId = String(subPath.startLocalStationID ?? "");
@@ -106,7 +109,7 @@ export async function searchRoutes(request: RoutesSearchRequest): Promise<Route[
       longitude: parseFloat(stations[stations.length - 1].x),
     };
 
-    // 하차 정류장이 목적지에서 0.7km 초과 시 제외
+    // 하차 정류장이 목적지에서 0.7km 초과 시 제외 (subPath 공통 조건이라 노선과 무관하게 한 번만 검사)
     const dist = distanceKm(
       destinationStation.latitude,
       destinationStation.longitude,
@@ -117,22 +120,27 @@ export async function searchRoutes(request: RoutesSearchRequest): Promise<Route[
 
     const info = path.info ?? {};
 
-    candidates.push({
-      candidateId: candidateId++,
-      routeNo,
-      localBusId,
-      gbisStationId,
-      boardingStation,
-      destinationStation,
-      stationList,
-      totalTime: info.totalTime ?? undefined,
-      totalWalk: info.totalWalk ?? undefined,
-      payment: info.payment ?? undefined,
-      busTransitCount: info.busTransitCount ?? undefined,
-      busStationCount: subPath.stationCount ?? undefined,
-      totalDistance: info.totalDistance ?? undefined,
-      intervalTime: subPath.intervalTime ?? undefined,
-    });
+    for (const lane of lanes) {
+      const routeNo = String(lane.busNo ?? "");
+      const localBusId = String(lane.busLocalBlID ?? "");
+
+      candidates.push({
+        candidateId: candidateId++,
+        routeNo,
+        localBusId,
+        gbisStationId,
+        boardingStation,
+        destinationStation,
+        stationList,
+        totalTime: info.totalTime ?? undefined,
+        totalWalk: info.totalWalk ?? undefined,
+        payment: info.payment ?? undefined,
+        busTransitCount: info.busTransitCount ?? undefined,
+        busStationCount: subPath.stationCount ?? undefined,
+        totalDistance: info.totalDistance ?? undefined,
+        intervalTime: subPath.intervalTime ?? undefined,
+      });
+    }
   }
 
   return candidates;
