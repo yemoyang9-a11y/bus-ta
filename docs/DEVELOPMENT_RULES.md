@@ -30,6 +30,13 @@
 
 문서만 바꾸는 작업은 코드·패키지 설정·migration을 같이 바꾸지 않는다. 코드와 문서가 다르면 조용히 한쪽을 변경하지 말고, 실제 동작과 목표 계약 및 영향 범위를 PR 또는 이슈에 남긴다.
 
+## Realtime 보안 환경변수
+
+- 서버는 `OPENAI_API_KEY`와 `REALTIME_SHARED_SECRET`이 모두 설정된 경우에만 `POST /api/realtime/session`에서 단기 키를 발급한다.
+- `REALTIME_SHARED_SECRET`이 비어 있으면 인증 실패가 아니라 서버 설정 오류로 보고 세션 발급을 거부한다.
+- 모바일은 `EXPO_PUBLIC_` 접두사로 공유 비밀을 노출하지 않는다. EAS 또는 로컬 빌드 환경의 `REALTIME_SHARED_SECRET`을 Expo config `extra`를 통해 런타임에서 읽어 요청 헤더 `x-realtime-shared-secret`로 전달한다.
+- 실제 공유 비밀, OpenAI API 키, 단기 키는 코드·문서·로그·PR 설명에 기록하지 않는다.
+
 ## 검증과 DB
 
 - 실행한 검증만 통과로 기록한다. 실행하지 못한 항목은 사유와 남은 검증을 기록한다.
