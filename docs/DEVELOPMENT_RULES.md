@@ -34,7 +34,7 @@
 ## Realtime 보안 환경변수
 
 - 서버는 `OPENAI_API_KEY`와 `REALTIME_SHARED_SECRET`이 모두 설정된 경우에만 `POST /api/realtime/session`에서 단기 키를 발급한다.
-- `REALTIME_SHARED_SECRET`이 비어 있으면 인증 실패가 아니라 서버 설정 오류로 보고 세션 발급을 거부한다.
+- `REALTIME_SHARED_SECRET`이 비어 있어도 세션 발급 API를 인증 없이 열지 않고, 요청 헤더 불일치와 동일하게 `401 UNAUTHORIZED`로 거부한다. 응답으로 서버 설정 상태를 구분할 수 있게 하지 않는다.
 - 모바일은 `EXPO_PUBLIC_` 접두사로 공유 비밀을 노출하지 않는다. EAS 또는 로컬 빌드 환경의 `REALTIME_SHARED_SECRET`을 Expo config `extra`를 통해 런타임에서 읽어 요청 헤더 `x-realtime-shared-secret`로 전달한다.
 - 실제 공유 비밀, OpenAI API 키, 단기 키는 코드·문서·로그·PR 설명에 기록하지 않는다.
 
