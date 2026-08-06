@@ -2,7 +2,7 @@
 
 이 저장소는 시각장애인이 버스를 이용할 때 겪는 버스 식별, 경로 선택, 이동 중 위치 확인, 하차 시점 판단의 어려움을 줄이기 위한 한이음 프로젝트입니다.
 
-최종 개발 계약은 Notion 프로젝트 관리의 6개 핵심 문서와 아래 GitHub `docs/` 동기화 문서입니다. 코드의 현재 동작은 `claude/nice-archimedes-iv7iu0`와 실제 Supabase 적용 상태로 별도 확인합니다.
+최종 개발 계약은 Notion 프로젝트 관리의 6개 핵심 문서와 아래 GitHub `docs/` 동기화 문서입니다. 코드의 현재 동작은 통합·배포 기준 브랜치인 `claude/nice-archimedes-iv7iu0`의 코드·테스트와 실제 Supabase 적용 상태로 별도 확인합니다.
 
 ## 주요 기능
 
@@ -120,12 +120,26 @@ pnpm start
 cp .env.example .env
 ```
 
+백엔드는 Supabase 프로젝트 기본 URL(`SUPABASE_URL`, `/rest/v1/` 미포함)과
+`SUPABASE_SERVICE_ROLE_KEY`만 사용합니다. service-role 키는 Render 등 서버 secret으로만
+설정하고 모바일 앱이나 `EXPO_PUBLIC_*` 환경변수에 넣지 않습니다.
+
 필수 외부 API 키:
 
 - `KAKAO_REST_API_KEY`
 - `ODSAY_API_KEY`
 - `GBIS_SERVICE_KEY`
 - `OPENAI_API_KEY`
+
+## Render 배포
+
+Render Blueprint 진입점은 저장소 루트의 `render.yaml`이며, `claude/nice-archimedes-iv7iu0` 브랜치를
+대상으로 `bus-ta` 서비스를 구성합니다. Blueprint에는 secret 값이 들어가지 않고
+필요한 secret 이름만 선언되는 secret-name-only 규칙이 적용되므로 실제 값은 Render
+환경변수 화면에서 입력합니다.
+
+배포 완료 기준은 `GET /api/health`가 HTTP 200을 반환하고 응답에
+`serverStatus: UP` 및 `dbStatus: UP`이 포함되는 것입니다.
 
 ## 최종 개발 문서
 
@@ -150,7 +164,7 @@ cp .env.example .env
 
 - GitHub 원격 연결: 완료
 - GitHub Markdown 문서 초안 작성: 완료 후 Notion 최신 규칙 반영 중
-- 원격 `claude/nice-archimedes-iv7iu0` 브랜치 초기 모노레포 스캐폴드: 확인됨
+- 원격 `claude/nice-archimedes-iv7iu0` 브랜치 초기 모노레포 스캐폴드: 역사적 참고로 확인됨
 - 실제 외부 API, DB, BLE 연동 구현 상태: 코드 기준 추가 확인 필요
 - 7/1 중간평가: 완료. 목적지 입력부터 노선 선택, mock 이동, 하차 판단, TTS 안내까지 하나의 소프트웨어 흐름 연결 목표 달성
 - 현재 목표: mock 데이터를 실제 데이터로 전환. 버스 비콘 실 연동을 우선순위로 진행(`bus_beacons` 실DB 조회 경로는 연결됨, 정민 실물 비콘 데이터 반영 전까지는 mock 행으로 대체 중)

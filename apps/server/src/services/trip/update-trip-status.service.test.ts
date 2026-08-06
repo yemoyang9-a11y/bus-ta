@@ -111,6 +111,170 @@ test("updates current station, next station, remainingStations, and tripStatus f
   });
 });
 
+test("marks the trip TRIP_DONE when the destination station is reached", async () => {
+  const saved: unknown[] = [];
+
+  const result = await updateTripStatus(
+    "trip-test-001",
+    {
+      requestId: "loc-destination-1",
+      latitude: TEST_ROUTE.stationList[3]!.latitude,
+      longitude: TEST_ROUTE.stationList[3]!.longitude,
+      recordedAt: "2026-07-01T14:35:10+09:00",
+      source: "GPS",
+    },
+    {
+      findTripProgressData: async () => ({
+        trip: baseTrip,
+        status: {
+          ...baseStatus,
+          currentStation: TEST_ROUTE.stationList[2]!,
+          nextStation: TEST_ROUTE.stationList[3]!,
+          remainingStations: 1,
+          tripStatus: TRIP_STATUS.NEAR_DESTINATION,
+        },
+      }),
+      findLocationLogByRequestId: async () => null,
+      saveStatusAndLocation: async (data) => {
+        saved.push(data);
+      },
+      now: () => "2026-07-01T14:35:11+09:00",
+    },
+  );
+
+  assert.equal(result.httpStatus, 200);
+  if (result.httpStatus !== 200) return;
+  assert.equal(result.body.currentStation, TEST_ROUTE.stationList[3]);
+  assert.equal(result.body.nextStation, null);
+  assert.equal(result.body.remainingStations, 0);
+  assert.equal(result.body.tripStatus, TRIP_STATUS.TRIP_DONE);
+  assert.equal(result.body.shouldTriggerBell, false);
+
+  assert.equal(saved.length, 1);
+  const savedInput = saved[0] as {
+    status: { remainingStations: number; tripStatus: string };
+    locationLog: { remainingStations: number; locationAccepted: boolean; reason: string | null };
+  };
+  assert.equal(savedInput.status.remainingStations, 0);
+  assert.equal(savedInput.status.tripStatus, TRIP_STATUS.TRIP_DONE);
+  assert.equal(savedInput.locationLog.remainingStations, 0);
+  assert.equal(savedInput.locationLog.locationAccepted, true);
+  assert.equal(savedInput.locationLog.reason, null);
+});
+
+test("ignores a backward station update and records BACKWARD_STATION_IGNORED", async () => {
+  const saved: unknown[] = [];
+
+  const result = await updateTripStatus(
+    "trip-test-001",
+    {
+      requestId: "loc-backward-1",
+      latitude: TEST_ROUTE.stationList[0]!.latitude,
+      longitude: TEST_ROUTE.stationList[0]!.longitude,
+      recordedAt: "2026-07-01T14:35:20+09:00",
+      source: "GPS",
+    },
+    {
+      findTripProgressData: async () => ({
+        trip: baseTrip,
+        status: {
+          ...baseStatus,
+          currentStation: TEST_ROUTE.stationList[1]!,
+          nextStation: TEST_ROUTE.stationList[2]!,
+          remainingStations: 2,
+          tripStatus: TRIP_STATUS.ON_BUS,
+        },
+      }),
+      findLocationLogByRequestId: async () => null,
+      saveStatusAndLocation: async (data) => {
+        saved.push(data);
+      },
+      now: () => "2026-07-01T14:35:21+09:00",
+    },
+  );
+
+  assert.equal(result.httpStatus, 200);
+  if (result.httpStatus !== 200) return;
+  assert.equal(result.body.currentStation, TEST_ROUTE.stationList[1]);
+  assert.equal(result.body.nextStation, TEST_ROUTE.stationList[2]);
+  assert.equal(result.body.remainingStations, 2);
+  assert.equal(result.body.tripStatus, TRIP_STATUS.ON_BUS);
+
+  assert.equal(saved.length, 1);
+  const savedInput = saved[0] as {
+    locationLog: {
+      currentStation: (typeof TEST_ROUTE.stationList)[number] | null;
+      remainingStations: number;
+      locationAccepted: boolean;
+      reason: string | null;
+    };
+  };
+  assert.equal(savedInput.locationLog.currentStation, TEST_ROUTE.stationList[1]);
+  assert.equal(savedInput.locationLog.remainingStations, 2);
+  assert.equal(savedInput.locationLog.locationAccepted, false);
+  assert.equal(savedInput.locationLog.reason, "BACKWARD_STATION_IGNORED");
+});
+
+test("returns 400 INVALID_REQUEST for an invalid location update without reading the repository", async () => {
+  let findCalls = 0;
+
+  const result = await updateTripStatus(
+    "trip-test-001",
+    { requestId: "", latitude: 37.49, longitude: 127.03 },
+    {
+      findTripProgressData: async () => {
+        findCalls += 1;
+        throw new Error("should not be called");
+      },
+      findLocationLogByRequestId: async () => {
+        throw new Error("should not be called");
+      },
+      saveStatusAndLocation: async () => {
+        throw new Error("should not be called");
+      },
+      now: () => "2026-07-01T14:35:30+09:00",
+    },
+  );
+
+  assert.equal(result.httpStatus, 400);
+  assert.deepEqual(result.body, {
+    success: false,
+    errorCode: "INVALID_REQUEST",
+    message: "요청 데이터가 올바르지 않습니다.",
+    timestamp: "2026-07-01T14:35:30+09:00",
+  });
+  assert.equal(findCalls, 0);
+});
+
+test("returns 500 DB_ERROR when saving a location update fails", async () => {
+  const result = await updateTripStatus(
+    "trip-test-001",
+    {
+      requestId: "loc-save-db-error",
+      latitude: TEST_ROUTE.stationList[1]!.latitude,
+      longitude: TEST_ROUTE.stationList[1]!.longitude,
+      recordedAt: "2026-07-01T14:35:40+09:00",
+      source: "GPS",
+    },
+    {
+      findTripProgressData: async () => ({ trip: baseTrip, status: baseStatus }),
+      findLocationLogByRequestId: async () => null,
+      saveStatusAndLocation: async () => {
+        throw new Error("Supabase unavailable");
+      },
+      now: () => "2026-07-01T14:35:41+09:00",
+    },
+  );
+
+  assert.equal(result.httpStatus, 500);
+  assert.deepEqual(result.body, {
+    success: false,
+    errorCode: "DB_ERROR",
+    message: "이동 상태를 저장하지 못했습니다.",
+    timestamp: "2026-07-01T14:35:41+09:00",
+  });
+});
+
 test("returns current status without saving a new location when requestId is duplicated", async () => {
   let saved = false;
 
@@ -284,6 +448,106 @@ test("does not generate a second bell request when bell is already PENDING", asy
   assert.equal(saved.length, 1);
   const savedInput = saved[0] as { status: { bellStatus: string }; bellRequest?: unknown };
   assert.equal(savedInput.status.bellStatus, BELL_STATUS.PENDING);
+  assert.equal(savedInput.bellRequest ?? null, null);
+});
+
+test("keeps SUCCESS bell status at one remaining station without generating another request", async () => {
+  const saved: unknown[] = [];
+
+  const result = await updateTripStatus(
+    "trip-test-001",
+    {
+      requestId: "loc-bell-success-1",
+      latitude: TEST_ROUTE.stationList[2]!.latitude,
+      longitude: TEST_ROUTE.stationList[2]!.longitude,
+      recordedAt: "2026-07-01T14:37:10+09:00",
+      source: "MOCK",
+    },
+    {
+      findTripProgressData: async () => ({
+        trip: baseTrip,
+        status: {
+          ...baseStatus,
+          currentStation: TEST_ROUTE.stationList[2]!,
+          nextStation: TEST_ROUTE.stationList[3]!,
+          remainingStations: 1,
+          tripStatus: TRIP_STATUS.NEAR_DESTINATION,
+          bellStatus: BELL_STATUS.SUCCESS,
+          bellRequestId: "bell-success-1",
+          command: BELL_COMMAND.STOP_REQUEST,
+        },
+      }),
+      findLocationLogByRequestId: async () => null,
+      saveStatusAndLocation: async (data) => {
+        saved.push(data);
+      },
+      generateBellRequestId: () => {
+        throw new Error("should not generate a second bell request");
+      },
+      now: () => "2026-07-01T14:37:11+09:00",
+    },
+  );
+
+  assert.equal(result.httpStatus, 200);
+  if (result.httpStatus !== 200) return;
+  assert.equal(result.body.remainingStations, 1);
+  assert.equal(result.body.bellStatus, BELL_STATUS.SUCCESS);
+  assert.equal(result.body.shouldTriggerBell, false);
+  assert.equal(result.body.bellRequestId, "bell-success-1");
+
+  assert.equal(saved.length, 1);
+  const savedInput = saved[0] as { status: { bellStatus: string }; bellRequest?: unknown };
+  assert.equal(savedInput.status.bellStatus, BELL_STATUS.SUCCESS);
+  assert.equal(savedInput.bellRequest ?? null, null);
+});
+
+test("keeps FAIL bell status at one remaining station without generating another request", async () => {
+  const saved: unknown[] = [];
+
+  const result = await updateTripStatus(
+    "trip-test-001",
+    {
+      requestId: "loc-bell-fail-1",
+      latitude: TEST_ROUTE.stationList[2]!.latitude,
+      longitude: TEST_ROUTE.stationList[2]!.longitude,
+      recordedAt: "2026-07-01T14:37:20+09:00",
+      source: "MOCK",
+    },
+    {
+      findTripProgressData: async () => ({
+        trip: baseTrip,
+        status: {
+          ...baseStatus,
+          currentStation: TEST_ROUTE.stationList[2]!,
+          nextStation: TEST_ROUTE.stationList[3]!,
+          remainingStations: 1,
+          tripStatus: TRIP_STATUS.NEAR_DESTINATION,
+          bellStatus: BELL_STATUS.FAIL,
+          bellRequestId: "bell-fail-1",
+          command: BELL_COMMAND.STOP_REQUEST,
+        },
+      }),
+      findLocationLogByRequestId: async () => null,
+      saveStatusAndLocation: async (data) => {
+        saved.push(data);
+      },
+      generateBellRequestId: () => {
+        throw new Error("should not generate a second bell request");
+      },
+      now: () => "2026-07-01T14:37:21+09:00",
+    },
+  );
+
+  assert.equal(result.httpStatus, 200);
+  if (result.httpStatus !== 200) return;
+  assert.equal(result.body.remainingStations, 1);
+  assert.equal(result.body.bellStatus, BELL_STATUS.FAIL);
+  assert.equal(result.body.shouldTriggerBell, false);
+  assert.equal(result.body.bellRequestId, "bell-fail-1");
+
+  assert.equal(saved.length, 1);
+  const savedInput = saved[0] as { status: { bellStatus: string }; bellRequest?: unknown };
+  assert.equal(savedInput.status.bellStatus, BELL_STATUS.FAIL);
   assert.equal(savedInput.bellRequest ?? null, null);
 });
 

@@ -21,7 +21,7 @@ AI·BLE 기반 시각장애인 대중교통 탑승·하차 보조 시스템
 | `tripId` | 한 번의 운행 식별자 |
 | `requestId` | GPS/mock 위치 업데이트 멱등성 확인용 식별자 |
 | `bellRequestId` | 하차벨 요청과 결과 연결용 식별자 |
-| `tripStatus` | `WAITING_BUS`, `ON_BUS`, `NEAR_DESTINATION`, `TRIP_DONE`, `ERROR` |
+| `tripStatus` | `WAITING_BUS`, `ON_BUS`, `NEAR_DESTINATION`, `TRIP_DONE`, `CANCELLED` |
 | `bellStatus` | `NOT_REQUESTED`, `PENDING`, `SUCCESS`, `FAIL` |
 | 비콘 | ESP32 버스 비콘 또는 mock 비콘 |
 | 스마트지팡이 | 사용자가 보유한 BLE Central 장치 |

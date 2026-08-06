@@ -1,6 +1,6 @@
 # 공통 API 및 Function Calling 명세
 
-> **문서 상태: 구버전 — 작업 기준으로 참고하지 않는다.** 이 문서는 7/1 중간평가 기준으로 작성됐고 이후 갱신되지 않았다. 개발 문서의 단일 출처는 노션이다 — API·Function Calling 계약은 노션 「공통 API 및 Function Calling 명세서」를, 데이터 모델·상태 전이는 노션 「공통 데이터 모델 및 상태 명세서」를 기준으로 작업한다. 코드 작업·리뷰·문서 대조는 반드시 노션 문서를 기준으로 하고, 이 파일의 내용을 판단 근거로 삼지 않는다.
+> 문서 상태: 최종 계약. 데이터 모델·상태 전이는 [DB_SCHEMA.md](DB_SCHEMA.md)가 단일 출처다.
 
 ## 공통 규칙
 
@@ -34,9 +34,45 @@ Function은 사용자 의도를 처리하는 경로다. 자동 GPS·하차벨 �
 | `GET` | `/api/health` | 없음 |
 | `POST` | `/api/realtime/session` | Realtime용 단기 키 발급 |
 
+## Health 상태 조회
+
+`GET /api/health`는 요청 query/body를 사용하지 않고 서버와 Supabase 연결 상태를 확인한다. 공개 응답은 `packages/shared`의 health Schema를 단일 계약으로 사용하며 `timestamp`는 ISO 8601 문자열이다.
+
+| Supabase 상태 | HTTP | `success` | `serverStatus` | `dbStatus` | `errorCode` |
+| --- | ---: | --- | --- | --- | --- |
+| 연결 성공 | 200 | `true` | `UP` | `UP` | 없음 |
+| 환경변수 미설정 | 200 | `true` | `UP` | `NOT_CONFIGURED` | 없음 |
+| 연결 실패 | 500 | `false` | `UP` | `DOWN` | `DB_ERROR` |
+
+성공 응답은 `success: true`, `serverStatus: "UP"`, `dbStatus: "UP" | "NOT_CONFIGURED"`, `message`, `timestamp`를 포함한다. 장애 응답은 `success: false`, `serverStatus: "UP"`, `dbStatus: "DOWN"`, `errorCode: "DB_ERROR"`, `message`, `timestamp`를 포함한다. 이 조합과 다른 모순된 상태 조합은 shared Schema에서 허용하지 않는다.
+
 ## Realtime 세션
 
-`POST /api/realtime/session`은 백엔드가 OpenAI `POST /v1/realtime/client_secrets`를 호출해 단기 키를 반환하는 계약이다. 요청에는 `session.model`과 `expires_after`만 전달하고, `instructions`와 `tools`는 WebRTC 연결 후 앱이 설정한다. 장기 OpenAI API 키·공유 비밀은 앱 번들에 포함하지 않는다.
+`POST /api/realtime/session`은 백엔드가 OpenAI `POST /v1/realtime/client_secrets`를 호출해 단기 키를 반환하는 계약이다. 요청 본문은 사용하지 않으며, `x-realtime-shared-secret` 헤더가 서버의 `REALTIME_SHARED_SECRET`과 일치할 때만 발급한다. 장기 OpenAI API 키와 공유 비밀은 앱 번들에 포함하지 않는다.
+
+백엔드의 OpenAI 요청은 다음 필드만 포함한다.
+
+```json
+{
+  "session": { "type": "realtime", "model": "gpt-realtime-mini" },
+  "expires_after": { "anchor": "created_at", "seconds": 600 }
+}
+```
+
+`instructions`와 `tools`는 포함하지 않으며 WebRTC 연결 후 앱이 설정한다. 정상 응답은 다음 필드를 포함한다.
+
+```json
+{
+  "success": true,
+  "clientSecret": "<short-lived-secret>",
+  "model": "gpt-realtime-mini",
+  "expiresAt": "2026-08-04T12:10:00.000Z",
+  "message": "Realtime 세션 단기 키를 발급했습니다.",
+  "timestamp": "2026-08-04T12:00:00.000Z"
+}
+```
+
+공유 시크릿이 누락·불일치하거나 서버에 `REALTIME_SHARED_SECRET`이 설정되지 않은 경우 `401`과 `errorCode: "UNAUTHORIZED"`를 반환한다. `OPENAI_API_KEY` 미설정, OpenAI 비정상 응답·네트워크 오류·응답 형식 오류는 `502`와 `errorCode: "REALTIME_SESSION_FAILED"`로 변환한다. 모든 오류 응답은 `success`, `errorCode`, `message`, `timestamp`를 포함하며 장기·단기 키를 오류 메시지에 넣지 않는다.
 
 ## 상태·하차벨 계약
 

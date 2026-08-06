@@ -1,4 +1,6 @@
-export type DbStatus = "UP" | "NOT_CONFIGURED" | "DOWN";
+import type { DbStatus } from "@bus-ta/shared";
+
+export type { DbStatus } from "@bus-ta/shared";
 
 export interface SupabaseConnectionStatus {
   dbStatus: DbStatus;
@@ -15,8 +17,7 @@ export interface SupabaseConfig {
 
 export function readSupabaseConfig(env: Env): SupabaseConfig | null {
   const url = env["SUPABASE_URL"]?.trim().replace(/\/+$/, "");
-  const apiKey =
-    env["SUPABASE_SERVICE_ROLE_KEY"]?.trim() || env["SUPABASE_ANON_KEY"]?.trim();
+  const apiKey = env["SUPABASE_SERVICE_ROLE_KEY"]?.trim();
 
   if (!url || !apiKey) {
     return null;

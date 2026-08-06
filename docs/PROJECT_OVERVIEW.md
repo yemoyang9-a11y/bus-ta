@@ -25,14 +25,14 @@
 
 1. 앱은 `POST /api/realtime/session`으로 단기 키를 받고 WebRTC 세션을 연다. OpenAI API 키는 백엔드에만 둔다.
 2. 모델의 Function 호출을 앱 내부 Dispatcher가 받아 REST API를 호출하고, 결과를 Realtime 세션에 반환한다.
-3. `search_routes` → `POST /api/routes/search`, `create_trip` → `POST /api/trips`, `get_trip_status` → `GET /api/trips/{tripId}`, `end_trip` → `PATCH /api/trips/{tripId}`로 연결한다.
+3. `search_routes` → `POST /api/routes/search`, `create_trip` → `POST /api/trips`, `get_trip_status` → `GET /api/trips/{tripId}/status`, `end_trip` → `PATCH /api/trips/{tripId}`로 연결한다.
 4. 탑승 후 앱은 약 3초 간격으로 `PATCH /api/trips/{tripId}/status`를 호출한다. 백엔드가 상태와 하차벨 생성 여부를 결정한다.
 5. `remainingStations = 1`에서 새 하차벨 요청이 생성되면 앱은 `STOP_REQUEST`를 BLE 또는 mock 장치에 전달하고, 결과를 `POST /api/trips/{tripId}/bell/result`로 기록한다.
 
 ## 구현 상태 표기
 
-- 문서의 계약과 현재 구현 사실은 구분한다. 현재 사실은 `claude/nice-archimedes-iv7iu0` 코드, `packages/shared`, 테스트 및 실제 Supabase 적용 상태로 확인한다.
-- `POST /api/realtime/session`은 계약이 확정됐지만 구현 여부는 별도 확인 대상이다.
+- 문서의 계약과 현재 구현 사실은 구분한다. 현재 사실은 `claude/nice-archimedes-iv7iu0` 코드, `packages/shared`, 현재 테스트 및 실제 Supabase 적용 상태로 확인한다.
+- `POST /api/realtime/session` 구현은 `claude/nice-archimedes-iv7iu0` 코드와 테스트에서 확인됐지만, 실제 OpenAI 연결과 배포 환경 동작 검증은 별도 확인 대상이다.
 - 중간평가·mock 중심 문서는 역사적 범위 설명이며, 현재 계약 판단에는 이 문서와 아래의 최종 명세를 사용한다.
 
 ## 문서 체계
