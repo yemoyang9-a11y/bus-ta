@@ -103,6 +103,7 @@ export const apiClient = {
         body: JSON.stringify(body),
       }),
     bell: {
+      // 하차벨 요청은 PATCH /status 응답으로 자동 생성되므로 별도 request 호출이 없다.
       result: (tripId: string, body: unknown) =>
         request(API_PATHS.trips.bell.result(tripId), {
           method: "POST",
