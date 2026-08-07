@@ -134,3 +134,110 @@ test("boardingStation.stationName은 stationList 첫 항목과 이름이 같다 
     assert.equal(candidate.boardingStation.stationName, candidate.stationList[0]?.stationName);
   }
 });
+
+// ─────────────────────────────────────────────
+// 외부 API 실패를 식별 가능한 형태로 드러내는지 (2026-08-07)
+//
+// 운영에서 노선 검색이 502로 실패했을 때, Kakao 때문인지 ODsay 때문인지,
+// 상태 코드가 무엇이었는지 어디에서도 알 수 없었다. axios 오류가 그대로 전파되고
+// 서비스의 catch 가 오류를 버려서 로그에도 아무 흔적이 남지 않았기 때문이다.
+// 아래 테스트들은 "어느 upstream이 어떤 상태로 실패했는가"가 남는지를 검증한다.
+// ─────────────────────────────────────────────
+
+function axiosErrorWithStatus(status: number, secretInConfig: string) {
+  return Object.assign(new Error(`Request failed with status code ${status}`), {
+    isAxiosError: true,
+    response: { status },
+    // 실제 AxiosError 는 요청에 쓴 키를 config 에 그대로 담고 있다.
+    // 이 값이 로그로 새지 않는지 확인하기 위해 일부러 넣는다.
+    config: {
+      headers: { Authorization: `KakaoAK ${secretInConfig}` },
+      params: { apiKey: secretInConfig },
+    },
+  });
+}
+
+test("Kakao 지오코딩이 401로 실패하면 어느 upstream이 실패했는지 식별 가능한 오류를 던진다", async (t) => {
+  t.mock.method(axios, "get", async (url: string) => {
+    if (url.includes("dapi.kakao.com")) {
+      throw axiosErrorWithStatus(401, "kakao-secret-for-test");
+    }
+    throw new Error(`ODsay 까지 가면 안 된다: ${url}`);
+  });
+
+  await assert.rejects(
+    () => searchRoutes(request),
+    (error: unknown) => {
+      const detail = error as { upstream?: unknown; status?: unknown };
+      assert.equal(detail.upstream, "KAKAO");
+      assert.equal(detail.status, 401);
+      return true;
+    },
+  );
+});
+
+test("ODsay 요청이 실패하면 upstream이 ODSAY로 식별되는 오류를 던진다", async (t) => {
+  t.mock.method(axios, "get", async (url: string) => {
+    if (url.includes("dapi.kakao.com")) return { data: kakaoNearOdsayDestinationFixture };
+    if (url.includes("api.odsay.com")) throw axiosErrorWithStatus(429, "odsay-secret-for-test");
+    throw new Error(`이 테스트에서 예상하지 못한 axios.get 호출: ${url}`);
+  });
+
+  await assert.rejects(
+    () => searchRoutes(request),
+    (error: unknown) => {
+      const detail = error as { upstream?: unknown; status?: unknown };
+      assert.equal(detail.upstream, "ODSAY");
+      assert.equal(detail.status, 429);
+      return true;
+    },
+  );
+});
+
+test("upstream 오류 메시지에 API 키 값이 담기지 않는다", async (t) => {
+  const secret = "kakao-secret-for-test";
+  t.mock.method(axios, "get", async (url: string) => {
+    if (url.includes("dapi.kakao.com")) throw axiosErrorWithStatus(401, secret);
+    throw new Error(`ODsay 까지 가면 안 된다: ${url}`);
+  });
+
+  await assert.rejects(
+    () => searchRoutes(request),
+    (error: unknown) => {
+      const detail = error as { config?: unknown; cause?: unknown; message?: unknown };
+      // AxiosError 의 config 에는 요청에 쓴 키가 그대로 들어 있다.
+      // 그 객체를 달고 나가면 상위에서 오류를 통째로 찍는 순간 키가 로그로 샌다.
+      assert.equal(detail.config, undefined, "AxiosError의 config를 그대로 달고 나가면 안 된다");
+      assert.equal(detail.cause, undefined, "cause로도 원본 AxiosError를 넘기지 않는다");
+      assert.ok(!String(detail.message).includes(secret), "메시지에 키가 들어가면 안 된다");
+      return true;
+    },
+  );
+});
+
+test("ODsay가 result 없이 error 본문을 돌려주면 후보는 비되 원인을 로그로 남긴다", async (t) => {
+  const logged: string[] = [];
+  t.mock.method(console, "error", (...args: unknown[]) => {
+    logged.push(args.map((arg) => String(arg)).join(" "));
+  });
+  t.mock.method(axios, "get", async (url: string) => {
+    if (url.includes("dapi.kakao.com")) return { data: kakaoNearOdsayDestinationFixture };
+    if (url.includes("api.odsay.com")) {
+      // 2026-08-07 실제로 확인한 ODsay 인증 실패 응답. HTTP 200 으로 온다.
+      return {
+        data: {
+          error: [{ code: "500", message: "[ApiKeyAuthFailed] ApiKey authentication failed." }],
+        },
+      };
+    }
+    throw new Error(`이 테스트에서 예상하지 못한 axios.get 호출: ${url}`);
+  });
+
+  const candidates = await searchRoutes(request);
+
+  assert.deepEqual(candidates, [], "기존 계약대로 후보는 빈 배열이다");
+
+  const line = logged.join("\n");
+  assert.match(line, /ODSAY/, "어느 upstream이었는지 남아야 한다");
+  assert.match(line, /ApiKeyAuthFailed/, "ODsay가 준 실패 사유가 남아야 한다");
+});

@@ -36,6 +36,22 @@ export type SearchRoutesResult =
 
 const defaultNow = () => new Date().toISOString();
 
+/**
+ * 502 로 응답하기 전에 실패 원인을 남긴다.
+ *
+ * 오류 객체를 통째로 찍으면 AxiosError 의 `config` 에 실린 API 키가 로그로 샌다.
+ * 진단에 필요한 값(어느 upstream, 어떤 상태 코드, 메시지)만 골라서 남긴다.
+ */
+function logRouteSearchFailure(error: unknown): void {
+  const detail = error as { upstream?: unknown; status?: unknown; message?: unknown };
+  console.error(
+    "[routes/search] 외부 API 요청 실패",
+    `upstream=${typeof detail.upstream === "string" ? detail.upstream : "UNKNOWN"}`,
+    `status=${typeof detail.status === "number" ? detail.status : "unknown"}`,
+    `message=${typeof detail.message === "string" ? detail.message : "unknown"}`,
+  );
+}
+
 function attachGuideMessages(routes: Route[], guideResult: RouteGuideResult): Route[] {
   const routeById = new Map(routes.map((route) => [route.candidateId, route]));
   const selectedRoutes = guideResult.selectedCandidates
@@ -92,7 +108,8 @@ export async function searchRoutes(
   let routes: Route[];
   try {
     routes = await dependencies.searchRoutes(parsed.data);
-  } catch {
+  } catch (error) {
+    logRouteSearchFailure(error);
     return {
       httpStatus: 502,
       body: {
