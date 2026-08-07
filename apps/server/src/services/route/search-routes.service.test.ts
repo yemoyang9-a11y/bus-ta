@@ -108,7 +108,10 @@ test("returns 400 for an invalid request", async () => {
   assert.equal(result.body.errorCode, "INVALID_REQUEST");
 });
 
-test("returns 502 when the route search provider throws", async () => {
+test("returns 502 when the route search provider throws", async (t) => {
+  // 실패 원인은 console.error 로 남는다. 테스트 출력이 지저분해지지 않도록 가로챈다.
+  t.mock.method(console, "error", () => {});
+
   const result = await searchRoutes(validRequest, {
     searchRoutes: async () => {
       throw new Error("provider down");
@@ -120,6 +123,54 @@ test("returns 502 when the route search provider throws", async () => {
   assert.equal(result.body.success, false);
   if (result.body.success) return;
   assert.equal(result.body.errorCode, "ROUTE_SEARCH_FAILED");
+});
+
+test("502로 응답할 때 어느 upstream이 어떤 상태로 실패했는지 로그로 남긴다", async (t) => {
+  const logged: string[] = [];
+  t.mock.method(console, "error", (...args: unknown[]) => {
+    logged.push(args.map((arg) => String(arg)).join(" "));
+  });
+
+  const result = await searchRoutes(validRequest, {
+    searchRoutes: async () => {
+      throw Object.assign(new Error("Request failed with status code 401"), {
+        upstream: "KAKAO",
+        status: 401,
+      });
+    },
+    now: () => "2026-07-01T15:10:04+09:00",
+  });
+
+  assert.equal(result.httpStatus, 502);
+
+  const line = logged.join("\n");
+  assert.match(line, /KAKAO/, "실패한 upstream 이름이 남아야 한다");
+  assert.match(line, /401/, "상태 코드가 남아야 한다");
+});
+
+test("실패 로그에 AxiosError가 들고 있는 API 키가 섞이지 않는다", async (t) => {
+  const secret = "service-test-secret-key";
+  const logged: string[] = [];
+  t.mock.method(console, "error", (...args: unknown[]) => {
+    logged.push(args.map((arg) => String(arg)).join(" "));
+  });
+
+  await searchRoutes(validRequest, {
+    searchRoutes: async () => {
+      throw Object.assign(new Error("Request failed with status code 401"), {
+        upstream: "KAKAO",
+        status: 401,
+        config: { headers: { Authorization: `KakaoAK ${secret}` }, params: { apiKey: secret } },
+      });
+    },
+    now: () => "2026-07-01T15:10:05+09:00",
+  });
+
+  assert.ok(logged.length > 0, "실패 원인이 최소한 한 줄은 남아야 한다");
+  assert.ok(
+    !logged.join("\n").includes(secret),
+    "오류 객체를 통째로 찍으면 config 에 실린 키가 로그로 샌다",
+  );
 });
 
 test("returns an empty candidate list message when the provider has no matches", async () => {

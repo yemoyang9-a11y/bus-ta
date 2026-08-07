@@ -1,12 +1,44 @@
-import axios from "axios";
+import axios, { type AxiosRequestConfig } from "axios";
 import type { Route, RoutesSearchRequest } from "@bus-ta/shared";
+
+type UpstreamName = "KAKAO" | "ODSAY";
+
+/**
+ * 외부 API 호출 실패를 "어느 upstream이 어떤 상태로 실패했는가"까지 담아 전달한다.
+ *
+ * AxiosError 를 그대로 전파하면 상위에서 오류를 통째로 로그에 찍는 순간
+ * `config` 에 실린 API 키가 함께 노출된다. 그래서 원본을 `cause` 로도 넘기지 않고
+ * 진단에 필요한 값만 옮겨 담는다.
+ */
+class UpstreamRequestError extends Error {
+  readonly upstream: UpstreamName;
+  readonly status: number | undefined;
+
+  constructor(upstream: UpstreamName, status: number | undefined) {
+    super(`${upstream} 요청 실패 (status=${status ?? "unknown"})`);
+    this.name = "UpstreamRequestError";
+    this.upstream = upstream;
+    this.status = status;
+  }
+}
+
+async function requestUpstream(upstream: UpstreamName, url: string, config: AxiosRequestConfig) {
+  try {
+    return await axios.get(url, config);
+  } catch (error) {
+    throw new UpstreamRequestError(
+      upstream,
+      axios.isAxiosError(error) ? error.response?.status : undefined,
+    );
+  }
+}
 
 // ─────────────────────────────────────────────
 // STEP 1. 카카오 Geocoding: 목적지 텍스트 → 좌표
 // ─────────────────────────────────────────────
 async function getDestinationCoords(destinationText: string) {
   const url = "https://dapi.kakao.com/v2/local/search/keyword.json";
-  const res = await axios.get(url, {
+  const res = await requestUpstream("KAKAO", url, {
     headers: { Authorization: `KakaoAK ${process.env.KAKAO_REST_API_KEY}` },
     params: { query: destinationText },
   });
@@ -30,7 +62,7 @@ async function searchODsayRoutes(
   destLng: number,
 ) {
   const url = "https://api.odsay.com/v1/api/searchPubTransPathT";
-  const res = await axios.get(url, {
+  const res = await requestUpstream("ODSAY", url, {
     params: {
       SX: originLng,
       SY: originLat,
@@ -39,8 +71,36 @@ async function searchODsayRoutes(
       apiKey: process.env.ODSAY_API_KEY,
     },
   });
-  if (!res.data.result) return [];
+  if (!res.data.result) {
+    logODsayMissingResult(res.data);
+    return [];
+  }
   return res.data.result.path || [];
+}
+
+/**
+ * ODsay 는 키가 틀려도 HTTP 200 에 error 본문을 돌려준다. 그대로 빈 배열을 반환하면
+ * "조건에 맞는 후보 없음"과 구분되지 않아 운영에서 원인을 알 수 없다.
+ * 응답 본문에는 우리가 보낸 키가 들어 있지 않으므로 코드와 메시지는 그대로 남겨도 된다.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function logODsayMissingResult(data: any): void {
+  const rawError = data?.error;
+  const errors: unknown[] = Array.isArray(rawError) ? rawError : rawError ? [rawError] : [];
+
+  if (errors.length === 0) {
+    console.error("[routes/search] ODSAY 응답에 result 가 없다", "code=none", "message=none");
+    return;
+  }
+
+  for (const item of errors) {
+    const detail = item as { code?: unknown; message?: unknown; msg?: unknown };
+    console.error(
+      "[routes/search] ODSAY 응답에 result 가 없다",
+      `code=${String(detail.code ?? "unknown")}`,
+      `message=${String(detail.message ?? detail.msg ?? "unknown")}`,
+    );
+  }
 }
 
 // ─────────────────────────────────────────────

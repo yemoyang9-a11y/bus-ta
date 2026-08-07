@@ -69,3 +69,35 @@
 - 수정 파일: `apps/server/src/config/supabase.ts`, `.env.example`, `apps/server/.env.example`, `supabase/migrations/20260804112643_secure_data_api_access.sql`
 - 재발 방지 방법: 배포 환경에 service-role 키 설정 여부를 확인하고, anon 키를 사용한 직접 Data API 접근과 Supabase security advisor 결과를 별도로 점검한다.
 - 관련 커밋 또는 Pull Request: [PR #5](https://github.com/yemoyang9-a11y/bus-ta/pull/5)
+
+## POST /api/routes/search 가 502 인데 원인을 어디에서도 알 수 없음
+
+- 발생 날짜: 2026-08-07
+- 담당자: 예모
+- 발생 환경: Render `bus-ta` 운영 (`claude/nice-archimedes-iv7iu0` 배포 후)
+- 증상: `POST /api/routes/search` 가 `502 ROUTE_SEARCH_FAILED` 를 돌려주는데,
+  Kakao 때문인지 ODsay 때문인지, 상태 코드가 무엇이었는지 알 수 없다.
+  Render 로그를 아무리 뒤져도 `AxiosError` 가 나오지 않는다.
+- 원인: 두 곳에서 실패 정보가 사라지고 있었다.
+  1. `search-routes.service.ts` 의 `catch { ... }` 가 오류 객체를 바인딩조차 하지 않아
+     AxiosError 가 그대로 소멸했다. 서버에는 요청 로거도 없어 흔적이 남지 않는다.
+  2. `hyorin-route-search.adapter.ts` 의 ODsay 호출이 `if (!res.data.result) return []`
+     이라, ODsay 가 인증 실패를 **HTTP 200 + error 본문**으로 돌려줘도
+     "조건에 맞는 후보 없음"과 구분되지 않았다.
+- 해결 방법: 실패 지점을 로그로 드러낸다. 공개 API 계약(502 / 200+빈 배열)은 바꾸지 않았다.
+  - 외부 호출 실패는 `upstream`(`KAKAO`/`ODSAY`)과 HTTP 상태를 담은 오류로 감싼다.
+  - 서비스는 502 로 응답하기 전에 `[routes/search] 외부 API 요청 실패 upstream=... status=... message=...` 를 남긴다.
+  - ODsay 응답에 `result` 가 없으면 `[routes/search] ODSAY 응답에 result 가 없다 code=... message=...` 를 남긴다.
+- 로그 읽는 법:
+  - `upstream=KAKAO status=401` → Kakao 키가 무효하거나 `KAKAO_REST_API_KEY` 이름이 다르다.
+  - `upstream=KAKAO status=429` → Kakao 쿼터·스로틀.
+  - `message=[ApiKeyAuthFailed] ...` → `ODSAY_API_KEY` 문제. 후보 0건은 필터 탓이 아니다.
+  - `upstream=UNKNOWN` 인데 `message=목적지를 찾을 수 없습니다: ...` → Kakao 는 정상이고 검색어가 없는 장소다.
+- 주의: 오류 객체를 통째로 로그에 찍으면 안 된다. `AxiosError.config` 에 요청에 쓴 API 키가
+  그대로 들어 있다. 그래서 원본 AxiosError 는 `cause` 로도 넘기지 않는다.
+- 수정 파일: `apps/server/src/services/route/search-routes.service.ts`,
+  `apps/server/src/adapters/routes/hyorin-route-search.adapter.ts`
+- 재발 방지 방법: 외부 API 호출을 새로 추가할 때 실패를 삼키지 않는다.
+  `catch {}` 와 "오류를 빈 결과로 바꿔 반환"은 운영에서 진단을 불가능하게 만든다.
+- 남은 문제: `getBusArrivalByStationId`(GBIS)는 아직 같은 처리가 되어 있지 않다.
+  `predictedArrivalMinutes` 가 `null` 로 나올 때 원인을 여전히 알 수 없다.
