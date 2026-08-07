@@ -101,3 +101,45 @@
   `catch {}` 와 "오류를 빈 결과로 바꿔 반환"은 운영에서 진단을 불가능하게 만든다.
 - 남은 문제: `getBusArrivalByStationId`(GBIS)는 아직 같은 처리가 되어 있지 않다.
   `predictedArrivalMinutes` 가 `null` 로 나올 때 원인을 여전히 알 수 없다.
+
+## Windows에서 API를 curl로 테스트하면 한글 목적지가 깨져 502가 난다
+
+- 발생 날짜: 2026-08-08
+- 담당자: 예모
+- 발생 환경: Windows Git Bash에서 운영/로컬 백엔드로 `POST /api/routes/search` 호출
+- 증상: 실재하는 목적지("병점역후문", "수원역")를 보내도 `502 ROUTE_SEARCH_FAILED` 가 난다.
+  같은 목적지가 어떤 때는 되고 어떤 때는 안 돼서 서버 장애처럼 보인다.
+  서버 로그에는 이렇게 찍힌다.
+
+  ```text
+  [routes/search] 외부 API 요청 실패 upstream=UNKNOWN status=unknown message=목적지를 찾을 수 없습니다: <깨진 문자열>
+  ```
+
+- 원인: **서버 문제가 아니라 클라이언트(curl) 인코딩 문제다.**
+  Windows Git Bash에서 **명령줄 인자**로 넘긴 한글은 프로세스에 전달되는 과정에서
+  CP949 로 변환돼 깨진다. 서버는 깨진 문자열을 그대로 Kakao 로 검색하고,
+  Kakao 가 `documents: []` 를 돌려주면 어댑터가 `목적지를 찾을 수 없습니다` 를 던진다.
+  `upstream=UNKNOWN` 은 **Kakao 호출 자체는 성공했다**는 신호다
+  (호출이 실패했다면 `upstream=KAKAO status=401` 처럼 찍힌다).
+- 해결 방법: non-ASCII 가 포함된 요청 본문은 **stdin 으로 넘긴다.**
+  아래 예제는 그대로 복사해서 쓸 수 있다. heredoc 종료 표시 `EOF` 는
+  들여쓰기 없이 줄 맨 앞에 와야 heredoc 이 닫힌다.
+
+```bash
+# OK — heredoc 이 원본 UTF-8 바이트를 그대로 전달한다
+curl -X POST "$URL" -H "Content-Type: application/json" -d @- <<'EOF'
+{"destination":"병점역후문","latitude":37.213789,"longitude":126.979749}
+EOF
+
+# NG — 인자로 넘기면 한글이 깨진다
+curl -X POST "$URL" -H "Content-Type: application/json" \
+  -d '{"destination":"병점역후문","latitude":37.213789,"longitude":126.979749}'
+```
+
+- UTF-8 로 저장한 파일을 `-d @body.json` 으로 넘겨도 안전하다.
+- 검증: 같은 초에 두 형태를 나란히 보내 확인했다(2026-08-08 00:02 KST, 운영).
+  heredoc → `{"success":true,"destination":"병점역후문",...}`,
+  인라인 인자 → `{"success":false,"errorCode":"ROUTE_SEARCH_FAILED",...}`
+- 재발 방지 방법: 한글 목적지로 API 를 테스트할 때는 항상 stdin 또는 파일로 본문을 넘긴다.
+  "같은 요청인데 결과가 달라졌다"고 판단하기 전에, 요청을 보낸 **명령 형태가 정말 같았는지**
+  먼저 대조한다.
