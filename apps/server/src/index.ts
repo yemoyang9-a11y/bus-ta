@@ -6,6 +6,7 @@ import { routesRouter } from "./routes/routes.js";
 import { tripsRouter } from "./routes/trips.js";
 import { beaconsRouter } from "./routes/beacons.js";
 import { realtimeRouter } from "./routes/realtime.js";
+import { fetchOutboundIpFromIpify, logOutboundIp } from "./diagnostics/outbound-ip.js";
 
 // 실행 디렉터리부터 상위 디렉터리까지 .env 를 자동 로드한다 (있을 때만).
 // pnpm --filter 실행 시 cwd 가 apps/server 로 잡혀도 루트 .env 를 함께 읽기 위함이다.
@@ -23,6 +24,8 @@ app.use("/api/realtime", realtimeRouter);
 const port = process.env["PORT"] ?? 3000;
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
+  // 응답을 기다리지 않는다. 조회가 늦거나 실패해도 서버는 이미 요청을 받는 상태다.
+  void logOutboundIp({ fetchOutboundIp: fetchOutboundIpFromIpify });
 });
 
 export default app;
