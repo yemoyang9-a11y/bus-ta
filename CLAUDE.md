@@ -4,6 +4,14 @@
 
 ## 반드시 참고할 문서
 
+현재 작업을 이어받는 세션은 프로젝트 일반 문서보다 먼저 아래 continuation 문서를 읽는다.
+
+- `personal-notes/CODEX_HANDOFF.md`
+- `.agent-loop/DIRECTOR.md`
+- `.agent-loop/CURRENT_TASK.md`
+
+`.agent-loop/`는 저장소에 커밋하지 않는 로컬 운영 파일이므로 다른 checkout이나 Claude Code 클라우드에는 전달되지 않는다. handoff에 기록된 운영 쓰기·삭제 승인 대기는 별도 사용자 승인 없이 실행하지 않는다.
+
 - `README.md`
 - `AGENTS.md`
 - `CONTRIBUTING.md`
