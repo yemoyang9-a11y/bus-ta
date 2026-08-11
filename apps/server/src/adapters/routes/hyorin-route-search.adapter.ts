@@ -248,30 +248,54 @@ function readCongestionLevel(raw: unknown): number | null {
 }
 
 /**
- * remainSeatCnt: ""/-1 은 정보 없음이고, 0 도 정보 없음으로 취급한다.
+ * remainSeatCnt: GBIS 공식 문서상 "정보없음" sentinel 은 -1 뿐이다. 0 은
+ * 유효값이고 뜻은 "0석 남음"(만석)이다. -1 을 제외한 0 이상 정수는 전부 유효값이다.
  *
- * 실측(2026-08-06 stationId=233000575)에서 일반시내버스 9건이 전부
- * crowded=1(여유)이면서 동시에 remainSeatCnt=0 이었다. 여유로운 버스가 0석일 수 없으므로
- * 이 0 은 "이 차종은 좌석 수를 보고하지 않는다"는 미사용 기본값이다.
- * 그대로 흘려보내면 사용자가 만석 안내를 듣게 된다.
+ * 이 함수는 해당 노선유형이 remainSeatCnt 필드 대상일 때만 호출해야 한다
+ * (toOccupancy 의 노선유형 분기 참고). 노선유형이 이 필드를 아예 채우지
+ * 않는 경우(예: 일반형시내버스) 값이 0 이어도 좌석 정보가 아니다.
  */
-function readRemainingSeats(raw: unknown): number | null {
+function readSeatCount(raw: unknown): number | null {
   const value = readGbisNumber(raw);
-  return value !== null && value >= 1 ? value : null;
+  return value !== null && value >= 0 ? value : null;
 }
 
+// GBIS routeTypeCd: 노선유형에 따라 crowded/remainSeatCnt 중 어느 필드가
+// 유효한지가 애초에 갈린다 (gbis.go.kr 공식 문서 확인, 2026-08-11).
+// - 혼잡도(crowded) 제공: 13 일반형시내버스, 15 따복형시내버스, 23 일반형농어촌버스
+// - 잔여좌석(remainSeatCnt) 제공: 11 직행좌석형시내, 12 좌석형시내, 14 광역급행형시내,
+//   16 경기순환버스, 17 준공영제 직행좌석시내, 21 직행좌석형농어촌, 22 좌석형농어촌
+// 그 외 노선유형(마을버스 30 등)은 두 필드 모두 대상이 아니다.
+const CONGESTION_ROUTE_TYPES = new Set([13, 15, 23]);
+const SEAT_COUNT_ROUTE_TYPES = new Set([11, 12, 14, 16, 17, 21, 22]);
+
 /**
- * 둘 다 유효하면 잔여좌석을 우선한다. 좌석 수가 혼잡도보다 구체적인 정보다.
+ * routeTypeCd 가 어느 필드(crowded/remainSeatCnt)를 채우는 노선유형인지에 따라
+ * 분기한다. "둘 다 유효하면 우선순위로 고른다"는 값 기반 추정이 아니라, 노선유형이
+ * 애초에 한쪽 필드만 채운다는 GBIS 공식 문서 근거로 확정한다. 대상이 아닌 필드는
+ * 값이 뭐가 와도(노이즈여도) 무시한다.
  */
-function toOccupancy(rawCongestion: unknown, rawRemainingSeats: unknown): Occupancy {
-  const remainingSeats = readRemainingSeats(rawRemainingSeats);
-  if (remainingSeats !== null) {
-    return { type: "REMAINING_SEATS", congestionLevel: null, remainingSeats };
+function toOccupancy(
+  rawRouteTypeCd: unknown,
+  rawCongestion: unknown,
+  rawRemainingSeats: unknown,
+): Occupancy {
+  const routeTypeCd = readGbisNumber(rawRouteTypeCd);
+
+  if (routeTypeCd !== null && SEAT_COUNT_ROUTE_TYPES.has(routeTypeCd)) {
+    const remainingSeats = readSeatCount(rawRemainingSeats);
+    if (remainingSeats !== null) {
+      return { type: "REMAINING_SEATS", congestionLevel: null, remainingSeats };
+    }
+    return { type: "UNAVAILABLE", congestionLevel: null, remainingSeats: null };
   }
 
-  const congestionLevel = readCongestionLevel(rawCongestion);
-  if (congestionLevel !== null) {
-    return { type: "CONGESTION", congestionLevel, remainingSeats: null };
+  if (routeTypeCd !== null && CONGESTION_ROUTE_TYPES.has(routeTypeCd)) {
+    const congestionLevel = readCongestionLevel(rawCongestion);
+    if (congestionLevel !== null) {
+      return { type: "CONGESTION", congestionLevel, remainingSeats: null };
+    }
+    return { type: "UNAVAILABLE", congestionLevel: null, remainingSeats: null };
   }
 
   return { type: "UNAVAILABLE", congestionLevel: null, remainingSeats: null };
@@ -282,6 +306,7 @@ function toOccupancy(rawCongestion: unknown, rawRemainingSeats: unknown): Occupa
  */
 function toArrival(
   rawPredictTime: unknown,
+  rawRouteTypeCd: unknown,
   rawCongestion: unknown,
   rawRemainingSeats: unknown,
 ): ArrivalInfo | null {
@@ -290,7 +315,7 @@ function toArrival(
 
   return {
     predictedArrivalMinutes,
-    occupancy: toOccupancy(rawCongestion, rawRemainingSeats),
+    occupancy: toOccupancy(rawRouteTypeCd, rawCongestion, rawRemainingSeats),
   };
 }
 
@@ -314,8 +339,8 @@ export async function getArrivalInfo(
   }
 
   const arrivals = [
-    toArrival(matched.predictTime1, matched.crowded1, matched.remainSeatCnt1),
-    toArrival(matched.predictTime2, matched.crowded2, matched.remainSeatCnt2),
+    toArrival(matched.predictTime1, matched.routeTypeCd, matched.crowded1, matched.remainSeatCnt1),
+    toArrival(matched.predictTime2, matched.routeTypeCd, matched.crowded2, matched.remainSeatCnt2),
   ].filter((arrival): arrival is ArrivalInfo => arrival !== null);
 
   return { gbisStationId, localBusId, arrivals };

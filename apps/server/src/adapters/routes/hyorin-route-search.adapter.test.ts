@@ -283,9 +283,10 @@ test("도착 예정 차량이 두 대면 도착 순서대로 arrivals 두 개를
 });
 
 // 회귀 테스트 (이번 변경의 핵심)
-// 일반시내버스는 crowded 로 혼잡도를 보고하면서 remainSeatCnt 는 0 을 그대로 둔다.
-// 이 0 을 "잔여좌석 0석 = 만석"으로 읽으면 여유로운 버스를 두고 만석 안내가 나간다.
-test("시내버스의 remainSeatCnt=0 은 잔여좌석 0석이 아니라 정보 없음으로 읽는다", async (t) => {
+// 일반시내버스(routeTypeCd 13)는 GBIS 공식 문서상 remainSeatCnt 필드의 대상이
+// 아니다 — crowded 로 혼잡도만 보고한다. remainSeatCnt=0 은 값 자체가 유효한지와
+// 무관하게 이 노선유형에서는 애초에 읽지 않는다(routeTypeCd 기반 분기).
+test("시내버스(routeTypeCd 13)의 remainSeatCnt 는 노선유형이 대상이 아니므로 무시하고 crowded 만 본다", async (t) => {
   stubGbisArrival(t);
 
   // routeId 234000021 = 700-2: crowded1=1, crowded2=1, remainSeatCnt1=0, remainSeatCnt2=0
@@ -306,15 +307,15 @@ test("시내버스의 remainSeatCnt=0 은 잔여좌석 0석이 아니라 정보 
     assert.notEqual(
       arrival.occupancy.remainingSeats,
       0,
-      "GBIS 의 remainSeatCnt=0 을 잔여좌석 0석으로 흘려보내면 안 된다",
+      "routeTypeCd 13은 remainSeatCnt 대상이 아니므로 값이 0이어도 좌석 정보로 흘려보내면 안 된다",
     );
   }
 });
 
-test("직행좌석은 잔여좌석 정보를 REMAINING_SEATS 로 반환한다", async (t) => {
+test("직행좌석(routeTypeCd 11)은 잔여좌석 정보를 REMAINING_SEATS 로 반환한다", async (t) => {
   stubGbisArrival(t);
 
-  // routeId 233000326 = 1006: crowded1=0(정보 없음) + remainSeatCnt1=70, crowded2=1 + remainSeatCnt2=23
+  // routeId 233000326 = 1006, routeTypeCd 11(좌석형 집합): crowded1=0 + remainSeatCnt1=70, crowded2=1 + remainSeatCnt2=23
   const info = await getArrivalInfo(arrivalCandidate("233000326"));
 
   assert.deepEqual(info.arrivals, [
@@ -329,10 +330,13 @@ test("직행좌석은 잔여좌석 정보를 REMAINING_SEATS 로 반환한다", 
   ]);
 });
 
-test("혼잡도와 잔여좌석이 둘 다 유효하면 REMAINING_SEATS 를 우선한다", async (t) => {
+// routeTypeCd 11(직행좌석, 좌석형 집합)은 remainSeatCnt 만 유효하고 crowded 는
+// 애초에 무시 대상이다. crowded1=1 이 채워져 있는 것은 "혼잡도도 유효한데
+// 잔여좌석을 우선한 것"이 아니라, 이 노선유형이 안 주는 필드에 남은 노이즈다.
+test("routeTypeCd 11(직행좌석)은 crowded 값이 있어도 무시하고 remainSeatCnt 만 본다", async (t) => {
   stubGbisArrival(t);
 
-  // routeId 234000015 = 1007: crowded1=1 + remainSeatCnt1=36, crowded2=1 + remainSeatCnt2=37
+  // routeId 234000015 = 1007, routeTypeCd 11: crowded1=1 + remainSeatCnt1=36, crowded2=1 + remainSeatCnt2=37
   const info = await getArrivalInfo(arrivalCandidate("234000015"));
 
   assert.deepEqual(info.arrivals, [
@@ -347,10 +351,11 @@ test("혼잡도와 잔여좌석이 둘 다 유효하면 REMAINING_SEATS 를 우�
   ]);
 });
 
-test("혼잡도도 잔여좌석도 없으면 UNAVAILABLE 이고, 두 번째 차량이 없으면 arrivals 는 한 개다", async (t) => {
+test("routeTypeCd 가 혼잡도·잔여좌석 어느 집합에도 속하지 않으면 UNAVAILABLE 이고, 두 번째 차량이 없으면 arrivals 는 한 개다", async (t) => {
   stubGbisArrival(t);
 
-  // routeId 241244036 = 6-4(마을버스): crowded1=0, remainSeatCnt1=-1, predictTime1=65, predictTime2=""
+  // routeId 241244036 = 6-4(마을버스, routeTypeCd 30): 어느 집합에도 속하지 않아
+  // crowded1=0, remainSeatCnt1=-1 값과 무관하게 UNAVAILABLE. predictTime1=65, predictTime2=""
   const info = await getArrivalInfo(arrivalCandidate("241244036"));
 
   assert.deepEqual(info.arrivals, [
@@ -359,6 +364,116 @@ test("혼잡도도 잔여좌석도 없으면 UNAVAILABLE 이고, 두 번째 차�
       occupancy: { type: "UNAVAILABLE", congestionLevel: null, remainingSeats: null },
     },
   ]);
+});
+
+// ─────────────────────────────────────────────
+// 합성 테스트 (2026-08-11) — GBIS 공식 문서 기반 routeTypeCd 분기 (fixture 에 없는 사례)
+//
+// 실물 fixture 에는 좌석형 노선유형(11)이 만석(remainSeatCnt=0)인 사례가 없어서
+// 직접 구성한 busArrivalList 항목으로 검증한다.
+// ─────────────────────────────────────────────
+
+function stubGbisArrivalWith(t: import("node:test").TestContext, items: unknown[]) {
+  return t.mock.method(axios, "get", async (url: string) => {
+    if (url.includes("busarrivalservice")) {
+      return { data: { response: { msgBody: { busArrivalList: items } } } };
+    }
+    throw new Error(`이 테스트에서 예상하지 못한 axios.get 호출: ${url}`);
+  });
+}
+
+function syntheticArrivalItem(overrides: Record<string, unknown>) {
+  return {
+    routeId: 999000001,
+    routeTypeCd: 13,
+    predictTime1: "5",
+    predictTime2: "",
+    crowded1: "",
+    crowded2: "",
+    remainSeatCnt1: "",
+    remainSeatCnt2: "",
+    ...overrides,
+  };
+}
+
+test("합성: 좌석형 노선유형(14)이 remainSeatCnt1=0 이면 REMAINING_SEATS + remainingSeats:0(만석)이다", async (t) => {
+  stubGbisArrivalWith(t, [
+    syntheticArrivalItem({ routeTypeCd: 14, remainSeatCnt1: "0", crowded1: "1" }),
+  ]);
+
+  const info = await getArrivalInfo(arrivalCandidate("999000001"));
+
+  assert.deepEqual(info.arrivals, [
+    {
+      predictedArrivalMinutes: 5,
+      occupancy: { type: "REMAINING_SEATS", congestionLevel: null, remainingSeats: 0 },
+    },
+  ]);
+});
+
+test("합성: 좌석형 노선유형(14)이 remainSeatCnt1=-1 이면 UNAVAILABLE 이다", async (t) => {
+  stubGbisArrivalWith(t, [syntheticArrivalItem({ routeTypeCd: 14, remainSeatCnt1: "-1" })]);
+
+  const info = await getArrivalInfo(arrivalCandidate("999000001"));
+
+  assert.deepEqual(info.arrivals, [
+    {
+      predictedArrivalMinutes: 5,
+      occupancy: { type: "UNAVAILABLE", congestionLevel: null, remainingSeats: null },
+    },
+  ]);
+});
+
+test("합성: 시내버스형(13)은 remainSeatCnt1=0 이 와도 여전히 crowded 만 보고 remainSeatCnt 는 무시한다(회귀 방지)", async (t) => {
+  stubGbisArrivalWith(t, [
+    syntheticArrivalItem({ routeTypeCd: 13, crowded1: "2", remainSeatCnt1: "0" }),
+  ]);
+
+  const info = await getArrivalInfo(arrivalCandidate("999000001"));
+
+  assert.deepEqual(info.arrivals, [
+    {
+      predictedArrivalMinutes: 5,
+      occupancy: { type: "CONGESTION", congestionLevel: 2, remainingSeats: null },
+    },
+  ]);
+});
+
+test("합성: routeTypeCd 30(마을버스)은 두 필드에 유효값을 넣어도 UNAVAILABLE 이다", async (t) => {
+  stubGbisArrivalWith(t, [
+    syntheticArrivalItem({ routeTypeCd: 30, crowded1: "2", remainSeatCnt1: "10" }),
+  ]);
+
+  const info = await getArrivalInfo(arrivalCandidate("999000001"));
+
+  assert.deepEqual(info.arrivals, [
+    {
+      predictedArrivalMinutes: 5,
+      occupancy: { type: "UNAVAILABLE", congestionLevel: null, remainingSeats: null },
+    },
+  ]);
+});
+
+test("합성: routeTypeCd 를 파싱할 수 없으면(빈 문자열/null/범위 밖 숫자) UNAVAILABLE 이다", async (t) => {
+  stubGbisArrivalWith(t, [
+    syntheticArrivalItem({ routeId: 999000002, routeTypeCd: "", crowded1: "2", remainSeatCnt1: "10" }),
+    syntheticArrivalItem({ routeId: 999000003, routeTypeCd: null, crowded1: "2", remainSeatCnt1: "10" }),
+    syntheticArrivalItem({ routeId: 999000004, routeTypeCd: 999, crowded1: "2", remainSeatCnt1: "10" }),
+  ]);
+
+  for (const routeId of ["999000002", "999000003", "999000004"]) {
+    const info = await getArrivalInfo(arrivalCandidate(routeId));
+    assert.deepEqual(
+      info.arrivals,
+      [
+        {
+          predictedArrivalMinutes: 5,
+          occupancy: { type: "UNAVAILABLE", congestionLevel: null, remainingSeats: null },
+        },
+      ],
+      `routeTypeCd 파싱 불가 케이스(routeId=${routeId})는 UNAVAILABLE 이어야 한다`,
+    );
+  }
 });
 
 test("도착 예정 시간이 비어 있으면 arrivals 는 빈 배열이다", async (t) => {

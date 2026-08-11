@@ -52,15 +52,16 @@ export type CreateTripRequest = z.infer<typeof CreateTripRequestSchema>;
  * 계약상 `0` 은 유효값이고 그 뜻은 "정보 없음"이 아니라 **만석**이다.
  * 그래서 스키마는 `.nonnegative()` 로 `0` 을 허용한다. 의도된 것이다.
  *
- * 다만 현재 GBIS 어댑터는 `0` 을 절대 내보내지 않는다. GBIS 원본의
- * `remainSeatCnt=0` 이 "만석"인지 "이 차종은 좌석수를 보고하지 않음"인지
- * 응답만으로 구분할 수 없어, 어댑터가 안전한 쪽(정보 없음 → UNAVAILABLE 또는
- * CONGESTION)으로 접기 때문이다. 근거는
+ * GBIS 공식 문서(gbis.go.kr) 확인 결과 `remainSeatCnt` 의 "정보없음" sentinel 은
+ * `-1` 뿐이고 `0` 은 "0석 남음"(만석)을 뜻하는 정상 값이다. 또한 `crowded`·
+ * `remainSeatCnt` 는 한 버스가 상황에 따라 둘 다 줄 수 있는 값이 아니라, 노선유형
+ * (`routeTypeCd`)이 애초에 어느 필드를 채우는지를 결정한다 — 좌석형 노선유형
+ * (직행좌석형시내 등)은 만석이면 실제로 `remainSeatCnt=0` 을 낸다. 어댑터는 이제
+ * 노선유형이 좌석형 집합에 속하면 `remainSeatCnt` 만 읽고 `-1` 만 정보없음으로
+ * 처리하므로 `0` 이 실제로 나갈 수 있다. 자세한 분기는
  * `apps/server/src/adapters/routes/hyorin-route-search.adapter.ts` 의
- * `readRemainingSeats` 주석을 참고한다.
+ * `toOccupancy` 를 참고한다.
  *
- * 즉 "지금 0 이 안 나온다"는 어댑터 층의 사정이지 계약이 금지해서가 아니다.
- * 만석을 확실히 구분할 수 있는 입력원이 생기면 그때 `0` 이 실제로 나가야 한다.
  * 이 필드를 `.positive()` 로 좁히면 계약이 허용하는 값을 거부하게 되므로 좁히지 말 것.
  */
 export const OccupancySchema = z
