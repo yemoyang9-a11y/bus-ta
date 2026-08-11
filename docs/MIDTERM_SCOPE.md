@@ -12,9 +12,9 @@
 - 중간평가에서는 환승 없는 직행 버스 후보만 사용한다.
 - ODsay 경로 유형 값은 공개 API와 DB에 포함하지 않는다.
 - 유나 AI 모듈은 검증된 여러 후보 중 최종 후보 2개를 선택하고 각 후보의 추천 이유와 안내 문장을 생성한다.
-- 노선 검색 단계에서는 `predictedArrivalMinutes`를 반환하지 않는다.
-- 사용자가 최종 노선을 선택하면 `POST /api/trips` 내부에서 `getArrivalInfo(selectedCandidate)`를 호출해 `predictedArrivalMinutes`를 조회한다.
-- GBIS 도착정보 조회 실패 시 두 값은 `null`로 두고 운행 생성은 계속한다.
+- 노선 검색 단계에서는 도착 예정 정보를 반환하지 않는다.
+- 사용자가 최종 노선을 선택하면 `POST /api/trips` 내부에서 `getArrivalInfo(selectedCandidate)`를 호출해 도착 예정 차량을 최대 2대까지 `arrivals`로 조회한다. 각 항목은 `predictedArrivalMinutes`와 혼잡도·잔여좌석(`occupancy`)을 담는다.
+- GBIS 도착정보 조회 실패 시 `arrivals`는 빈 배열로 두고 운행 생성은 계속한다.
 - 별도 공개 도착정보 조회 API는 만들지 않는다.
 - `stationList`는 탑승부터 목적지까지의 전체 정류장을 포함해야 한다.
 

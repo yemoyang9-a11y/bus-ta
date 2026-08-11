@@ -46,6 +46,40 @@ Function은 사용자 의도를 처리하는 경로다. 자동 GPS·하차벨 �
 
 성공 응답은 `success: true`, `serverStatus: "UP"`, `dbStatus: "UP" | "NOT_CONFIGURED"`, `message`, `timestamp`를 포함한다. 장애 응답은 `success: false`, `serverStatus: "UP"`, `dbStatus: "DOWN"`, `errorCode: "DB_ERROR"`, `message`, `timestamp`를 포함한다. 이 조합과 다른 모순된 상태 조합은 shared Schema에서 허용하지 않는다.
 
+## 운행 생성 도착 정보
+
+`POST /api/trips` 성공 응답은 도착 예정 차량을 **`arrivals` 배열**로 반환한다. 도착 순서대로 최대 2대이며, GBIS가 1대만 주면 1개, 정보가 없거나 조회에 실패하면 빈 배열 `[]`이다. **조회 실패는 운행 생성을 막지 않는다** — `arrivals: []`로 `201`을 반환한다. GBIS 호출 timeout은 5초다.
+
+```json
+{
+  "arrivals": [
+    { "predictedArrivalMinutes": 6,  "occupancy": { "type": "CONGESTION",      "congestionLevel": 3,    "remainingSeats": null } },
+    { "predictedArrivalMinutes": 21, "occupancy": { "type": "REMAINING_SEATS", "congestionLevel": null, "remainingSeats": 4 } }
+  ]
+}
+```
+
+| `occupancy.type` | `congestionLevel` | `remainingSeats` |
+| --- | --- | --- |
+| `CONGESTION` | `1`~`4` (1 여유 / 2 보통 / 3 혼잡 / 4 매우혼잡) | `null` |
+| `REMAINING_SEATS` | `null` | `0` 이상 정수. **`0`은 "정보 없음"이 아니라 "만석"이다** |
+| `UNAVAILABLE` | `null` | `null` |
+
+도착 시간이 없는 차량은 배열에 넣지 않으므로 `arrivals[].predictedArrivalMinutes`는 nullable이 아니다. 계약은 `packages/shared`의 `ArrivalInfoSchema`·`OccupancySchema`를 단일 출처로 사용하며, `type`과 값의 정합성은 Schema가 강제한다.
+
+### GBIS 원본 → 공개 계약 변환
+
+**노선유형(`routeTypeCd`)이 어느 필드가 유효한지 결정한다.** 한 차량이 혼잡도와 잔여좌석을 모두 주고 그중 하나를 고르는 구조가 아니다. GBIS 원본 값은 그대로 공개 응답에 싣지 않는다.
+
+| 원본 필드 | 유효 노선유형 | 판정 |
+| --- | --- | --- |
+| `crowded1/2` | `13` 일반형시내 · `15` 따복형시내 · `23` 일반형농어촌 | `1`~`4`만 유효, 그 외(`""`·`0`·범위 밖)는 정보 없음 |
+| `remainSeatCnt1/2` | `11` · `12` · `14` · `16` · `17` · `21` · `22` (좌석형 계열) | **`-1`만 정보 없음.** `0` 이상은 전부 실제 좌석 수 |
+
+대상이 아닌 필드는 값이 무엇이든 읽지 않는다. 해당 노선유형인데 유효값이 없거나(예: 좌석형인데 `remainSeatCnt = -1`) 두 집합 어디에도 속하지 않는 노선유형(마을버스 `30` 등)이면 `UNAVAILABLE`이다.
+
+> 일반형시내버스 응답에도 `remainSeatCnt = 0`이 실려 오지만 그 노선유형은 이 필드의 대상이 아니다. 노선유형을 보지 않고 값만으로 판정하면 **여유로운 시내버스를 만석으로 안내**하거나, 반대로 **실제 만석인 좌석형 버스의 `0`을 정보 없음으로 잘못 접는다.** 근거는 GBIS 공유서비스 「버스 도착정보 항목조회」 매뉴얼이다.
+
 ## Realtime 세션
 
 `POST /api/realtime/session`은 백엔드가 OpenAI `POST /v1/realtime/client_secrets`를 호출해 단기 키를 반환하는 계약이다. 요청에는 `session.model`과 `expires_after`만 전달하고, `instructions`와 `tools`는 WebRTC 연결 후 앱이 설정한다. 장기 OpenAI API 키는 앱 번들에 포함하지 않고, 공유 비밀은 `EXPO_PUBLIC_`로 노출하지 않는다.

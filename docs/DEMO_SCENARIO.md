@@ -28,8 +28,8 @@
 2. 백엔드는 직전 검색 후보에 해당 `candidateId`가 존재하는지 확인합니다.
 3. 백엔드는 `stationList`를 검증합니다.
 4. 백엔드는 내부에서 `getArrivalInfo(selectedCandidate)`를 호출합니다.
-5. GBIS 조회가 성공하면 `gbisStationId`, `predictedArrivalMinutes`를 저장합니다.
-6. GBIS 조회가 실패해도 두 값을 `null`로 두고 운행을 생성합니다.
+5. GBIS 조회가 성공하면 도착 예정 차량을 최대 2대까지 `arrivals`로 반환하고, 첫 차량의 도착 시간을 DB에 저장합니다.
+6. GBIS 조회가 실패해도 `arrivals`를 빈 배열로 두고 운행을 생성합니다.
 7. 백엔드는 `tripId`, `tripStatus = WAITING_BUS`, `bellStatus = NOT_REQUESTED`를 반환합니다.
 8. 앱은 탑승 대기 안내 문장을 출력합니다.
 
@@ -72,7 +72,7 @@
 - 카카오 API 실패: 목적지 좌표 변환 실패 안내
 - ODsay API 실패: mock 경로 후보 사용
 - OpenAI API 실패: 백엔드 기본 점수 규칙과 기본 안내 문장 사용
-- GBIS 도착정보 실패: `predictedArrivalMinutes`를 `null`로 두고 운행 생성
+- GBIS 도착정보 실패: `arrivals`를 빈 배열로 두고 운행 생성
 - BLE 실패: mock 하차벨 결과로 대체
 
 ## 시연 전 체크리스트
