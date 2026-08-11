@@ -1,5 +1,5 @@
 import axios, { type AxiosRequestConfig } from "axios";
-import type { Route, RoutesSearchRequest } from "@bus-ta/shared";
+import type { ArrivalInfo, Occupancy, Route, RoutesSearchRequest } from "@bus-ta/shared";
 
 type UpstreamName = "KAKAO" | "ODSAY";
 
@@ -209,6 +209,10 @@ export async function searchRoutes(request: RoutesSearchRequest): Promise<Route[
 // ─────────────────────────────────────────────
 // GBIS 실시간 도착정보 조회
 // ─────────────────────────────────────────────
+// GBIS 응답 지연이 운행 생성 전체를 붙잡지 않도록 상한을 둔다.
+// 초과하면 axios 가 던지고, 상위(create-trip)가 arrivals: [] 로 진행한다.
+const GBIS_REQUEST_TIMEOUT_MS = 5000;
+
 async function getBusArrivalByStationId(gbisStationId: string) {
   const url = "https://apis.data.go.kr/6410000/busarrivalservice/v2/getBusArrivalListv2";
   const res = await axios.get(url, {
@@ -217,35 +221,102 @@ async function getBusArrivalByStationId(gbisStationId: string) {
       stationId: gbisStationId,
       _type: "json",
     },
+    timeout: GBIS_REQUEST_TIMEOUT_MS,
   });
   const items = res.data?.response?.msgBody?.busArrivalList;
   if (!items) return [];
   return Array.isArray(items) ? items : [items];
 }
 
+/**
+ * GBIS 는 값이 없을 때 빈 문자열을 준다. 숫자만 골라내고 나머지는 null 로 접는다.
+ */
+function readGbisNumber(raw: unknown): number | null {
+  if (typeof raw === "number") return Number.isInteger(raw) ? raw : null;
+  if (typeof raw !== "string" || raw.trim() === "") return null;
+
+  const parsed = Number(raw);
+  return Number.isInteger(parsed) ? parsed : null;
+}
+
+/**
+ * crowded: ""/0 은 정보 없음, 1~4 만 유효한 혼잡도다.
+ */
+function readCongestionLevel(raw: unknown): number | null {
+  const value = readGbisNumber(raw);
+  return value !== null && value >= 1 && value <= 4 ? value : null;
+}
+
+/**
+ * remainSeatCnt: ""/-1 은 정보 없음이고, 0 도 정보 없음으로 취급한다.
+ *
+ * 실측(2026-08-06 stationId=233000575)에서 일반시내버스 9건이 전부
+ * crowded=1(여유)이면서 동시에 remainSeatCnt=0 이었다. 여유로운 버스가 0석일 수 없으므로
+ * 이 0 은 "이 차종은 좌석 수를 보고하지 않는다"는 미사용 기본값이다.
+ * 그대로 흘려보내면 사용자가 만석 안내를 듣게 된다.
+ */
+function readRemainingSeats(raw: unknown): number | null {
+  const value = readGbisNumber(raw);
+  return value !== null && value >= 1 ? value : null;
+}
+
+/**
+ * 둘 다 유효하면 잔여좌석을 우선한다. 좌석 수가 혼잡도보다 구체적인 정보다.
+ */
+function toOccupancy(rawCongestion: unknown, rawRemainingSeats: unknown): Occupancy {
+  const remainingSeats = readRemainingSeats(rawRemainingSeats);
+  if (remainingSeats !== null) {
+    return { type: "REMAINING_SEATS", congestionLevel: null, remainingSeats };
+  }
+
+  const congestionLevel = readCongestionLevel(rawCongestion);
+  if (congestionLevel !== null) {
+    return { type: "CONGESTION", congestionLevel, remainingSeats: null };
+  }
+
+  return { type: "UNAVAILABLE", congestionLevel: null, remainingSeats: null };
+}
+
+/**
+ * predictTime 이 비어 있으면 그 순번의 차량은 없는 것이므로 배열에 넣지 않는다.
+ */
+function toArrival(
+  rawPredictTime: unknown,
+  rawCongestion: unknown,
+  rawRemainingSeats: unknown,
+): ArrivalInfo | null {
+  const predictedArrivalMinutes = readGbisNumber(rawPredictTime);
+  if (predictedArrivalMinutes === null || predictedArrivalMinutes < 0) return null;
+
+  return {
+    predictedArrivalMinutes,
+    occupancy: toOccupancy(rawCongestion, rawRemainingSeats),
+  };
+}
+
 // ─────────────────────────────────────────────
-// 도착 예정 시간 조회 adapter (효린 담당)
+// 도착 예정 정보 조회 adapter (효린 담당)
 // selectedCandidate: searchRoutes()가 반환한 Route 객체 중 사용자가 선택한 것
-// 반환: { gbisStationId, localBusId, predictedArrivalMinutes }
+// 반환: { gbisStationId, localBusId, arrivals } — arrivals 는 도착 순서대로 최대 2대
 // ─────────────────────────────────────────────
 export async function getArrivalInfo(
   selectedCandidate: Pick<Route, "gbisStationId" | "localBusId">,
-): Promise<{ gbisStationId: string; localBusId: string; predictedArrivalMinutes: number | null }> {
+): Promise<{ gbisStationId: string; localBusId: string; arrivals: ArrivalInfo[] }> {
   const { gbisStationId, localBusId } = selectedCandidate;
 
   // ODsay startLocalStationID = GBIS stationId (테스트로 동일 확인, 역조회 불필요)
-  const arrivals = await getBusArrivalByStationId(gbisStationId);
+  const busArrivalList = await getBusArrivalByStationId(gbisStationId);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const matched = arrivals.find((a: any) => String(a.routeId) === String(localBusId));
+  const matched = busArrivalList.find((a: any) => String(a.routeId) === String(localBusId));
 
-  if (matched) {
-    const parsed = parseInt(matched.predictTime1, 10);
-    return {
-      gbisStationId,
-      localBusId,
-      predictedArrivalMinutes: Number.isNaN(parsed) ? null : parsed,
-    };
+  if (!matched) {
+    return { gbisStationId, localBusId, arrivals: [] };
   }
 
-  return { gbisStationId, localBusId, predictedArrivalMinutes: null };
+  const arrivals = [
+    toArrival(matched.predictTime1, matched.crowded1, matched.remainSeatCnt1),
+    toArrival(matched.predictTime2, matched.crowded2, matched.remainSeatCnt2),
+  ].filter((arrival): arrival is ArrivalInfo => arrival !== null);
+
+  return { gbisStationId, localBusId, arrivals };
 }

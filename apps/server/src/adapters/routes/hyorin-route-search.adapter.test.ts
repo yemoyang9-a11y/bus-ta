@@ -4,8 +4,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import axios from "axios";
-import { RouteCandidateSchema } from "@bus-ta/shared";
-import { searchRoutes } from "./hyorin-route-search.adapter.js";
+import { ArrivalInfoSchema, RouteCandidateSchema } from "@bus-ta/shared";
+import { getArrivalInfo, searchRoutes } from "./hyorin-route-search.adapter.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -240,4 +240,222 @@ test("ODsay가 result 없이 error 본문을 돌려주면 후보는 비되 원�
   const line = logged.join("\n");
   assert.match(line, /ODSAY/, "어느 upstream이었는지 남아야 한다");
   assert.match(line, /ApiKeyAuthFailed/, "ODsay가 준 실패 사유가 남아야 한다");
+});
+
+// ─────────────────────────────────────────────
+// GBIS 도착정보 → arrivals(최대 2대) + occupancy 변환 (계약 5.2-A)
+//
+// 아래 fixture 는 2026-08-06 stationId=233000575 로 실제 GBIS 를 호출해 캡처한 원본이다.
+// 계약이 요구하는 세 가지 해석 케이스가 전부 실물로 들어 있다.
+// - 일반시내버스(routeTypeCd 13): crowded=1 이면서 remainSeatCnt=0
+// - 마을버스(routeTypeCd 30): crowded=0, remainSeatCnt=-1
+// - 직행좌석(routeTypeCd 11): remainSeatCnt 가 실제 좌석 수
+// ─────────────────────────────────────────────
+const gbisArrivalFixture = loadFixture("gbis-bus-arrival-list-station-233000575.json");
+
+const GBIS_STATION_ID = "233000575";
+
+function stubGbisArrival(t: import("node:test").TestContext) {
+  return t.mock.method(axios, "get", async (url: string) => {
+    if (url.includes("busarrivalservice")) {
+      return { data: gbisArrivalFixture };
+    }
+    throw new Error(`이 테스트에서 예상하지 못한 axios.get 호출: ${url}`);
+  });
+}
+
+function arrivalCandidate(localBusId: string) {
+  return { gbisStationId: GBIS_STATION_ID, localBusId };
+}
+
+test("도착 예정 차량이 두 대면 도착 순서대로 arrivals 두 개를 반환한다", async (t) => {
+  stubGbisArrival(t);
+
+  // routeId 234000021 = 700-2, predictTime1=4 / predictTime2=7
+  const info = await getArrivalInfo(arrivalCandidate("234000021"));
+
+  assert.equal(info.gbisStationId, GBIS_STATION_ID);
+  assert.equal(info.localBusId, "234000021");
+  assert.deepEqual(
+    info.arrivals.map((arrival) => arrival.predictedArrivalMinutes),
+    [4, 7],
+  );
+});
+
+// 회귀 테스트 (이번 변경의 핵심)
+// 일반시내버스는 crowded 로 혼잡도를 보고하면서 remainSeatCnt 는 0 을 그대로 둔다.
+// 이 0 을 "잔여좌석 0석 = 만석"으로 읽으면 여유로운 버스를 두고 만석 안내가 나간다.
+test("시내버스의 remainSeatCnt=0 은 잔여좌석 0석이 아니라 정보 없음으로 읽는다", async (t) => {
+  stubGbisArrival(t);
+
+  // routeId 234000021 = 700-2: crowded1=1, crowded2=1, remainSeatCnt1=0, remainSeatCnt2=0
+  const info = await getArrivalInfo(arrivalCandidate("234000021"));
+
+  assert.deepEqual(info.arrivals, [
+    {
+      predictedArrivalMinutes: 4,
+      occupancy: { type: "CONGESTION", congestionLevel: 1, remainingSeats: null },
+    },
+    {
+      predictedArrivalMinutes: 7,
+      occupancy: { type: "CONGESTION", congestionLevel: 1, remainingSeats: null },
+    },
+  ]);
+
+  for (const arrival of info.arrivals) {
+    assert.notEqual(
+      arrival.occupancy.remainingSeats,
+      0,
+      "GBIS 의 remainSeatCnt=0 을 잔여좌석 0석으로 흘려보내면 안 된다",
+    );
+  }
+});
+
+test("직행좌석은 잔여좌석 정보를 REMAINING_SEATS 로 반환한다", async (t) => {
+  stubGbisArrival(t);
+
+  // routeId 233000326 = 1006: crowded1=0(정보 없음) + remainSeatCnt1=70, crowded2=1 + remainSeatCnt2=23
+  const info = await getArrivalInfo(arrivalCandidate("233000326"));
+
+  assert.deepEqual(info.arrivals, [
+    {
+      predictedArrivalMinutes: 1,
+      occupancy: { type: "REMAINING_SEATS", congestionLevel: null, remainingSeats: 70 },
+    },
+    {
+      predictedArrivalMinutes: 40,
+      occupancy: { type: "REMAINING_SEATS", congestionLevel: null, remainingSeats: 23 },
+    },
+  ]);
+});
+
+test("혼잡도와 잔여좌석이 둘 다 유효하면 REMAINING_SEATS 를 우선한다", async (t) => {
+  stubGbisArrival(t);
+
+  // routeId 234000015 = 1007: crowded1=1 + remainSeatCnt1=36, crowded2=1 + remainSeatCnt2=37
+  const info = await getArrivalInfo(arrivalCandidate("234000015"));
+
+  assert.deepEqual(info.arrivals, [
+    {
+      predictedArrivalMinutes: 24,
+      occupancy: { type: "REMAINING_SEATS", congestionLevel: null, remainingSeats: 36 },
+    },
+    {
+      predictedArrivalMinutes: 36,
+      occupancy: { type: "REMAINING_SEATS", congestionLevel: null, remainingSeats: 37 },
+    },
+  ]);
+});
+
+test("혼잡도도 잔여좌석도 없으면 UNAVAILABLE 이고, 두 번째 차량이 없으면 arrivals 는 한 개다", async (t) => {
+  stubGbisArrival(t);
+
+  // routeId 241244036 = 6-4(마을버스): crowded1=0, remainSeatCnt1=-1, predictTime1=65, predictTime2=""
+  const info = await getArrivalInfo(arrivalCandidate("241244036"));
+
+  assert.deepEqual(info.arrivals, [
+    {
+      predictedArrivalMinutes: 65,
+      occupancy: { type: "UNAVAILABLE", congestionLevel: null, remainingSeats: null },
+    },
+  ]);
+});
+
+test("도착 예정 시간이 비어 있으면 arrivals 는 빈 배열이다", async (t) => {
+  stubGbisArrival(t);
+
+  // routeId 233000011 = 34: predictTime1, predictTime2 모두 ""
+  const info = await getArrivalInfo(arrivalCandidate("233000011"));
+
+  assert.deepEqual(info.arrivals, []);
+});
+
+test("정류장 도착정보에 해당 노선이 없으면 arrivals 는 빈 배열이다", async (t) => {
+  stubGbisArrival(t);
+
+  const info = await getArrivalInfo(arrivalCandidate("999999999"));
+
+  assert.deepEqual(info.arrivals, []);
+});
+
+test("변환된 arrivals 항목은 모두 공개 계약(ArrivalInfoSchema)을 통과한다", async (t) => {
+  stubGbisArrival(t);
+
+  // fixture 안의 여러 차종을 훑어 어떤 차종도 계약을 깨는 값을 만들지 않는지 본다.
+  //
+  // 233000281(205), 233000268(200)은 일부러 뺐다. 두 routeId 는 fixture 에 각각 두 번
+  // 나오는데 첫 항목이 전부 빈 값이라 arrivals 가 항상 [] 로 나온다. 목록에 넣어봐야
+  // 아래 단언 루프가 한 번도 돌지 않아 검증하는 척만 하게 된다.
+  // 그 동작 자체는 바로 아래 별도 테스트에서 명시적으로 단언한다.
+  const localBusIds = [
+    "234000021", // 700-2, 일반시내버스 (CONGESTION)
+    "233000326", // 1006, 직행좌석 (REMAINING_SEATS)
+    "234000015", // 1007, 직행좌석 (REMAINING_SEATS)
+    "241244036", // 6-4, 마을버스 (UNAVAILABLE)
+    "241244020", // 26, 마을버스 (UNAVAILABLE)
+  ];
+
+  let checkedArrivals = 0;
+
+  for (const localBusId of localBusIds) {
+    const info = await getArrivalInfo(arrivalCandidate(localBusId));
+
+    assert.ok(info.arrivals.length <= 2, `${localBusId}: arrivals 는 최대 2개다`);
+
+    for (const arrival of info.arrivals) {
+      checkedArrivals += 1;
+      const result = ArrivalInfoSchema.safeParse(arrival);
+      assert.equal(
+        result.success,
+        true,
+        result.success ? "" : `${localBusId}: ${JSON.stringify(result.error.issues)}`,
+      );
+    }
+  }
+
+  // 단언 루프가 실제로 돌았는지 확인한다. 목록이 전부 [] 를 뱉으면
+  // 이 테스트는 아무것도 검증하지 않고 통과해 버린다.
+  assert.ok(checkedArrivals > 0, "계약 검증이 한 번도 실행되지 않았다");
+});
+
+// 알려진 선재 이슈 (이번 변경으로 생긴 것이 아니다. handoff 에 "범위 밖·미착수"로 등록되어 있다)
+//
+// GBIS 응답에는 같은 routeId 가 두 번 나올 수 있다. fixture 의 233000281(205)과
+// 233000268(200)이 그렇고, 두 경우 모두 첫 항목이 빈 값이고 뒤 항목에 실제 도착 정보가 있다.
+// getArrivalInfo 는 .find() 로 첫 항목만 집기 때문에 뒤쪽 유효값을 놓치고 [] 를 반환한다.
+//
+// 이 테스트는 그 동작을 옳다고 주장하는 것이 아니라, 현재 동작이 무엇인지 고정해 둔다.
+// .find() 를 고치면 이 테스트가 깨지고, 그때 기대값을 실제 도착 정보로 바꾸면 된다.
+test("같은 routeId 가 중복으로 오면 첫 항목만 보고 [] 를 반환한다 (선재 이슈, 미수정)", async (t) => {
+  stubGbisArrival(t);
+
+  for (const localBusId of ["233000281", "233000268"]) {
+    const info = await getArrivalInfo(arrivalCandidate(localBusId));
+
+    assert.deepEqual(
+      info.arrivals,
+      [],
+      `${localBusId}: 뒤쪽 항목에 도착 정보가 있어도 현재는 첫 항목만 본다`,
+    );
+  }
+});
+
+test("GBIS 도착정보 호출에는 5초 timeout 을 지정한다", async (t) => {
+  const seenConfigs: Array<{ timeout?: number } | undefined> = [];
+  t.mock.method(axios, "get", async (url: string, config?: { timeout?: number }) => {
+    if (url.includes("busarrivalservice")) {
+      seenConfigs.push(config);
+      return { data: gbisArrivalFixture };
+    }
+    throw new Error(`이 테스트에서 예상하지 못한 axios.get 호출: ${url}`);
+  });
+
+  await getArrivalInfo(arrivalCandidate("234000021"));
+
+  assert.equal(seenConfigs.length, 1);
+  assert.equal(
+    seenConfigs[0]?.timeout,
+    5000,
+    "timeout 이 없으면 GBIS 응답 지연이 운행 생성 전체를 붙잡는다",
+  );
 });

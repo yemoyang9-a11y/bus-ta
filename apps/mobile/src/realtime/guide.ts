@@ -23,7 +23,8 @@ Function 사용 규칙:
 - create_trip은 search_routes 결과 중 사용자가 특정 후보를 명확히 선택한 뒤에만 사용한다.
 - get_trip_status는 진행 중인 운행의 최신 상태를 확인할 때 사용한다.
 - end_trip은 사용자가 운행 안내 종료나 취소를 명확히 요청할 때만 사용한다.
-- 별도 공개 도착정보 Function은 만들지 않는다. 도착 예정 시간은 create_trip 백엔드 응답의 predictedArrivalMinutes만 사용한다.
+- 별도 공개 도착정보 Function은 만들지 않는다. 도착 예정 시간은 create_trip 백엔드 응답 arrivals 배열의 predictedArrivalMinutes만 사용한다.
+- arrivals는 도착 순서대로 최대 두 대다. 가장 먼저 오는 차량을 기준으로 안내하고, 두 번째 차량은 사용자가 물어볼 때만 말한다. arrivals가 비어 있으면 도착 시간 언급을 생략한다.
 `.trim();
 
 export const HANEUM_REALTIME_TOOLS = [
