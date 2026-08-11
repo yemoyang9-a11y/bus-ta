@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
 import {
+  ArrivalInfoSchema,
   BELL_STATUS,
   CreateTripRequestSchema,
   TRIP_STATUS,
+  type ArrivalInfo,
   type CreateTripRequest,
 } from "@bus-ta/shared";
 
@@ -55,10 +57,13 @@ export interface TripCreationRepository {
 }
 
 export interface CreateTripDependencies extends TripCreationRepository {
-  getPredictedArrivalMinutes?: (selectedCandidate: CreateTripRequest) => Promise<number | null>;
+  getArrivals?: (selectedCandidate: CreateTripRequest) => Promise<ArrivalInfo[]>;
   generateTripId?: () => string;
   now?: () => string;
 }
+
+// 응답에 담는 도착 예정 차량 수 상한 (계약 5.2-A)
+const MAX_ARRIVALS = 2;
 
 type CreateTripSuccessBody = {
   success: true;
@@ -66,7 +71,7 @@ type CreateTripSuccessBody = {
   routeNo: string;
   localBusId: string;
   gbisStationId: string;
-  predictedArrivalMinutes: number | null;
+  arrivals: ArrivalInfo[];
   tripStatus: typeof TRIP_STATUS.WAITING_BUS;
   bellStatus: typeof BELL_STATUS.NOT_REQUESTED;
   shouldTriggerBell: false;
@@ -89,7 +94,7 @@ export type CreateTripResult =
 
 const defaultNow = () => new Date().toISOString();
 const defaultGenerateTripId = () => `trip-${randomUUID()}`;
-const defaultArrivalLookup = async () => null;
+const defaultArrivalLookup = async (): Promise<ArrivalInfo[]> => [];
 
 export async function createTrip(
   input: unknown,
@@ -125,10 +130,13 @@ export async function createTrip(
   }
 
   const tripId = (dependencies.generateTripId ?? defaultGenerateTripId)();
-  const predictedArrivalMinutes = await readPredictedArrivalMinutes(
+  const arrivals = await readArrivals(
     parsed.data,
-    dependencies.getPredictedArrivalMinutes ?? defaultArrivalLookup,
+    dependencies.getArrivals ?? defaultArrivalLookup,
   );
+  // trips.predicted_arrival_minutes 는 단일 컬럼이라 첫 번째 차량만 저장한다.
+  // occupancy 는 응답 전용이며 저장하지 않는다.
+  const predictedArrivalMinutes = arrivals[0]?.predictedArrivalMinutes ?? null;
 
   const trip: TripCreateRecord = {
     tripId,
@@ -188,7 +196,7 @@ export async function createTrip(
       routeNo: parsed.data.routeNo,
       localBusId: parsed.data.localBusId,
       gbisStationId: parsed.data.gbisStationId,
-      predictedArrivalMinutes,
+      arrivals,
       tripStatus: TRIP_STATUS.WAITING_BUS,
       bellStatus: BELL_STATUS.NOT_REQUESTED,
       shouldTriggerBell: false,
@@ -199,15 +207,26 @@ export async function createTrip(
   };
 }
 
-async function readPredictedArrivalMinutes(
+/**
+ * GBIS 조회는 실패하거나 계약과 다른 값을 줄 수 있다.
+ * 어느 쪽이든 운행 생성은 막지 않고, 계약을 통과한 항목만 최대 2개까지 남긴다.
+ */
+async function readArrivals(
   selectedCandidate: CreateTripRequest,
-  lookup: (selectedCandidate: CreateTripRequest) => Promise<number | null>,
-) {
+  lookup: (selectedCandidate: CreateTripRequest) => Promise<ArrivalInfo[]>,
+): Promise<ArrivalInfo[]> {
   try {
     const value = await lookup(selectedCandidate);
-    return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : null;
+    if (!Array.isArray(value)) return [];
+
+    return value
+      .flatMap((arrival) => {
+        const result = ArrivalInfoSchema.safeParse(arrival);
+        return result.success ? [result.data] : [];
+      })
+      .slice(0, MAX_ARRIVALS);
   } catch {
-    return null;
+    return [];
   }
 }
 

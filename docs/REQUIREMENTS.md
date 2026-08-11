@@ -47,7 +47,7 @@
 - 기능 설명: 사용자가 선택한 최종 후보로 운행을 생성한다.
 - 입력값: `destination`, `candidateId`, `routeNo`, `localBusId`, `gbisStationId`, `boardingStation`, `destinationStation`, `stationList`
 - 처리 내용: 직전 후보 존재 여부 확인, `stationList` 검증, 내부 `getArrivalInfo(selectedCandidate)` 호출, DB 저장
-- 출력값: `tripId`, `tripStatus`, `bellStatus`, `gbisStationId`, `predictedArrivalMinutes`
+- 출력값: `tripId`, `tripStatus`, `bellStatus`, `gbisStationId`, `arrivals`(도착 예정 차량 최대 2대, 각 항목에 `predictedArrivalMinutes`와 `occupancy`)
 - 성공 조건: `tripStatus = WAITING_BUS`, `bellStatus = NOT_REQUESTED`로 생성된다.
 - 실패 조건: 선택 경로 없음, 전체 정류장 목록 누락, DB 오류
 - 우선순위: 높음

@@ -1,5 +1,5 @@
 import OpenAI from "openai";
-import type { Route } from "@bus-ta/shared";
+import type { ArrivalInfo, Route } from "@bus-ta/shared";
 
 type GuideMessageResult = {
   guideMessage: string;
@@ -22,7 +22,8 @@ export type GenerateRouteGuideInput = {
 export type GenerateTripStartGuideInput = {
   selectedRoute?: Pick<Route, "routeNo" | "boardingStation" | "destinationStation">;
   tripStatus?: string;
-  predictedArrivalMinutes?: number | null;
+  // create_trip 응답의 arrivals. 탑승 대기 안내는 가장 먼저 오는 차량만 사용한다.
+  arrivals?: ArrivalInfo[];
 };
 
 export type GenerateMovingGuideInput = {
@@ -227,11 +228,13 @@ ${candidateInfos}
 export async function generateTripStartGuide({
   selectedRoute,
   tripStatus,
-  predictedArrivalMinutes,
+  arrivals,
 }: GenerateTripStartGuideInput): Promise<GuideMessageResult> {
   if (!selectedRoute?.routeNo) {
     return { guideMessage: TRIP_START_FALLBACK_MESSAGE };
   }
+
+  const predictedArrivalMinutes = arrivals?.[0]?.predictedArrivalMinutes ?? null;
 
   const prompt = `
 사용자가 아래 버스 노선을 선택했어.

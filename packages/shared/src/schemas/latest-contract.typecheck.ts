@@ -95,7 +95,16 @@ const createTripResponse: CreateTripResponse = {
   routeNo: "700-2",
   localBusId: "234000021",
   gbisStationId: "201000166",
-  predictedArrivalMinutes: 6,
+  arrivals: [
+    {
+      predictedArrivalMinutes: 6,
+      occupancy: { type: "CONGESTION", congestionLevel: 3, remainingSeats: null },
+    },
+    {
+      predictedArrivalMinutes: 21,
+      occupancy: { type: "REMAINING_SEATS", congestionLevel: null, remainingSeats: 4 },
+    },
+  ],
   tripStatus: "WAITING_BUS",
   bellStatus: "NOT_REQUESTED",
   shouldTriggerBell: false,
