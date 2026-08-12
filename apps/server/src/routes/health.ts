@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { type HealthResponse as SharedHealthResponse } from "@bus-ta/shared";
 import {
   getSupabaseConnectionStatus,
   type SupabaseConnectionStatus,
@@ -6,18 +7,9 @@ import {
 
 export const healthRouter = Router();
 
-export interface HealthResponseBody {
-  success: boolean;
-  serverStatus: "UP";
-  dbStatus: SupabaseConnectionStatus["dbStatus"];
-  errorCode?: "DB_ERROR";
-  message: string;
-  timestamp: string;
-}
-
 export interface HealthResponse {
   httpStatus: 200 | 500;
-  body: HealthResponseBody;
+  body: SharedHealthResponse;
 }
 
 export function buildHealthResponse(

@@ -62,3 +62,20 @@ test("returns 404 for an unknown routeNo", async () => {
   if (result.body.success) return;
   assert.equal(result.body.errorCode, "BEACON_NOT_FOUND");
 });
+
+test("returns 500 DB_ERROR when the beacon repository fails", async () => {
+  const result = await getBeaconByRoute("1000", {
+    findByRouteNo: async () => {
+      throw new Error("Supabase unavailable");
+    },
+    now: () => "2026-07-01T15:00:04+09:00",
+  });
+
+  assert.equal(result.httpStatus, 500);
+  assert.deepEqual(result.body, {
+    success: false,
+    errorCode: "DB_ERROR",
+    message: "비콘 정보를 조회하지 못했습니다.",
+    timestamp: "2026-07-01T15:00:04+09:00",
+  });
+});

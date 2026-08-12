@@ -57,3 +57,89 @@
 - 수정 파일: `apps/server/src/index.ts`
 - 재발 방지 방법: `.env` 는 `.gitignore` 로 커밋 금지, 변수 이름은 `apps/server/.env.example` 에만 유지.
 - 관련 커밋 또는 Pull Request: yemo-develop 브랜치 커밋
+
+## Supabase Data API가 백엔드 외부에서 접근되지 않음
+
+- 발생 날짜: 2026-08-04
+- 담당자: 예모
+- 발생 환경: Render `bus-ta` 및 로컬 백엔드
+- 증상: 백엔드가 Supabase 테이블·RPC를 호출하지 못하거나 anon 키를 사용하는 것처럼 보인다.
+- 원인: 백엔드는 서버 전용 `SUPABASE_SERVICE_ROLE_KEY`만 사용한다. `SUPABASE_ANON_KEY`는 지원하지 않으며, 대상 테이블과 RPC는 anon/authenticated 역할에 공개하지 않는다.
+- 해결 방법: `SUPABASE_URL`에는 `/rest/v1/`가 붙지 않은 프로젝트 기본 URL을 설정하고, `SUPABASE_SERVICE_ROLE_KEY`는 Render/server secret에만 설정한다. 모바일 앱과 `EXPO_PUBLIC_*` 환경변수에는 service-role 키를 넣지 않는다.
+- 수정 파일: `apps/server/src/config/supabase.ts`, `.env.example`, `apps/server/.env.example`, `supabase/migrations/20260804112643_secure_data_api_access.sql`
+- 재발 방지 방법: 배포 환경에 service-role 키 설정 여부를 확인하고, anon 키를 사용한 직접 Data API 접근과 Supabase security advisor 결과를 별도로 점검한다.
+- 관련 커밋 또는 Pull Request: [PR #5](https://github.com/yemoyang9-a11y/bus-ta/pull/5)
+
+## POST /api/routes/search 가 502 인데 원인을 어디에서도 알 수 없음
+
+- 발생 날짜: 2026-08-07
+- 담당자: 예모
+- 발생 환경: Render `bus-ta` 운영 (`claude/nice-archimedes-iv7iu0` 배포 후)
+- 증상: `POST /api/routes/search` 가 `502 ROUTE_SEARCH_FAILED` 를 돌려주는데,
+  Kakao 때문인지 ODsay 때문인지, 상태 코드가 무엇이었는지 알 수 없다.
+  Render 로그를 아무리 뒤져도 `AxiosError` 가 나오지 않는다.
+- 원인: 두 곳에서 실패 정보가 사라지고 있었다.
+  1. `search-routes.service.ts` 의 `catch { ... }` 가 오류 객체를 바인딩조차 하지 않아
+     AxiosError 가 그대로 소멸했다. 서버에는 요청 로거도 없어 흔적이 남지 않는다.
+  2. `hyorin-route-search.adapter.ts` 의 ODsay 호출이 `if (!res.data.result) return []`
+     이라, ODsay 가 인증 실패를 **HTTP 200 + error 본문**으로 돌려줘도
+     "조건에 맞는 후보 없음"과 구분되지 않았다.
+- 해결 방법: 실패 지점을 로그로 드러낸다. 공개 API 계약(502 / 200+빈 배열)은 바꾸지 않았다.
+  - 외부 호출 실패는 `upstream`(`KAKAO`/`ODSAY`)과 HTTP 상태를 담은 오류로 감싼다.
+  - 서비스는 502 로 응답하기 전에 `[routes/search] 외부 API 요청 실패 upstream=... status=... message=...` 를 남긴다.
+  - ODsay 응답에 `result` 가 없으면 `[routes/search] ODSAY 응답에 result 가 없다 code=... message=...` 를 남긴다.
+- 로그 읽는 법:
+  - `upstream=KAKAO status=401` → Kakao 키가 무효하거나 `KAKAO_REST_API_KEY` 이름이 다르다.
+  - `upstream=KAKAO status=429` → Kakao 쿼터·스로틀.
+  - `message=[ApiKeyAuthFailed] ...` → `ODSAY_API_KEY` 문제. 후보 0건은 필터 탓이 아니다.
+  - `upstream=UNKNOWN` 인데 `message=목적지를 찾을 수 없습니다: ...` → Kakao 는 정상이고 검색어가 없는 장소다.
+- 주의: 오류 객체를 통째로 로그에 찍으면 안 된다. `AxiosError.config` 에 요청에 쓴 API 키가
+  그대로 들어 있다. 그래서 원본 AxiosError 는 `cause` 로도 넘기지 않는다.
+- 수정 파일: `apps/server/src/services/route/search-routes.service.ts`,
+  `apps/server/src/adapters/routes/hyorin-route-search.adapter.ts`
+- 재발 방지 방법: 외부 API 호출을 새로 추가할 때 실패를 삼키지 않는다.
+  `catch {}` 와 "오류를 빈 결과로 바꿔 반환"은 운영에서 진단을 불가능하게 만든다.
+- 남은 문제: `getBusArrivalByStationId`(GBIS)는 아직 같은 처리가 되어 있지 않다.
+  `predictedArrivalMinutes` 가 `null` 로 나올 때 원인을 여전히 알 수 없다.
+
+## Windows에서 API를 curl로 테스트하면 한글 목적지가 깨져 502가 난다
+
+- 발생 날짜: 2026-08-08
+- 담당자: 예모
+- 발생 환경: Windows Git Bash에서 운영/로컬 백엔드로 `POST /api/routes/search` 호출
+- 증상: 실재하는 목적지("병점역후문", "수원역")를 보내도 `502 ROUTE_SEARCH_FAILED` 가 난다.
+  같은 목적지가 어떤 때는 되고 어떤 때는 안 돼서 서버 장애처럼 보인다.
+  서버 로그에는 이렇게 찍힌다.
+
+  ```text
+  [routes/search] 외부 API 요청 실패 upstream=UNKNOWN status=unknown message=목적지를 찾을 수 없습니다: <깨진 문자열>
+  ```
+
+- 원인: **서버 문제가 아니라 클라이언트(curl) 인코딩 문제다.**
+  Windows Git Bash에서 **명령줄 인자**로 넘긴 한글은 프로세스에 전달되는 과정에서
+  CP949 로 변환돼 깨진다. 서버는 깨진 문자열을 그대로 Kakao 로 검색하고,
+  Kakao 가 `documents: []` 를 돌려주면 어댑터가 `목적지를 찾을 수 없습니다` 를 던진다.
+  `upstream=UNKNOWN` 은 **Kakao 호출 자체는 성공했다**는 신호다
+  (호출이 실패했다면 `upstream=KAKAO status=401` 처럼 찍힌다).
+- 해결 방법: non-ASCII 가 포함된 요청 본문은 **stdin 으로 넘긴다.**
+  아래 예제는 그대로 복사해서 쓸 수 있다. heredoc 종료 표시 `EOF` 는
+  들여쓰기 없이 줄 맨 앞에 와야 heredoc 이 닫힌다.
+
+```bash
+# OK — heredoc 이 원본 UTF-8 바이트를 그대로 전달한다
+curl -X POST "$URL" -H "Content-Type: application/json" -d @- <<'EOF'
+{"destination":"병점역후문","latitude":37.213789,"longitude":126.979749}
+EOF
+
+# NG — 인자로 넘기면 한글이 깨진다
+curl -X POST "$URL" -H "Content-Type: application/json" \
+  -d '{"destination":"병점역후문","latitude":37.213789,"longitude":126.979749}'
+```
+
+- UTF-8 로 저장한 파일을 `-d @body.json` 으로 넘겨도 안전하다.
+- 검증: 같은 초에 두 형태를 나란히 보내 확인했다(2026-08-08 00:02 KST, 운영).
+  heredoc → `{"success":true,"destination":"병점역후문",...}`,
+  인라인 인자 → `{"success":false,"errorCode":"ROUTE_SEARCH_FAILED",...}`
+- 재발 방지 방법: 한글 목적지로 API 를 테스트할 때는 항상 stdin 또는 파일로 본문을 넘긴다.
+  "같은 요청인데 결과가 달라졌다"고 판단하기 전에, 요청을 보낸 **명령 형태가 정말 같았는지**
+  먼저 대조한다.

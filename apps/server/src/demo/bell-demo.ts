@@ -160,7 +160,15 @@ async function main() {
     { ...DEMO_ROUTE, destination: DEMO_ROUTE.destinationStation.stationName },
     {
       createTripWithStatus: (data) => repo.createTripWithStatus(data),
-      getPredictedArrivalMinutes: async () => DEMO_ROUTE.totalTime ?? null,
+      getArrivals: async () =>
+        DEMO_ROUTE.totalTime == null
+          ? []
+          : [
+              {
+                predictedArrivalMinutes: DEMO_ROUTE.totalTime,
+                occupancy: { type: "UNAVAILABLE", congestionLevel: null, remainingSeats: null },
+              },
+            ],
       generateTripId: () => tripId,
     },
   );

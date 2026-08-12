@@ -101,3 +101,20 @@ test("returns 404 for an unknown tripId", async () => {
     timestamp: "2026-07-01T14:38:00+09:00",
   });
 });
+
+test("returns 500 DB_ERROR when the trip status repository fails", async () => {
+  const result = await getTripStatus("trip-test-001", {
+    findTripProgressData: async () => {
+      throw new Error("Supabase unavailable");
+    },
+    now: () => "2026-07-01T14:39:00+09:00",
+  });
+
+  assert.equal(result.httpStatus, 500);
+  assert.deepEqual(result.body, {
+    success: false,
+    errorCode: "DB_ERROR",
+    message: "운행 상태를 조회하지 못했습니다.",
+    timestamp: "2026-07-01T14:39:00+09:00",
+  });
+});

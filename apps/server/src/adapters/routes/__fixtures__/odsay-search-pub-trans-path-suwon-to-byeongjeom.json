@@ -1,0 +1,87 @@
+{
+  "result": {
+    "searchType": 0,
+    "outTrafficCheck": 0,
+    "busCount": 8,
+    "subwayCount": 0,
+    "subwayBusCount": 0,
+    "pointDistance": 4861,
+    "startRadius": 700,
+    "endRadius": 700,
+    "path": [
+      {
+        "pathType": 2,
+        "info": {
+          "trafficDistance": 6134,
+          "totalWalk": 207,
+          "totalTime": 26,
+          "payment": 1650,
+          "busTransitCount": 1,
+          "subwayTransitCount": 0,
+          "mapObj": "16008:1:95:108",
+          "firstStartStation": "수원대학교",
+          "lastEndStation": "병점역후문",
+          "totalStationCount": 13,
+          "busStationCount": 13,
+          "subwayStationCount": 0,
+          "totalDistance": 6341,
+          "totalWalkTime": -1,
+          "checkIntervalTime": 100,
+          "checkIntervalTimeOverYn": "N",
+          "totalIntervalTime": 30
+        },
+        "subPath": [
+          { "trafficType": 3, "distance": 94, "sectionTime": 1 },
+          {
+            "trafficType": 2,
+            "distance": 6134,
+            "sectionTime": 23,
+            "stationCount": 13,
+            "lane": [
+              { "busNo": "34", "type": 1, "busID": 16008, "busLocalBlID": "233000011", "busCityCode": 1100, "busProviderCode": 2 },
+              { "busNo": "34-1", "type": 1, "busID": 16011, "busLocalBlID": "233000012", "busCityCode": 1100, "busProviderCode": 2 },
+              { "busNo": "46", "type": 1, "busID": 9500, "busLocalBlID": "200000106", "busCityCode": 1210, "busProviderCode": 2 },
+              { "busNo": "1000", "type": 1, "busID": 16068, "busLocalBlID": "233000077", "busCityCode": 1230, "busProviderCode": 2 }
+            ],
+            "intervalTime": 30,
+            "startName": "수원대학교",
+            "startX": 126.979749,
+            "startY": 37.213789,
+            "endName": "병점역후문",
+            "endX": 127.032047,
+            "endY": 37.20601,
+            "startID": 115789,
+            "startStationCityCode": 1230,
+            "startStationProviderCode": 2,
+            "startLocalStationID": "233000575",
+            "startArsID": "36210",
+            "endID": 113681,
+            "endStationCityCode": 1230,
+            "endStationProviderCode": 2,
+            "endLocalStationID": "233000695",
+            "endArsID": "36338",
+            "passStopList": {
+              "stations": [
+                { "index": 0, "stationID": 115789, "stationName": "수원대학교", "stationCityCode": 1230, "stationProviderCode": 2, "localStationID": "233000575", "arsID": "36210", "x": "126.979749", "y": "37.213789", "isNonStop": "N" },
+                { "index": 1, "stationID": 83517, "stationName": "안녕4통.고수문", "stationCityCode": 1230, "stationProviderCode": 2, "localStationID": "233002233", "arsID": "55121", "x": "126.982278", "y": "37.212622", "isNonStop": "N" },
+                { "index": 2, "stationID": 88426, "stationName": "융건릉사거리", "stationCityCode": 1230, "stationProviderCode": 2, "localStationID": "233002397", "arsID": "55343", "x": "126.987467", "y": "37.207917", "isNonStop": "N" },
+                { "index": 3, "stationID": 192583, "stationName": "융건릉입구", "stationCityCode": 1230, "stationProviderCode": 2, "localStationID": "233001840", "arsID": "36996", "x": "126.988969", "y": "37.206768", "isNonStop": "N" },
+                { "index": 4, "stationID": 5014848, "stationName": "LH1단지", "stationCityCode": 1230, "stationProviderCode": 2, "localStationID": "233000277", "arsID": "36382", "x": "126.999067", "y": "37.205574", "isNonStop": "N" },
+                { "index": 5, "stationID": 5014846, "stationName": "우미린센트포레1단지", "stationCityCode": 1230, "stationProviderCode": 2, "localStationID": "233001228", "arsID": "36660", "x": "127.001109", "y": "37.20797", "isNonStop": "N" },
+                { "index": 6, "stationID": 113666, "stationName": "용주사", "stationCityCode": 1230, "stationProviderCode": 2, "localStationID": "233000584", "arsID": "36289", "x": "127.005165", "y": "37.210545", "isNonStop": "N" },
+                { "index": 7, "stationID": 113669, "stationName": "우남블루존.원광병원", "stationCityCode": 1230, "stationProviderCode": 2, "localStationID": "233000583", "arsID": "36302", "x": "127.009164", "y": "37.209713", "isNonStop": "N" },
+                { "index": 8, "stationID": 113672, "stationName": "남수원현대아파트", "stationCityCode": 1230, "stationProviderCode": 2, "localStationID": "233000582", "arsID": "36308", "x": "127.010662", "y": "37.207104", "isNonStop": "N" },
+                { "index": 9, "stationID": 113673, "stationName": "안녕농협삼거리", "stationCityCode": 1230, "stationProviderCode": 2, "localStationID": "233000581", "arsID": "36314", "x": "127.014765", "y": "37.205182", "isNonStop": "N" },
+                { "index": 10, "stationID": 113676, "stationName": "송산동입구", "stationCityCode": 1230, "stationProviderCode": 2, "localStationID": "233000643", "arsID": "36315", "x": "127.017194", "y": "37.205545", "isNonStop": "N" },
+                { "index": 11, "stationID": 113679, "stationName": "동문아파트", "stationCityCode": 1230, "stationProviderCode": 2, "localStationID": "233000642", "arsID": "36327", "x": "127.022232", "y": "37.205397", "isNonStop": "N" },
+                { "index": 12, "stationID": 113680, "stationName": "진안5통.병점육교", "stationCityCode": 1230, "stationProviderCode": 2, "localStationID": "233000696", "arsID": "36336", "x": "127.03038", "y": "37.208672", "isNonStop": "N" },
+                { "index": 13, "stationID": 113681, "stationName": "병점역후문", "stationCityCode": 1230, "stationProviderCode": 2, "localStationID": "233000695", "arsID": "36338", "x": "127.032047", "y": "37.20601", "isNonStop": "N" }
+              ]
+            }
+          },
+          { "trafficType": 3, "distance": 113, "sectionTime": 2 }
+        ]
+      }
+    ]
+  }
+}

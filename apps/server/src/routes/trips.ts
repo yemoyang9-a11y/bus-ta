@@ -25,9 +25,9 @@ tripsRouter.post("/", async (req, res) => {
 
   const result = await createTrip(req.body, {
     createTripWithStatus: (data) => repository.createTripWithStatus(data),
-    getPredictedArrivalMinutes: async (candidate) => {
+    getArrivals: async (candidate) => {
       const info = await getArrivalInfo(candidate);
-      return info.predictedArrivalMinutes;
+      return info.arrivals;
     },
   });
   res.status(result.httpStatus).json(result.body);

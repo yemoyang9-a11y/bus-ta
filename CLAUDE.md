@@ -4,6 +4,14 @@
 
 ## 반드시 참고할 문서
 
+현재 작업을 이어받는 세션은 프로젝트 일반 문서보다 먼저 아래 continuation 문서를 읽는다.
+
+- `personal-notes/CODEX_HANDOFF.md`
+- `.agent-loop/DIRECTOR.md`
+- `.agent-loop/CURRENT_TASK.md`
+
+`.agent-loop/`와 handoff는 저장소에 커밋해 동기화한다. 다만 마지막 동기화 PR 이후의 편집은 로컬 worktree에만 있을 수 있으므로, 다른 checkout이나 Claude Code 클라우드가 보는 내용은 최신이 아닐 수 있다. handoff에 기록된 운영 쓰기·삭제 승인 대기는 별도 사용자 승인 없이 실행하지 않는다.
+
 - `README.md`
 - `AGENTS.md`
 - `CONTRIBUTING.md`

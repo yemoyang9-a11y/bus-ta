@@ -1,0 +1,35 @@
+# Render Blueprint for the pnpm workspace server.
+# Secret values are entered in Render; this file contains names only.
+
+services:
+  - type: web
+    name: bus-ta
+    runtime: node
+    plan: free
+    region: singapore
+    branch: claude/nice-archimedes-iv7iu0
+    rootDir: .
+    buildCommand: corepack enable && pnpm install --frozen-lockfile --prod=false && pnpm --filter @bus-ta/server build
+    startCommand: pnpm --filter @bus-ta/server start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: 22.17.0
+      - key: NODE_ENV
+        value: production
+      - key: COREPACK_ENABLE_DOWNLOAD_PROMPT
+        value: "0"
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: KAKAO_REST_API_KEY
+        sync: false
+      - key: ODSAY_API_KEY
+        sync: false
+      - key: GBIS_SERVICE_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: REALTIME_SHARED_SECRET
+        sync: false

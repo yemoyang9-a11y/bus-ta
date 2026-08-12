@@ -11,7 +11,7 @@
 | GET | `/api/health` | 서버와 DB 상태 확인 |
 | POST | `/api/routes/search` | 목적지 기반 경로 후보 조회 |
 | POST | `/api/trips` | 사용자가 선택한 후보로 운행 생성 |
-| PATCH | `/api/trips/{tripId}` | 운행 취소 또는 시연 재시작용 상태 수정 (미구현, 중간평가 범위 밖) |
+| PATCH | `/api/trips/{tripId}` | 명시적 사용자 취소·종료 처리 |
 | PATCH | `/api/trips/{tripId}/status` | GPS/mock 위치 업데이트, 현재 상태 계산, 하차벨 요청 자동 생성 |
 | GET | `/api/trips/{tripId}/status` | 현재 운행 상태 조회, 상태 변경 없음 |
 | GET | `/api/beacons?routeNo=` | 중간평가용 mock 비콘 ID 조회 |

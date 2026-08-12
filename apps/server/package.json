@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
-    "start": "node dist/index.js",
+    "start": "tsx src/index.ts",
     "demo:bell": "tsx src/demo/bell-demo.ts",
     "typecheck": "tsc --noEmit"
   },
@@ -16,12 +16,12 @@
     "axios": "^1.18.1",
     "express": "^4.19.2",
     "openai": "^6.45.0",
+    "tsx": "^4.15.7",
     "zod": "^3.23.8"
   },
   "devDependencies": {
     "@types/express": "^4.17.21",
-    "@types/node": "^20.19.43",
-    "tsx": "^4.15.7",
+    "@types/node": "^20.0.0",
     "typescript": "^5.4.5"
   }
 }

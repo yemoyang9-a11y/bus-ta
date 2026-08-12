@@ -164,6 +164,7 @@ async function handleEndTrip(tripState) {
 
   // 예모님 확인(2026-08-04): PATCH /api/trips/{tripId}, body는 { action: 'CANCEL' } 고정
   // tripId는 Path에만, body에 중복 전달하지 않는다
-  const data = await apiClient.trips.endTrip(tripState.tripId);
+  // client.ts의 trips.end(tripId, body) 구조로 변경됨 (merge 반영, 2026-08-12)
+  const data = await apiClient.trips.end(tripState.tripId, { action: 'CANCEL' });
   return { success: true, status: data };
 }

@@ -173,6 +173,6 @@ PATCH /api/trips/{tripId}/status
 - ODsay 경로 조회 실패: 외부 API 오류로 처리
 - 직행 노선 없음: 오류가 아니라 빈 `routes`와 안내 문장 반환 가능
 - OpenAI 실패: 백엔드 기본 점수 규칙으로 상위 2개 선택 및 기본 안내 문장 사용
-- GBIS 도착정보 조회 실패: `predictedArrivalMinutes`를 `null`로 두고 운행 생성 계속
+- GBIS 도착정보 조회 실패: `arrivals`를 빈 배열로 두고 운행 생성 계속 (timeout 5초)
 - BLE 연결 실패: 중간평가에서는 mock 하차벨 결과로 대체
 - 앱 위치 업데이트 오류: 이전 상태 유지, 오류 메시지 반환
