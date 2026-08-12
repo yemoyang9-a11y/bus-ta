@@ -57,19 +57,35 @@
 0절 0.4-A가 "범위 밖·미착수"로 등록만 해 둔 `.find()` 중복 `routeId` 이슈를 다음 작업으로 올린다.
 **PR #20이 occupancy를 출시한 지금은 이 결함이 그 기능을 직접 갉아먹기 때문이다.**
 
-fixture 24개 항목 실측(2026-08-12 재확인):
+**PR #22의 Codex 리뷰가 이 Task의 초안 규칙을 P1으로 잡았고, 그 지적이 맞아서 범위를 다시 잡았다.**
+초안은 "같은 `routeId` 중 `predictTime1`이 유효한 항목을 고른다"였다. fixture 원본을 다시 열어보니
+**중복 `routeId`는 같은 버스가 두 번 실린 게 아니라 방향이 다른 별개 레코드였다** — 회차 노선이
+같은 정류장을 두 방향으로 지난다.
 
 ```text
-routeId=233000281  idx3  predictTime1=""                    ← .find() 가 고르는 항목
-                   idx4  predictTime1=15  predictTime2=88   ← 실제 도착정보
-routeId=233000268  idx21 predictTime1=""                    ← .find() 가 고르는 항목
-                   idx22 predictTime1=43
+routeId=233000281 (205), stationId=233000575
+  항목0: routeDestName=동탄파크릭스    staOrder=11   turnSeq=66  predictTime1=""      ← .find() 가 고름
+  항목1: routeDestName=경기고속차고지  staOrder=128  turnSeq=66  predictTime1=15/88
+routeId=233000268 (200), 같은 정류장
+  항목0: routeDestName=반도10차        staOrder=11   turnSeq=64  predictTime1=""      ← .find() 가 고름
+  항목1: routeDestName=경기고속차고지  staOrder=123  turnSeq=64  predictTime1=43
 ```
 
-`getArrivalInfo()`(`apps/server/src/adapters/routes/hyorin-route-search.adapter.ts:335`)의 `.find()`가
-첫 항목을 집어, **GBIS가 도착정보를 주는데도 `arrivals: []`(정보 없음)이 나간다.**
+도착정보의 존재 여부를 방향 선택자로 쓰면, 사용자 방향에 마침 차가 없을 때 **반대 방향 차를 안내한다.**
+시각장애인 대상 앱에서 정보 누락보다 나쁜 실패다.
 
-**승인 없이 착수 가능하다** — 운영 DB 쓰기·마이그레이션·공개 API 신설이 없다. 상세는 `.agent-loop/CURRENT_TASK.md`.
+**결함은 두 겹이고, 첫 번째가 진짜다.**
+
+1. `getArrivalInfo()`(`apps/server/src/adapters/routes/hyorin-route-search.adapter.ts:335`)가
+   **방향을 전혀 보지 않는다.** 첫 일치 레코드가 반대 방향이면서 도착정보를 가지면 그대로 나간다.
+   **이미 배포된 코드의 문제다.**
+2. 위 fixture처럼 반대 방향 레코드가 비어 있으면 `arrivals: []`가 나가 도착정보와 `occupancy`가
+   통째로 누락된다. 예외도 502도 아니라 **로그에 드러나지 않는다.**
+
+**승인 없이 착수 가능하다**(운영 DB 쓰기·마이그레이션·공개 API 신설 없음). 다만 **1단계는 구현이 아니라
+방향 판별 수단 확정(조사)이다.** `Route`에 `boardingStation`·`destinationStation`·`stationList`가 있어
+방향 정보 자체는 서버가 갖고 있으나 어댑터 경계까지 전달되지 않고, GBIS 쪽 `staOrder`·`turnSeq`로
+회차 전/후를 가르는 것이 성립하는지는 **아직 실측되지 않았다.** 상세는 `.agent-loop/CURRENT_TASK.md`.
 
 ---
 
