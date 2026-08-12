@@ -1,15 +1,310 @@
-# 백엔드 인수인계 — Codex/Claude Code — 2026-08-09 (**노선 검색 정상화됨** — ODsay 등록 IP 불일치 해결, PR #18 병합, 열린 PR 0건, Realtime smoke 1단계만 통과)
+# 백엔드 인수인계 — Codex/Claude Code — 2026-08-11 (**운영 E2E 6개 gate 전부 통과**, fixture-vs-DB 확증 해소, **GBIS occupancy 구현·병합 완료(PR #20)**, 스킬 기록 불일치 정리)
+
+> **통합 브랜치 head가 `e7b4408`로 올라갔다**(이전 `8afa03b`). PR #20 병합 2026-08-11T12:05:41Z. **열린 PR 0건.**
+>
+> **다음 세션이 지금 바로 할 수 있는 일**
+> - **승인 없이 가능**: 없음(코드 작업 대기 항목이 비었다). 아래 "남은 일" 참고.
+> - **사용자·팀원 몫**: Realtime smoke 2단계(시크릿), GBIS 재캡처 요청(효린), outbound IP 관측(Render 로그).
+> - **미커밋 문서 동기화 PR이 필요하다** — 이 파일·`lessons.md`·`.agent-loop/`·`CLAUDE.md`가 전부 로컬에만 있다. 1.2절 참고.
 
 > 다음 로컬 에이전트가 현재 백엔드 상태를 사실대로 이어받기 위한 source of truth다.
 > 실제 비밀값, API 키, 토큰, Supabase 키, Realtime `clientSecret`, 응답 원문은 포함하지 않는다.
 > 이 문서 자체는 실행 승인서가 아니다. 운영 쓰기·삭제, 배포 설정 변경은 그때마다 사용자 승인을 다시 받는다.
 
 > **이 파일의 위치 주의**: 이 최신본은 `.worktrees/yemo-develop` worktree에 **미커밋 상태**로 있다.
-> 저장소에 커밋된 버전은 더 오래된 내용이다. 다른 checkout이나 클라우드 세션은 이 내용을 볼 수 없다.
+> PR #19(2026-08-10 병합)가 한 판을 저장소에 올렸지만 **그 뒤 이 파일이 다시 앞서 나갔다** — 저장소 버전은 0절(2026-08-10 세션)을 담고 있지 않다.
+> 다른 checkout이나 클라우드 세션은 이 내용을 볼 수 없다. 다음 문서 동기화 PR에 이 파일과 `lessons.md`, `.agent-loop/`를 함께 올려야 한다.
 
 ---
 
-## 0. 이번 세션(2026-08-09 07:20~08:32 UTC)에서 바뀐 것
+## 0. 이번 세션(2026-08-11)에서 바뀐 것
+
+**운영 E2E가 전부 통과했고, GBIS occupancy 명세의 마지막 미결이 해소됐다. 그 구현(Task 23)에 착수했다.**
+
+### 0.1 운영 Supabase E2E — 남아 있던 gate 6개를 한 번에 닫았다
+
+사용자 사전 승인을 받고 운영 DB 쓰기를 실행했다. **Task 13 방식대로 exact-ID 격리·정리를 함께 계획했고, 검증 후 전량 삭제했다.**
+
+| 검증 항목 | 결과 |
+| --- | --- |
+| **fixture-vs-DB 확증** | **해소됨.** fixture에 없는 `routeNo=TEST-9999` 행을 심고 `GET /api/beacons`로 조회 → 정확히 반환. **서버가 fixture가 아니라 실제 Supabase를 읽는다는 것이 처음으로 직접 증명됐다.** 확인 후 삭제 |
+| 정상 완주 E2E | `routes/search`(병점역, 실제 20개 정류장) → `POST /api/trips` 생성 시 **`predictedArrivalMinutes: 2`(GBIS 실값, null 아님)** → PATCH로 `remainingStations` 1 도달 시 `bellRequestId` 자동 생성·`PENDING` → 마지막 정류장에서 `TRIP_DONE` → `bell/result`로 `PENDING→SUCCESS` |
+| 동시 `requestId` 멱등성 | 같은 `requestId` 재전송 → "이미 처리된 위치 업데이트입니다". **DB 직접 조회로 `location_logs`·`bell_logs` 각각 정확히 1건 확인**(응답만이 아니라 저장 레벨까지) |
+| `end_trip` 취소 흐름 | `WAITING_BUS` 운행 취소 → `200` + `CANCELLED` |
+| 종료 상태 보호 4종 | TRIP_DONE+새 위치 `409` / TRIP_DONE+취소 `409` / CANCELLED+새 위치 `409` / CANCELLED+취소 `200`(멱등, 설계대로) |
+
+**정리 후 운영 행 수: `trips = 0`, `trip_status = 0`, `bell_logs = 0`, `location_logs = 0`, `bus_beacons = 1`.** Task 13 직후와 같은 클린 상태다.
+
+**이번 세션 애플리케이션 코드 변경은 이 검증까지는 0건이다**(전부 배포본 `8afa03b` 대상 운영 검증).
+
+### 0.2 Supabase MCP 연결 — 사실 정정
+
+OAuth 인증이 `{"message":"Unrecognized client_id"}`로 막혀 있었고, 우회책으로 PAT 기반 로컬 MCP(`supabase-pat`) 등록을 안내했다. **그러나 실제로는 사용자가 `/mcp`를 실행해 기존 HTTP 커넥터(`supabase`, `https://mcp.supabase.com/mcp`)가 그대로 연결됐다. `supabase-pat` 서버는 끝내 만들어지지 않았다.**
+
+> **다음 세션이 오해하지 않도록 적어 둔다.** 이 세션 중반에 내가 "supabase-pat으로 우회 연결됐다", "`--read-only`로 등록해서 쓰기가 막혀 있다"고 두 번 잘못 말했다. 둘 다 사실이 아니다 — `claude mcp get supabase-pat`은 "No MCP server named" 를 반환했고, 쓰기(INSERT/DELETE)는 정상 동작했다. **연결된 것은 OAuth HTTP 커넥터 하나뿐이다.**
+
+### 0.3 GBIS occupancy — 명세 미결 0건. 실측으로 버그 하나를 미리 잡았다
+
+**두 가지를 확정해 노션 「공통 API 및 Function Calling 명세서」 5.2-A에 반영했다.**
+
+1. **라벨 여부(마지막 미결) 확정** — 백엔드는 라벨을 붙이지 않고 `type`/`congestionLevel`/`remainingSeats` **원시 값만** 반환한다. 값 해석은 유나 쪽 GPT-Realtime Function/parameter description과 `instructions`에 넣는다. **예모 판단이고 유나가 따르기로 합의됨.** JSON 예시가 원래 라벨 없는 형태라 스키마 변경은 없었다.
+
+2. **GBIS 원본 → 계약 변환 규칙 신설** — 명세에 아예 빠져 있던 부분이다. 바탕화면의 실제 캡처(`gbis.txt`, 2026-08-06 20:24, 24개 노선)를 직접 분석해 채웠다.
+
+| 원본 | 값 | 해석 |
+| --- | --- | --- |
+| `crowded1/2` | `""` 또는 `0` | 혼잡도 정보 없음 |
+| `crowded1/2` | `1~4` | `congestionLevel` 유효값 |
+| `remainSeatCnt1/2` | `""` 또는 `-1` | 좌석 정보 없음 |
+| `remainSeatCnt1/2` | `0` | **정보 없음. 만석으로 읽지 않는다** |
+
+**`remainSeatCnt = 0`을 만석으로 읽으면 실제 버그가 난다.** 일반시내버스(`routeTypeCd` 13) 9건이 전부 `crowded=1`(=여유)이면서 동시에 `remainSeatCnt=0`이다. 여유로운 버스가 0석일 수 없으므로 이 `0`은 "이 차종은 좌석수를 보고하지 않음"이라는 미사용 기본값이다. 그대로 흘리면 **여유로운 시내버스를 탈 때마다 사용자가 "만석입니다" 안내를 듣는다.** 계약의 `remainingSeats: 0` = 만석은 **변환을 마친 출력값**에만 적용된다.
+
+**효린 공유 메모의 전제 하나를 정정했다.** "버스 종류에 따라 혼잡도 아니면 잔여좌석 중 하나만 준다"는 실측과 다르다 — 직행좌석 1007은 `crowded=1`과 `remainSeat=36`을 **둘 다 유효값으로** 준다. 그래서 우선순위 규칙(**둘 다 유효 시 `REMAINING_SEATS` 우선**)을 새로 정해 명세에 넣었다.
+
+실측 근거: `routeTypeCd` 13 9건 전부 `crowded=1`+`remainSeat=0` / 30(마을버스) 3건 전부 `crowded=0`+`remainSeat=-1` / 11(직행좌석) 2건은 좌석수 실값(1006=70, 1007=36).
+
+> **미확인**: 단일 시점 캡처라 `congestionLevel` 2·3·4는 실물로 관측하지 못했다(당시 전 노선 여유). 혼잡 시간대 재캡처 또는 GBIS 공식 문서 대조를 효린에게 요청하는 글을 작성해 사용자에게 전달했다.
+
+**효린의 파싱 코드는 저장소 어디에도 없다.** `hyorin-develop`·통합 브랜치·`yuna-realtime-openai` 세 브랜치를 `crowded|remainSeat|occupancy|congestion`으로 검색해 0건이다. 바탕화면 `gbis혼잡도.txt`는 코드가 아니라 카톡으로 공유된 **결과 계약 설명**이다. 즉 이 변환은 **이번 Task 23에서 처음 구현되는 것이다.**
+
+### 0.4 Task 23 — GBIS occupancy 구현 **완료**. 커밋 `eb9dcc6`, push 완료, **PR은 사용자 몫**
+
+**`origin/yemo/gbis-occupancy` 에 push 했다. PR 생성·병합은 하지 않았다(승인 범위 밖).**
+PR 링크: `https://github.com/yemoyang9-a11y/bus-ta/pull/new/yemo/gbis-occupancy` · base 는 `claude/nice-archimedes-iv7iu0`.
+
+| 항목 | 결과 (Director 직접 재현) |
+| --- | --- |
+| 서버 테스트 | **123/123 pass** (기준선 108 → 신규 15, 기존 108 전부 유지) |
+| `pnpm -r typecheck` | 3/3 Done |
+| 서버 build | exit 0 |
+| 마이그레이션 | **0건** |
+| Reviewer | **APPROVE** (치명 0 / 중대 0 / 경미 2) |
+
+`create_trip` 응답의 단일 `predictedArrivalMinutes`가 **최대 2대 배열 `arrivals`로 교체**됐다. 각 차량에 `occupancy`가 붙고, GBIS 원본 sentinel은 어댑터 경계에서 전부 번역된다. GBIS 호출에 **5초 timeout**도 새로 넣었다(명세 요구사항인데 기존 코드에 없었다).
+
+**DB 스키마는 바꾸지 않았다** — `trips.predicted_arrival_minutes`에 첫 차량 도착 시간만 계속 저장하고 `occupancy`는 응답 전용이다. 운영 마이그레이션이 승인 범위 밖이기도 하고, 도착·혼잡도는 몇 분이면 무효해지는 휘발성 데이터라 저장 가치가 낮다.
+
+**Reviewer 제안 1건은 근거를 들어 채택하지 않았다.** `remainingSeats`를 `.positive()`로 좁혀 스키마가 회귀를 2차 방어하게 하자는 제안이었는데, 계약 5.2-A가 `remainingSeats: 0`을 **"만석"이라는 유효값**으로 정의하므로 좁히면 계약 위반이다. 지금 `0`이 안 나가는 건 어댑터 층의 사정이지 계약이 금지해서가 아니다. 대신 그 배경을 스키마 주석에 명시해 나중에 누가 `readRemainingSeats` 가드를 풀지 않도록 했다.
+
+> **알려진 한계(의도적)**: **실제로 만석인 좌석제 버스를 "만석"으로 안내하지 못한다.** 원본 `0`이 만석인지 미보고인지 응답만으로 구분할 수 없어 안전한 쪽으로 접었다. 접근성 앱에서 틀린 "만석" 안내가 정보 누락보다 나쁘다는 판단이다. `routeTypeCd`로 차종을 갈라 구분할 수 있으나 그 코드 의미가 공식 문서로 확인되지 않아 적용하지 않았다.
+
+> **0.4 계열 읽는 순서**: `0.4`(구현) → `0.4-A`(공식 문서로 정정) → `0.4-B`(Codex 리뷰 반영 + 병합). 시간순이다.
+
+### 0.4-A Task 23-A — GBIS 공식 문서로 정정. 커밋 `2953ad6` (같은 브랜치, push 완료)
+
+**Task 23 직후 GBIS 공식 매뉴얼을 확인했더니 위 구현의 해석 규칙이 틀렸다는 것이 드러나 같은 브랜치에 정정 커밋을 올렸다.**
+
+공식 매뉴얼([gbis.go.kr 버스 도착정보 항목조회](https://www.gbis.go.kr/gbis2014/publicService.action?cmd=mBusArrival)) 확인 결과:
+
+- **`routeTypeCd`(노선유형)가 애초에 어느 필드가 유효한지 결정한다.** "한 버스가 둘 다 주고 우선순위로 고른다"가 아니었다.
+- `crowded` 유효: `13`(일반형시내)·`15`(따복형)·`23`(일반형농어촌) / `remainSeatCnt` 유효: `11`·`12`·`14`·`16`·`17`·`21`·`22`(좌석형 계열)
+- **`remainSeatCnt`의 공식 정보없음 sentinel은 `-1` 뿐이고, `0`은 유효값(만석)이다.**
+
+**따라서 Task 23의 "`0`은 무조건 정보없음" 규칙은 결함이었다** — 좌석형 노선이 실제로 만석이 되어 `remainSeatCnt=0`을 보낼 때 그것을 정보없음으로 잘못 접는다. 시내버스에서 결과가 맞았던 건 그 노선유형이 애초에 이 필드 대상이 아니어서지 규칙이 옳아서가 아니었다. **실측 데이터에 만석 사례가 없어 테스트로도 안 걸렸다.**
+
+> **0.4절에 "의도적 한계"로 적어둔 "만석인 좌석제 버스를 만석으로 안내하지 못한다"는 한계가 아니라 버그였다. 이 커밋으로 해소됐다.**
+
+`toOccupancy`가 `routeTypeCd`로 먼저 분기하고 해당 필드 하나만 읽는다. 대상 아닌 필드는 값이 뭐가 오든 무시하고, 각 분기에서 유효값이 없으면 다른 필드로 흘러가지 않고 `UNAVAILABLE`로 닫는다. 테스트 **123 → 128**(합성 5개), typecheck 3/3, build exit 0, 마이그레이션 0건. Reviewer **APPROVE**(결함 0건, 16개 합성 케이스 직접 주입 검증).
+
+**⚠️ 남은 후속 — 좌석형 노선의 `crowded` 값**: 공식 문서는 `crowded`가 좌석형에 제공되지 않는다고 하는데 **fixture의 type 11 노선에 값이 채워져 있고, 그 값이 좌석수와 모순되지 않는다**(`crowded=1` 여유 + 좌석 23·36·37석 남음). 즉 진짜 값일 가능성이 있다. 실질 영향은 **좌석형인데 `remainSeatCnt=-1`이고 `crowded`는 유효한 경우 지금은 `UNAVAILABLE`이 나간다**는 것. 샘플 2건뿐이라 지금 fallback을 넣으면 이번에 배운 실수(추정을 규칙으로 굳히기)를 반복하는 것이라 **고치지 않고 기록만 남겼다.** 혼잡 시간대 재캡처로 확인할 항목이며 상세는 `.agent-loop/CURRENT_TASK.md`.
+
+**부수 확인 — `.find()` 중복 `routeId` 선재 이슈가 실물로 확인됐다.** fixture에서 `233000281`(205)·`233000268`(200)이 각각 두 번 등장하는데 첫 항목이 빈 값이라 `getArrivalInfo`가 유효한 두 번째 항목(205는 `predictTime` 15/88)을 놓친다. **이번 변경이 만든 것이 아니라 1절·PR #14 기록에 이미 "범위 밖·미착수"로 등록된 문제다.** 고치지 않았고, 대신 현재 동작을 고정하는 테스트를 넣어 `.find()`를 고치면 그 테스트가 깨지도록 했다.
+
+### 0.4-B PR #20 병합 완료 — 통합 브랜치 head `e7b4408`
+
+2026-08-11T12:05:41Z 병합. 커밋 3개(`eb9dcc6` 본 구현 + `2953ad6` 공식 문서 정정 + `52bdbe1` 문서 동기화). **열린 PR 0건.**
+
+**Codex 봇 리뷰가 P2 하나를 잡았고 그 지적이 맞았다.** `AGENTS.md`가 "API 변경 시 `docs/API_SPEC.md`도 함께 수정한다"를 규정하는데 갱신하지 않아 **클라이언트가 새 계약을 저장소 문서에서 발견할 수 없는** 상태였다.
+
+> **내가 처음에 "고칠 게 없다"고 판단한 것이 틀렸다.** `docs/API_SPEC.md`에 `predictedArrivalMinutes`가 없다는 사실 자체는 맞았지만, 규칙을 "기존 서술 중 고칠 게 있나"로만 좁게 읽었다. 그 파일에는 trip 응답 설명이 **아예 없어서 신설이 필요한** 상황이었다. 규칙의 요구는 "API가 바뀌면 명세를 갱신하라"다.
+
+`52bdbe1`에서 `docs/API_SPEC.md`에 「운행 생성 도착 정보」 절을 신설하고(arrivals 구조·occupancy 3종·**GBIS 원본→계약 변환 규칙**), 실제로 코드와 어긋나던 서술 6줄을 정정했다(`REQUIREMENTS.md`·`ARCHITECTURE.md`·`DEMO_SCENARIO.md`×2·`MIDTERM_SCOPE.md`×2).
+
+**손대지 않은 3건**: `DB_SCHEMA.md:15`·`docs/database/schema.md:207`은 **DB를 안 바꿨으므로 여전히 정확**하고(`trips.predicted_arrival_minutes` 컬럼 그대로), `TROUBLESHOOTING.md:103`은 과거 진단 기록이다.
+
+### 0.4-1 (기록) Task 23 착수 시점 메모
+
+명세 미결이 0건이 되어 착수했다. 상세 범위·완료 조건은 `.agent-loop/CURRENT_TASK.md`.
+
+- **worktree `C:/Users/yemoy/bta-gbis`, 브랜치 `yemo/gbis-occupancy`** (base `8afa03b`). OneDrive 밖 짧은 경로에 만들어 MAX_PATH·자리표시자 함정을 피했다. `pnpm install --frozen-lockfile` 완료.
+- 착수 시점 기준선 **서버 테스트 108/108 pass** 직접 실행 확인.
+- **마이그레이션을 만들지 않는 것이 이 Task의 설계 결정이다.** 운영 DB 스키마 변경은 승인 범위 밖이고, 도착·혼잡도 정보는 몇 분이면 무효해지는 휘발성 데이터라 저장 가치가 낮다. 기존 `trips.predicted_arrival_minutes` 컬럼에 **첫 차량 도착 시간만** 계속 저장하고 `occupancy`는 응답 전용으로 둔다.
+- 영향 범위가 처음 추정보다 넓다 — `apps/mobile/src/realtime/guide.ts`와 `apps/server/src/services/guide.ts`도 `predictedArrivalMinutes`를 참조한다.
+
+### 0.5 스킬 기록 불일치 정리 — 6절 10번 해소 (사용자 승인 후 실행)
+
+**`skills-lock.json`이 Matt Pocock 스킬 4개를 설치됨으로 기록했으나 실제로는 `grill-me` 하나뿐이었다.** 8/10부터 미뤄둔 항목을 이번에 닫았다.
+
+**근본 원인**: lock 파일은 "설치하겠다고 선언한 목록"이고 **실제 설치 결과를 검증하지 않는다.** 각 항목에 `computedHash`가 있어 검증된 것처럼 보이지만 **그건 원본 파일의 해시이지 설치 결과의 해시가 아니다.** 그래서 설치가 실패해도 lock 파일은 모른다.
+
+**8/10 기록보다 상황이 나았던 점**: 원본 4개가 전부 `~/matt-pocock-skills/skills/` 에 로컬로 있다(`scripts/link-skills.sh`도 있음). 즉 설치 선택지가 handoff가 가정한 것보다 훨씬 쌌다 — 복사 한 번이면 됐다.
+
+**그럼에도 설치하지 않고 기록을 실제에 맞추기로 결정했다(사용자 선택).** 근거:
+
+- **`handoff` 스킬은 이 프로젝트 방식과 정면 충돌한다.** 원본 16줄의 핵심 지시가 "핸드오프 문서를 **OS 임시 디렉터리에 저장하라 — 현재 워크스페이스가 아니라**"다. 이 파일은 워크스페이스에 두고 PR로 저장소에 동기화하는 것이 확립된 흐름이라, 임시 디렉터리에 쓰면 다른 checkout·팀원이 볼 수 없다.
+- **`grill-me`는 내용이 한 줄짜리 얇은 래퍼다** — "`/grilling` 세션을 실행하라". `/grilling`은 이미 별도로 존재한다.
+- 나머지 둘은 **없는 줄도 모르고 몇 주를 작업했다** — 필요해진 적이 없었다는 증거다.
+
+**실행 내용**
+
+| 대상 | 변경 |
+| --- | --- |
+| `skills-lock.json` | 4개 → `grill-me` 1개. `~/.claude/skills/` 실물과 대조해 일치 확인 |
+| 전역 `~/.claude/CLAUDE.md` | **304 → 270줄.** 4절의 미설치 3개 섹션 제거 + 흩어진 참조 30여 곳 정리(작업 유형별 우선순위·단순 작업 예외·서브에이전트 범위·기본 파이프라인) |
+
+**단순 삭제가 아니다.** 없어진 스킬이 담당하던 규율 중 살릴 가치가 있는 것은 스킬 의존성을 뺀 형태로 남겼다 — 인수인계는 "프로젝트의 기존 문서 구조를 이어 쓴다"(민감정보 금지·완료 검증 착각 금지 유지), 구조 개선은 "개선 후보 제안으로 취급, 승인 없이 대규모 리팩터링 금지, 전체 훑기는 명시 요청 시에만" 유지, 문서 기반 계획 검증은 "해당 문서를 직접 읽고 대조"로 대체.
+
+**4절 상단에 정리 기록을 남겼다** — 왜 설치하지 않았는지, 원본 위치, 되살릴 때 `handoff`의 임시 디렉터리 요구를 먼저 판단하라는 것까지.
+
+**백업**: `~/.claude/CLAUDE.md.bak-20260811`. 이 파일은 git 추적 대상이 아니라 백업이 유일한 복구 수단이다.
+
+> **재발 방지**: 앞으로 스킬을 추가하면 lock 파일만 믿지 말고 `ls ~/.claude/skills/` 로 실물을 확인한다.
+
+### 0.6 다음 세션이 할 일
+
+**백엔드에 승인 없이 착수할 수 있는 코드 작업이 지금 하나도 없다.** 명세서상 남은 구현 항목이 GBIS occupancy 하나였고 이번에 닫혔다. 아래는 성격별로 나눈 남은 일이다.
+
+**① 문서 동기화 PR (승인 없이 가능, 가장 먼저 할 것)**
+
+이 handoff·`lessons.md`·`.agent-loop/`가 전부 미커밋이다. `claude` 최신(`e7b4408`) 기준으로 브랜치를 만들어 PR을 올린다. 1.2절 경고 참고 — **전역 `~/.claude/CLAUDE.md`는 저장소 밖이라 대상이 아니다.**
+
+**② 사용자·팀원이 해야 하는 것 (에이전트가 못 함)**
+
+| 항목 | 누가 | 왜 에이전트가 못 하나 |
+| --- | --- | --- |
+| Realtime smoke 2단계 | 사용자 | `REALTIME_SHARED_SECRET` 취급. 결과 3가지(`200`·모델·`expiresAt`)만 공유받는다. 6절 3번 |
+| GBIS 혼잡 시간대 재캡처 | 효린 | 좌석형 만석 시 `remainSeatCnt=0` 여부 + 좌석형 `crowded` 유효성 확인. 요청 글은 작성해 전달됨 |
+| outbound IP 안정성 관측 | 사용자 | Render 로그 접근 불가. **시연 당일 아침 `[startup] outbound ip=` 대조는 필수다** |
+| ODsay CIDR 등록 문의 | 사용자 | 외부 문의. 되면 IP 변동 위험이 근본적으로 사라진다 |
+
+**③ 남아 있는 진짜 공백 — 백엔드 밖이다**
+
+**앱에서 Realtime 모듈이 `App.tsx`에 연결되지 않았다.** 서버 세션 발급 API는 준비됐지만 앱에 실행 경로가 없다(0-2절 0.4 참고). 백엔드가 아무리 완성돼도 **이게 붙지 않으면 음성 흐름 전체가 동작하지 않는다.** 시연 관점에서 지금 가장 큰 위험이다.
+
+**④ 정리해도 되는 것 (선택)**
+
+- 원격 `yemo/gbis-occupancy` 삭제(PR #20 병합 완료), worktree `C:/Users/yemoy/bta-gbis` 제거(미커밋 0건)
+- 11절의 기존 정리 항목들(브랜치 2개 삭제 판단, worktree 2개 미커밋 처리 등)
+
+---
+
+## 0-0. 이전 판(2026-08-10 09:50~12:45 UTC)에서 바뀐 것
+
+> 이 절 안의 "0.N절" 표기는 **이 절(0-0) 내부**를 가리킨다(강등 전 번호를 그대로 둔 것이다).
+
+**애플리케이션 코드 변경은 0건이다.** 저장소 정리, 문서 정정, 운영 검증만 했다.
+
+### 0.1 PR #19 병합 — 열린 PR 다시 0건
+
+`yemo/sync-handoff-docs`(handoff·`lessons.md`·`CLAUDE.md` 저장소 동기화)가 2026-08-10T10:05:11Z에 병합됐다.
+**통합 브랜치 head가 `8afa03b`로 올라갔다**(이전 `b3e2245d`). `gh pr list --state open` → `[]`.
+
+> 이전 판 0절 제목이 "열린 PR 0건"이라고 적어 놓고 1절 표에는 PR #19가 열림으로 되어 있었다.
+> 표 쪽이 맞았다. **제목 줄과 본문 표가 어긋나면 표를 믿는다.**
+
+### 0.2 브랜치·worktree 대청소 (사용자 승인 후 단계별 실행)
+
+| 대상 | 이전 | 이후 |
+| --- | --- | --- |
+| worktree | 11개 | **6개** |
+| 로컬 브랜치 | 19개 | **8개** |
+| 원격 브랜치 | 17개 | **10개** |
+
+- **제거한 worktree 6개**: `docs-sync`, `chaerin-frontend-merge`, `route-lane-candidates`, `migration-history-sync`, `sec01-security-followups`, `%TEMP%/bus-ta-sec01-doc-contract-sync`.
+- **삭제한 로컬 브랜치 10개**: `yemo/realtime-session-loop`, `yemo/route-search-upstream-error-visibility`, `yemo/sec01-migration-version-sync`, `yemo/sec01-security-contract-fix`, `yemo/sync-handoff-docs`, `yemo/resolve-chaerin-frontend-conflict`, `yemo/route-search-multi-lane-candidates`, `yemo/migration-history-sync`, `yemo/sec01-security-integration`, `yemo/sec01-doc-contract-sync`.
+- **삭제한 원격 브랜치 7개**: PR #13~#19의 `yemo/*` 브랜치 전부.
+- **안전 절차**: 지우기 직전 브랜치마다 `git merge-base --is-ancestor <브랜치> origin/claude/...`로 조상 여부를 확인하고, 조상이 아니면 건너뛰도록 스크립트를 짰다. **커밋은 하나도 사라지지 않았다** — 되살리려면 `git push origin <sha>:refs/heads/<이름>`.
+- 로컬 `claude/nice-archimedes-iv7iu0`를 원격 head `8afa03b`로 fast-forward 했다(이전엔 17커밋 뒤).
+
+**남긴 것과 이유**: `.worktrees/outbound-ip`·`.worktrees/route-search-observability`는 `node_modules`가 있어 서버 테스트를 바로 돌릴 수 있는 유일한 곳이다. `.worktrees/merge-hyorin`(`.agent-loop/`, `lessons.md` 미커밋)과 `.codex/worktrees/sec01-security-contract-fix`(`CODEX_HANDOFF.md` 수정본 미커밋)는 미커밋 파일 때문에 손대지 않았다. 팀원 브랜치(`chaerin-develop`, `hyorin-develop`, `yuna-realtime-openai`)와 소유자 불명 4개(`codex`, `feature/*` 3개)도 그대로 뒀다.
+
+**삭제 후보로 조사만 하고 남긴 것**: `feature/end-trip-cancelled`(PR #2), `codex`(PR #1)는 둘 다 예모 본인 브랜치이고 통합 브랜치의 조상이며 CI·`render.yaml`이 참조하지 않는다 — **지워도 안전하다고 확인됐으나 아직 지우지 않았다.** `yemo/sec01-security-followups`는 claude head에 없는 커밋 2개를 가진 유일한 브랜치인데, 그 내용(`scripts/verify-supabase-security.mjs`)은 이미 claude head에 다른 커밋으로 들어가 있다.
+
+### 0.3 fetch refspec 복구 — **1.1절의 오래된 경고가 해소됐다**
+
+`remote.origin.fetch`가 `claude` 브랜치 하나만 가져오도록 망가져 있던 것을 git 기본값으로 되돌렸다.
+
+```text
+이전: +refs/heads/claude/nice-archimedes-iv7iu0:refs/remotes/origin/claude/nice-archimedes-iv7iu0
+이후: +refs/heads/*:refs/remotes/origin/*
+```
+
+원격 10개와 로컬 `origin/*` 10개가 **SHA까지 전부 일치**하는 것을 대조로 확인했다(`origin/HEAD -> origin/main`은 심볼릭 ref라 별개). **이제 `git log origin/<브랜치>`와 ahead/behind 계산을 그대로 믿어도 된다.**
+
+수정 직전에 이 결함이 한 번 더 터졌다 — 원격 7개를 지운 뒤 `git fetch --prune`을 돌렸는데 로컬 `origin/yemo/*` 7개가 그대로 남았다. `--prune`은 refspec이 덮는 범위만 청소한다. 그때는 `git branch -r -d`로 하나씩 지워야 했다.
+
+### 0.4 노션 「백엔드 개발 명세서」 8곳 정정
+
+실측으로 확인된 오류 두 종류만 고쳤다. 다른 내용은 건드리지 않았다.
+
+1. **배포 브랜치 서술 5곳** — 단계 15-1 본문·설정 표 `branch` 행, 19장 callout, 19장 마지막 문단, 단계 18 PR base. 전부 `yemo-develop` → `claude/nice-archimedes-iv7iu0`. 특히 19장의 "저장소에 `claude`라는 이름의 브랜치는 존재하지 않는다"가 위험했다 — 실재하며 그게 배포 브랜치다.
+2. **migration pending 기록 3곳** — 단계 13 SEC-01, 19장 표 SEC-01 행, 20장 미확정 목록. `20260804142432_restrict_future_data_api_access`를 pending으로 적고 있었으나, Supabase 원격 조회 결과 **`20260805045657_restrict_future_data_api_access`로 적용 완료**였다(PR #10에서 버전 정렬). 현재 원격 migration 7건 전부 적용 상태.
+
+### 0.5 Task 22 — `GET /api/beacons` 운영 검증 통과 (부분)
+
+배포본 `8afa03b` 대상으로 **11개 케이스 전부 PASS**. 상세는 3절 Task 22와 `.agent-loop/CURRENT_TASK.md`.
+
+응답 키 집합이 `success`/`routeNo`/`targetBeaconId`/`isMock`/`message`/`timestamp` 여섯 개뿐이고, 2026-08-04에 공개 응답에서 뺀 `beaconId`·`localBusId`·`vehicleId`는 **하나도 새지 않았다.** `bus_beacons` 테이블을 직접 조회해 응답과 값이 일치하는 것도 대조했다.
+
+**완전히 닫지 못한 것 둘**(반드시 다음 세션에 인계):
+
+- **`isMock` 구분은 절반만 검증됐다.** DB에 `is_mock=true` 행 하나뿐이라 `false` 경로를 관측할 수 없다. 실제 비콘 행은 하드웨어(정민) ESP32 준비 후 추가 예정이다. 명세서 단계 11의 이 통과 조건을 **완료로 표시하지 않았다.**
+- **운영이 Supabase 경로를 탔다는 것은 추론이다.** `routes/beacons.ts`가 `createSupabaseBeaconRepositoryFromEnv() ?? new FixtureBeaconRepository()` 구조인데 **fixture와 DB 행의 값이 완전히 같아 응답만으로는 구분되지 않는다.** `/api/health`의 `dbStatus: UP`이 근거다. 결정적으로 가르려면 DB에만 있는 `routeNo` 행이 필요하고 그건 운영 쓰기다.
+
+### 0.6 하드웨어 브랜치 조사 (사용자 요청, 삭제하지 않음)
+
+`feature/hardware-bus-beacon`(`bc18ba0`)과 `feature/hardware-smart-cane`(`354bc15`)은 둘 다 **정민(`duwjd25`)이 2026-06-29 하루에 만든 브랜치**이고, 최종 내용이 서로 같으며 통합 브랜치의 `hardware/`와 **바이트 단위로 동일**하다(diff 0줄). 새 코드는 없다.
+
+**브랜치 이름과 내용이 어긋나 있다** — `feature/hardware-bus-beacon`의 tip 커밋은 스마트지팡이 코드 추가이고, `feature/hardware-smart-cane`의 tip은 `Delete ble_stick.ino`다. GitHub 웹에서 올렸다 지웠다 한 흔적이다.
+
+담긴 것:
+
+- `hardware/bus-beacon/ble_scan.ino` — **파일 이름은 scan인데 실제 동작은 Advertising이다.** `MOCK_BUS_1551_001` 이름으로 BLE 광고 송출 + 3초마다 시리얼 로그.
+- `hardware/smart-cane/ble_stick.ino` — BLE Central 스캐너. 3초 스캔으로 대상 비콘을 찾으면 RSSI를 거리 4단계(`VERY_NEAR`/`NEAR`/`APPROACHING`/`FAR`, 임계값 -55/-65/-75)와 진동 4단계로 변환해 시리얼 출력.
+- README 3개. `hardware/smart-bell`은 **README만 있고 `.ino`가 없다.**
+
+**백엔드 입장 결론 — 비콘 ID는 어긋나지 않는다.** README의 `BUSTA-{노선}-{정류장코드}`와 펌웨어의 `MOCK_BUS_1551_001`은 서로 다른 컬럼이다. DB 행이 `beacon_id='BUSTA-1551-DEMO01'`, `target_beacon_id='MOCK_BUS_1551_001'`로 둘 다 갖고 있고 펌웨어의 `TARGET_BEACON_ID`가 후자와 정확히 일치한다.
+
+**다만 펌웨어는 시리얼 출력만 한다.** 앱과의 BLE GATT 연결도, 서버 호출도, 진동 모터 GPIO 제어도 없다. `SET_TARGET_BEACON`·`START_BEACON_SCAN`·`STOP_BEACON_SCAN`은 `#define`만 있고 수신 처리 로직이 없다. 노선·비콘 ID는 하드코딩이다. 즉 **"BLE 감지가 되는가"를 시리얼로 확인하는 단계이고, 감지 결과가 앱·서버로 흐르는 경로는 아직 없다.**
+
+### 0.7 스킬 설치 상태가 기록과 다르다 — **다음 세션 과제 (사용자 지시로 이번엔 손대지 않음)**
+
+저장소 루트 `skills-lock.json`은 Matt Pocock 스킬 4개가 설치됐다고 기록하는데, `~/.claude/skills/`에는 **1개만 실재한다.**
+
+| skills-lock.json 기록 | 실제 |
+| --- | --- |
+| `grill-me` | ✅ 설치됨 (단 `disable-model-invocation: true`라 사용자만 호출 가능) |
+| `grill-with-docs` | ❌ 없음 |
+| `handoff` | ❌ 없음 |
+| `improve-codebase-architecture` | ❌ 없음 |
+
+**따라서 지금까지의 handoff는 `handoff` 스킬 형식이 아니라 이 파일의 기존 구조를 이어 쓴 것이다.** 문서 형식을 의심할 필요는 없지만, 출처를 잘못 알고 있으면 다음 세션이 스킬을 호출하려다 실패한다.
+
+**전역 `CLAUDE.md`가 이 네 스킬이 다 있다고 전제하고 담당 영역을 길게 규정하고 있어, 그 지침 중 상당 부분이 현재 작동할 수 없다.** 사용자 지시로 `skills-lock.json` 정리와 `CLAUDE.md` 수정은 **다음 세션으로 미뤘다.** 6절 10번 참고.
+
+### 0.8 다음 세션이 지금 바로 할 수 있는 것
+
+**승인 없이 가능**
+
+1. **outbound IP 안정성 관측** — 서버를 15분 재웠다 깨우고 `[startup] outbound ip=` 비교. 로그 열람은 사용자 몫이다.
+2. **`skills-lock.json`·전역 `CLAUDE.md` 정리** — 0.7절. 로컬 파일 수정뿐이다.
+
+**사용자 실행 권장**
+
+3. **Realtime 세션 smoke 2단계** — 6절 3번. 시크릿을 대화에 노출하지 말고 결과 3가지만 공유.
+
+**사전 승인 필요 (운영 DB 쓰기)**
+
+4. **운영 E2E 한 묶음** — 명세서 16.4 + 단계 10(`end_trip` 통합) + 단계 6(동시 `requestId`) + 종료 상태 보호 4종을 운행 하나로 닫는다. **이게 지금 가장 큰 덩어리이자 남은 최우선 항목이다.** 6절 4번.
+
+**남의 답 대기**
+
+5. **GBIS `occupancy` 구현** — 유일하게 남은 진짜 코드 작업. 「공통 API 및 Function Calling 명세서」 5.2-A. 선행 미결은 "숫자만 줄지 라벨(`여유`/`혼잡`)도 줄지"이며 유나 확인이 필요하다.
+
+---
+
+## 0-1. 이전 판(2026-08-09 07:20~08:32 UTC)에서 바뀐 것
 
 ### 0.1 노선 검색이 살아났다 — 최우선 미결이 해소됐다
 
@@ -82,7 +377,7 @@ ODsay 병목이 풀려서 이전 판에서 막혀 있던 항목들이 열렸다.
 
 ---
 
-## 0-0. 이전 판(2026-08-08 12:00~15:30 UTC)에서 바뀐 것
+## 0-2. 이전 판(2026-08-08 12:00~15:30 UTC)에서 바뀐 것
 
 **이번 세션의 코드 변경은 0건이다.** 병합 확인, 운영 진단, 문서 갱신만 했다. 커밋·push도 하지 않았다.
 
@@ -153,7 +448,7 @@ ODsay 답이 오면 6절 1번으로 즉시 복귀한다.
 
 ---
 
-## 0-1. 이전 판(2026-08-07)에서 바뀐 것
+## 0-3. 이전 판(2026-08-07)에서 바뀐 것
 
 - **Render 배포 브랜치 전환이 완료돼 있었다(사용자가 이전에 수행). 이번 세션에서 배포된 코드로 직접 확인했다.** 배포 브랜치는 `claude/nice-archimedes-iv7iu0`이고, 8/7 21:33~21:34 KST에 `a5bfdd7`이 자동 배포됐다. 구버전(`yemo-develop`)은 `POST /api/routes/search`에서 mock 어댑터를 쓰기 때문에 요청과 무관하게 후보 2개를 반환하는데, 운영은 그렇지 않았다 — 실제 Kakao·ODsay 어댑터가 돌고 있음이 응답으로 확인됐다. **handoff 이전 판 6절 2번은 해소됐다.**
 - **PR #15 병합됨 — 노선 검색 외부 API 실패를 로그로 드러낸다.** `search-routes.service.ts`의 `catch { }`가 오류 객체를 바인딩조차 하지 않아 AxiosError가 소멸했고, ODsay 어댑터는 인증 실패(HTTP 200 + error 본문)를 "후보 없음"과 같은 빈 배열로 반환했다. 그 결과 운영 502의 원인을 로그로도 밖에서도 알 수 없었다. TDD로 실패 테스트 6개를 먼저 작성해 고쳤다. 서버 테스트 98 → **104**. 공개 계약(502 / 200+빈 배열)은 바꾸지 않았다. 8/7 23:39:40 KST 병합(`2578183`), 23:40 KST 자동 배포 live. 상세는 3절.
@@ -165,7 +460,7 @@ ODsay 답이 오면 6절 1번으로 즉시 복귀한다.
 
 ---
 
-## 0-2. 이전 판(2026-08-06)에서 바뀐 것
+## 0-4. 이전 판(2026-08-06)에서 바뀐 것
 
 - **Task 16(PR #3 프론트엔드 충돌 해소)을 실행해 완료했다. 단, 로컬 커밋까지다 — push하지 않았다.** 새 worktree `.worktrees/chaerin-frontend-merge`, 브랜치 `yemo/resolve-chaerin-frontend-conflict`에서 `origin/chaerin-develop`을 병합해 충돌 4건을 전부 해소했다. 커밋 `7881ad6`. 서버 테스트 98/98 pass, `pnpm -r typecheck` 3개 패키지 전부 통과, 서버 build 성공, 충돌 마커 0건. Implementer `DONE` → Reviewer `APPROVE` → Director 최종 검수 통과. 상세는 3절 Task 16, 남은 판단은 6-A절.
 - **막혀 있던 결정 1(WebRTC 버전)이 사용자 승인으로 확정됐다: `claude` 쪽 정확 버전 고정 유지**(`@config-plugins/react-native-webrtc: 13.0.0`, `react-native-webrtc: 124.0.6`). git 이력으로 출처를 확인한 결과 그 고정 버전은 **유나(una7620)의 `6382d70`**에서 온 것이고 yemo 작업물이 아니다. PR #3 쪽 `^15.0.1`/`^124.0.8`은 채린이 BLE를 붙이며 함께 `pnpm add`해 그 시점 최신이 잡힌 정황이고, "13→15로 올리자"는 판단의 흔적은 어느 커밋에도 없다. 근거와 한계는 `.agent-loop/CURRENT_TASK.md` 2절에 기록.
@@ -180,26 +475,50 @@ ODsay 답이 오면 6절 1번으로 즉시 복귀한다.
 
 - 저장소: `yemoyang9-a11y/bus-ta`
 
-| 브랜치 | 역할 | SHA (2026-08-08 15:20 UTC `ls-remote` 실측) |
+**2026-08-10 대청소로 브랜치가 크게 줄었다.** 아래는 청소 직후 `ls-remote`·`git branch` 실측이다.
+
+원격 **11개** (2026-08-11 `git ls-remote` 실측. PR #20 병합 후 `yemo/gbis-occupancy`가 남아 10개 → 11개):
+
+| 원격 브랜치 | 역할 | SHA |
 | --- | --- | --- |
-| `claude/nice-archimedes-iv7iu0` | **통합·배포·E2E 기준** | `b3e2245d5ede3dff48adc50d244592c9c14652c8` (2026-08-09 PR #18 병합분. 이전 `122e86de` = PR #16·#17) |
-| `yemo-develop` | 개인 개발 브랜치(더 이상 배포 기준 아님) | `9b1fb092c41d9a47f13b2cdf7521a928899bf031` |
-| `chaerin-develop` | PR #3 — 원본. **PR #3은 자동 `MERGED`됐다.** 원격 브랜치는 남아 있음 | `276e38ba6c416efa30296c3510fd77deaafb426c` |
-| `yemo/resolve-chaerin-frontend-conflict` | PR #17 — **병합 완료**. worktree 제거 가능 | `02269d1` |
-| `yemo/log-outbound-ip` | PR #18 — **병합 완료**(`b3e2245d`). worktree `.worktrees/outbound-ip`(node_modules 설치돼 있어 서버 테스트 즉시 실행 가능, 재사용 권장) | `183e8de` |
-| `yemo/route-search-upstream-error-visibility` | PR #15 — **병합 완료**. worktree 재사용 중 | `4968097` |
-| `yemo/troubleshoot-windows-curl-encoding` | PR #16 — **병합 완료**. worktree(`route-search-observability`)에 `node_modules`가 있어 서버 테스트용으로 재사용 중 | `6f9a6f8` |
-| `yemo/merge-hyorin-integration` | PR #13 — **병합 완료**. worktree(`merge-hyorin`) 제거 가능 | `895d92bfe0a4911394a0c37b353bfbc1cc5f3ab9` |
-| `yemo/route-search-multi-lane-candidates` | PR #14 — **병합 완료**. worktree(`route-lane-candidates`) 제거 가능 | `0abc8e5156e444049a21b316d796c533ed075f65` |
-| `yemo/note-gbis-occupancy-checklist` | 문서 전용, **로컬에만 존재, 미커밋·미푸시** | 메인 checkout에 working tree 변경으로만 존재 |
-| `yemo/be16-api-state-test-coverage` | 완료됨(PR #11로 병합) | `50834d48ab3933c9ef14f6d1452ec3cf713b6f39` |
+| `claude/nice-archimedes-iv7iu0` | **통합·배포·E2E 기준** | **`e7b4408`** (2026-08-11 PR #20 병합분. 이전 `8afa03b` = PR #19) |
+| `yemo/gbis-occupancy` | PR #20으로 **병합 완료**. 삭제해도 안전하다 | `52bdbe1` |
+| `main` | 기본 브랜치. 통합 브랜치보다 한참 뒤 | `ddb7ca6` |
+| `yemo-develop` | 개인 개발 브랜치(배포 기준 아님) | `9b1fb09` |
+| `chaerin-develop` | 채린 개인 브랜치. PR #3은 자동 `MERGED`됨 | `276e38b` |
+| `hyorin-develop` | 효린 개인 브랜치 | `34f52d2` |
+| `yuna-realtime-openai` | 유나 개인 브랜치 | `ef6390e` |
+| `codex` | PR #1(`remainingStops`→`remainingStations`). **병합 완료, 삭제해도 안전하다고 확인됐으나 남겨둠** | `34e78cd` |
+| `feature/end-trip-cancelled` | PR #2(`end_trip`). **병합 완료, 삭제해도 안전하다고 확인됐으나 남겨둠** | `32255b1` |
+| `feature/hardware-bus-beacon` | 정민 하드웨어. 내용은 통합 브랜치와 동일(0.6절) | `bc18ba0` |
+| `feature/hardware-smart-cane` | 정민 하드웨어. 내용은 통합 브랜치와 동일(0.6절) | `354bc15` |
+
+로컬 8개:
+
+| 로컬 브랜치 | 상태 |
+| --- | --- |
+| `claude/nice-archimedes-iv7iu0` | `8afa03b`. 2026-08-10에 원격으로 fast-forward 했고 tracking 설정됨 |
+| `yemo-develop` | `67895c9`. 통합 브랜치의 조상 |
+| `yemo/be16-api-state-test-coverage` | `50834d4`. **이 handoff와 `.agent-loop/`가 있는 worktree의 브랜치**. PR #11로 병합된 완료 브랜치 |
+| `yemo/log-outbound-ip` | `183e8de`. worktree `.worktrees/outbound-ip` |
+| `yemo/troubleshoot-windows-curl-encoding` | `6f9a6f8`. worktree `.worktrees/route-search-observability` |
+| `yemo/merge-hyorin-integration` | `895d92b`. worktree `.worktrees/merge-hyorin`(미커밋 2건) |
+| `yemo/render-deployment-readiness` | `f94916d`. worktree `.codex/worktrees/sec01-security-contract-fix`(미커밋 1건) |
+| `yemo/note-gbis-occupancy-checklist` | `a718012`. 메인 checkout 브랜치, 미커밋 6건 |
+| `yemo/sec01-security-followups` | `74630b3`. **통합 브랜치에 없는 커밋 2개를 가진 유일한 브랜치.** 내용은 이미 다른 커밋으로 반영됨 |
 
 - **PR #16·#17 병합 후 Render 재배포 여부는 이번 세션에서 확인하지 못했다**(대시보드 접근 불가). 자동 배포가 켜져 있고 두 PR 모두 서버 코드를 바꾸지 않았으므로(문서 + `apps/mobile`) 서버 동작에는 영향이 없다. 운영 health `200`/`UP`/`UP`은 확인했다.
 - Render 배포 상태(2026-08-08 확인): **배포 브랜치는 `claude/nice-archimedes-iv7iu0`로 전환 완료.** 자동 배포가 켜져 있다(Events에 `New commit via Auto-Deploy`). 8/7 21:33~21:34 KST `a5bfdd7` 배포, 8/7 23:39~23:40 KST `2578183` 배포 live. **이 서비스의 빌드는 1분대에 끝난다** — 배포가 너무 빨리 끝난 것처럼 보여도 정상이다. `GET /api/health` `200` / `serverStatus UP` / `dbStatus UP` 확인.
 - Free 인스턴스는 15분 무활동 시 잠들고, cold start에 25~45초가 걸린다. 첫 요청이 느리다고 장애로 오해하지 말 것.
 - Render 서비스: `bus-ta`, `srv-d9or4mss728c73fo8i8g`, `https://bus-ta.onrender.com`
 
-### 1.1 fetch refspec이 망가져 있다 (반드시 먼저 확인, 이전 판과 동일 문제)
+### 1.1 fetch refspec — **✅ 2026-08-10 복구 완료. 아래 경고는 이제 해당 없다**
+
+> 사용자 승인으로 `remote.origin.fetch`를 git 기본값 `+refs/heads/*:refs/remotes/origin/*`로 되돌리고
+> `git fetch origin --prune`을 실행했다. 원격 10개와 로컬 `origin/*` 10개가 SHA까지 일치하는 것을 대조로 확인했다.
+> **이제 `origin/<브랜치>`를 판단 근거로 써도 된다.** 아래는 그때까지 왜 쓰면 안 됐는지의 기록이다.
+
+
 
 ```text
 remote.origin.fetch = +refs/heads/claude/nice-archimedes-iv7iu0:refs/remotes/origin/claude/nice-archimedes-iv7iu0
@@ -209,38 +528,50 @@ remote.origin.fetch = +refs/heads/claude/nice-archimedes-iv7iu0:refs/remotes/ori
 
 **이 두 ref를 절대 판단 근거로 쓰지 마라.** 원격 진실은 `git ls-remote --heads origin`으로 확인하고, 비교가 필요하면 명시적으로 `git fetch origin <브랜치>:refs/remotes/origin/<브랜치> --force` 후 그 ref를 쓴다.
 
-근본 수정(사용자 확인 후, 아직 미실행):
+근본 수정 — **2026-08-10 사용자 승인 후 실행 완료**:
 
 ```bash
 git config --replace-all remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*"
 git fetch origin --prune
 ```
 
+**추가로 알게 된 것**: 좁은 refspec에서는 `git fetch --prune`이 유령 remote-tracking ref를 못 지운다. 원격 브랜치 7개를 삭제한 뒤 prune을 돌렸는데 로컬 `origin/yemo/*` 7개가 그대로 남아 `git branch -r -d`로 하나씩 지워야 했다. refspec을 고친 지금은 이 문제가 없다.
+
 ### 1.2 worktree 구성
 
-2026-08-09 08:32 UTC `git worktree list` 실측:
+2026-08-11 `git worktree list` 실측. **7개다**(8/10에 6개로 줄였고, 이번에 Task 23용 `bta-gbis` 하나를 추가했다).
 
 ```text
+C:/Users/yemoy/bta-gbis                     yemo/gbis-occupancy (52bdbe1)   ← 2026-08-11 신규
+  └ PR #20 병합 완료. node_modules 설치됨(base e7b4408 직전이라 서버 테스트용 1순위).
+    OneDrive 밖 짧은 경로라 MAX_PATH·자리표시자 함정이 없다. 미커밋 0건이라 정리해도 안전하다.
 한이음_프로젝트_폴더/                        yemo/note-gbis-occupancy-checklist (메인 checkout, a718012)
-  └ REMAINING_CHECKLIST.md 편집 2건 미커밋. 다음 세션이 커밋 여부 판단.
-    주의: 메인 checkout의 HEAD는 a718012(PR #13 병합분)로, 원격 claude head(122e86d)보다 여러 커밋 뒤다.
-.worktrees/chaerin-frontend-merge/          yemo/resolve-chaerin-frontend-conflict (PR #17 병합 완료 → 제거 가능)
-.worktrees/outbound-ip/                     yemo/log-outbound-ip (PR #18 병합 완료, 183e8de.
-  └ node_modules 설치됨. 2026-08-09 의 108/108 실행을 여기서 했다. 가장 최신 base(122e86d) 기준이라 재사용 권장)
-.worktrees/route-search-observability/      yemo/troubleshoot-windows-curl-encoding (PR #16 병합 완료.
-  └ node_modules가 설치돼 있어 서버 테스트를 바로 돌릴 수 있다. 2026-08-08 의 104/104 실행을 여기서 했다)
-.worktrees/yemo-develop/                    yemo/be16-api-state-test-coverage (완료됨. 이 handoff와 .agent-loop/의 위치)
-.worktrees/merge-hyorin/                    yemo/merge-hyorin-integration      (PR #13 병합 완료 → 제거 가능)
-.worktrees/route-lane-candidates/           yemo/route-search-multi-lane-candidates (PR #14 병합 완료 → 제거 가능)
-.worktrees/migration-history-sync/          yemo/migration-history-sync
-.worktrees/sec01-security-followups/        yemo/sec01-security-integration
-(그 외) AppData/Local/Temp/bus-ta-sec01-doc-contract-sync   yemo/sec01-doc-contract-sync
-(그 외) .worktrees/yemo-develop/.codex/worktrees/sec01-security-contract-fix  yemo/render-deployment-readiness
+  └ 미커밋 6건: M REMAINING_CHECKLIST.md, ?? .mcp.json, ?? lessons.md,
+    ?? BACKEND_HANDOFF_2026-07-27/08-01/08-04.md, ?? skills-lock.json
+    주의: 메인 checkout의 HEAD는 a718012 로 원격 claude head(8afa03b)보다 여러 커밋 뒤다.
+.worktrees/yemo-develop/                    yemo/be16-api-state-test-coverage
+  └ 이 handoff·.agent-loop/·lessons.md 의 위치. 미커밋 5건.
+.worktrees/outbound-ip/                     yemo/log-outbound-ip (183e8de)
+  └ node_modules 설치됨. 108/108 실행을 여기서 했다. base 가 가장 최신이라 서버 테스트용 1순위.
+.worktrees/route-search-observability/      yemo/troubleshoot-windows-curl-encoding (6f9a6f8)
+  └ node_modules 설치됨. 서버 테스트용 예비.
+.worktrees/merge-hyorin/                    yemo/merge-hyorin-integration (895d92b)
+  └ 미커밋 2건(?? .agent-loop/, ?? lessons.md) 때문에 남겨뒀다. 정리하려면 이 파일들 처리가 먼저다.
+.worktrees/yemo-develop/.codex/worktrees/sec01-security-contract-fix  yemo/render-deployment-readiness
+  └ 미커밋 1건(M personal-notes/CODEX_HANDOFF.md) 때문에 남겨뒀다.
 ```
+
+**제거된 5개**(전부 병합 완료 + 미커밋 0건이었다): `chaerin-frontend-merge`, `docs-sync`, `route-lane-candidates`, `migration-history-sync`, `sec01-security-followups`, 그리고 `%TEMP%/bus-ta-sec01-doc-contract-sync`.
+
+> **⚠️ worktree 제거는 이 환경에서 두 단계로 실패한다.** OneDrive "파일 온디맨드" 자리표시자(`ReadOnly`+`ReparsePoint`) 때문에 `Permission denied`가 나고, `node_modules`가 있으면 pnpm 중첩 경로가 MAX_PATH를 넘겨 `Filename too long`이 난다. **더 나쁜 것은 git 이 worktree 안의 `.git` 파일을 먼저 지운 뒤 실패해서 "반쯤 제거된 상태"가 남는다는 점이다.** 순서를 지키면 안 생긴다: ReadOnly 해제(작업 트리 + `.git/worktrees/` 양쪽) → (node_modules 있으면) robocopy 미러 → `git worktree remove` → `git worktree prune`. 상세는 `lessons.md` 2026-08-10 항목.
 
 **현재 세션이 있던 worktree는 `.worktrees/yemo-develop`이고 브랜치는 `yemo/be16-api-state-test-coverage`(PR #11로 이미 병합된 완료 브랜치)다.** DIRECTOR.md 규칙상 루프 전용 feature 브랜치가 아니므로 여기서 커밋·push하면 안 된다. **코드 작업이 필요해지면 `claude` 최신 SHA 기준으로 새 worktree·브랜치를 만든다.**
 
-미커밋 파일(2026-08-09 08:32 UTC `git status --short`): `M CLAUDE.md`, `M personal-notes/CODEX_HANDOFF.md`, `?? .agent-loop/`, `?? .codex/`, `?? lessons.md`. **이번 세션에서 `lessons.md`·`.agent-loop/CURRENT_TASK.md`·이 handoff 를 갱신했고 전부 미커밋이다.**
+미커밋 파일(2026-08-11 `git status --short` 실측): `M CLAUDE.md`, `M personal-notes/CODEX_HANDOFF.md`, `?? .agent-loop/`, `?? .codex/`, `?? lessons.md`.
+
+> **⚠️ 문서 동기화 PR 이 필요하다.** 이번 세션에서 이 handoff·`lessons.md`(GBIS sentinel 교훈 + 그 정정 + worktree 짧은 경로)·`.agent-loop/CURRENT_TASK.md`(Task 23·23-A)를 갱신했고 **전부 로컬에만 있다.** PR #20 은 코드만 올렸다. 다른 checkout·클라우드 세션·팀원은 이 내용을 볼 수 없다.
+>
+> **전역 `~/.claude/CLAUDE.md` 는 저장소 밖 파일이라 PR 대상이 아니다**(0.5절에서 정리했고 백업은 `~/.claude/CLAUDE.md.bak-20260811`). 저장소의 `CLAUDE.md`(위 `M` 표시)와 혼동하지 말 것.
 
 `.worktrees/yemo-develop`의 미커밋 파일(`M CLAUDE.md`, `M personal-notes/CODEX_HANDOFF.md`, `?? .agent-loop/`, `?? lessons.md`)과 메인 checkout의 미커밋 파일은 사용자·에이전트 제어 자료다. 일괄 restore, clean, stage, commit하지 않는다.
 
@@ -251,7 +582,7 @@ git fetch origin --prune
 1. `AGENTS.md`
 2. `CLAUDE.md`
 3. `.agent-loop/DIRECTOR.md`
-4. `.agent-loop/CURRENT_TASK.md` — **Task 21(outbound IP 로깅, `COMPLETE`)과 Task 19(노선 검색 후보 0건 진단, `해소됨`)**. 두 Task 모두 끝났으므로 다음 세션은 0.5절에서 다음 작업을 선정해 이 파일을 새로 쓴다. 진단 경위와 배제된 가설은 판단 근거로 보존돼 있다.
+4. `.agent-loop/CURRENT_TASK.md` — **Task 23-A(`FIX-GBIS-OCCUPANCY-ROUTETYPE-GATING`, `COMPLETE`)와 그 아래 Task 23(`COMPLETE`)**. GBIS 원본 변환 규칙 표와 **미해결 후속(좌석형 `crowded`)**이 들어 있다. **이 Task 들은 끝났으므로 다음 세션은 아래 "남은 일"에서 다음 작업을 선정해 이 파일을 새로 쓴다.**
 5. 이 `personal-notes/CODEX_HANDOFF.md`
 6. `lessons.md`
 7. `personal-notes/REMAINING_CHECKLIST.md` — GBIS occupancy, PR #3 진단 요약이 여기도 있다
@@ -413,6 +744,21 @@ handoff 이전 판은 "Render 로그를 봐야 갈린다"고 했지만, 어댑�
 
 > **⚠️ 남은 위험: Render 무료 플랜의 outbound IP 는 고정이 보장되지 않는다.** 대역이 두 개 공지된다는 것 자체가 그 안에서 바뀔 수 있다는 뜻이고, 무료 인스턴스는 15분 무활동으로 잠들었다 깨며 재스케줄된다. **IP 가 바뀌면 노선 검색이 다시 통째로 죽는데 증상이 502 가 아니라 "그냥 결과가 없다"라서 현장에서 알아채기 어렵다.** cold start 마다 `[startup] outbound ip=` 가 새로 찍히므로 **시연 전 이 값이 ODsay 등록값과 같은지 반드시 확인한다.** 근본 해결은 ODsay 에 대역(CIDR) 등록이 가능한지 문의하는 것이다(미발송 시 아직 유효한 후속 과제).
 
+### Task 22 — `GET /api/beacons` 운영 통합 검증 (`COMPLETE (부분)`, 2026-08-10)
+
+코드 변경 0건, 운영 DB 쓰기 0건. 배포본 `8afa03b` 대상 순수 검증 Task다. ODsay 병목이 풀린 뒤 **승인 없이 착수 가능한 유일한 gate**였다.
+
+**11개 케이스 전부 PASS** — 정상 조회(`routeNo=1551`), 없는 노선 404 `BEACON_NOT_FOUND`, `routeNo` 누락·빈 값·공백만 400 `INVALID_REQUEST`, 앞뒤 공백 trim, 하이픈(`700-2`)·한글(`서초09` UTF-8 percent)·plus(`%2B`)·SQL 특수문자 인코딩, 중복 파라미터 400. SQL 특수문자도 500 이나 정보 유출 없이 404 였다.
+
+**공개 응답 필드가 계약과 정확히 일치한다.** 키는 `success`/`routeNo`/`targetBeaconId`/`isMock`/`message`/`timestamp` 여섯 개뿐이고, 2026-08-04 에 공개 응답에서 뺀 `beaconId`·`localBusId`·`vehicleId`·좌표는 **하나도 노출되지 않았다.** 타입도 `string`/`string`/`boolean` 로 맞다. `bus_beacons` 테이블을 `select` 로 직접 조회해 응답과 값이 일치하는 것도 대조했다(`route_no='1551'`, `target_beacon_id='MOCK_BUS_1551_001'`, `is_mock=true`, `status='ACTIVE'`, 1행).
+
+**못 닫은 것 2개 — 완료로 표시하지 않는다.**
+
+- **`isMock` 구분 절반만 검증.** DB 에 `is_mock=false` 행이 없어 `true` 경로만 관측했다. 실제 비콘 행은 하드웨어(정민) ESP32 준비 후 추가 예정이다. 명세서 단계 11 통과 조건 중 이 항목은 미완이다.
+- **Supabase 경로를 탔다는 것은 추론이다.** `routes/beacons.ts` 가 `createSupabaseBeaconRepositoryFromEnv() ?? new FixtureBeaconRepository()` 구조인데 **fixture(`DEMO_BEACONS`)와 DB 행의 값이 완전히 같아 응답만으로 구분되지 않는다.** `/api/health` 의 `dbStatus: UP` 이 근거다. 결정적 판별에는 DB 에만 있는 `routeNo` 행이 필요하고 그건 운영 쓰기다.
+
+상세 표는 `.agent-loop/CURRENT_TASK.md`.
+
 ### Task 21 — 부팅 시 outbound IP 로깅 (`COMPLETE` — PR #18 병합 `b3e2245d`, 2026-08-09)
 
 Task 19의 (c) 등록 IP 불일치가 확정됐지만 **무료 해결 경로를 시도할 수단 자체가 없어서** 만든 진단 도구다. ODsay는 등록 IP 에서 온 호출만 받는데 Render 는 개별 주소가 아니라 대역(`74.220.52.0/24`, `74.220.60.0/24`)만 알려주고, 등록 IP 목록을 비우는 것도 최소 1개 강제로 막혀 있으며, Supabase 로그에는 클라이언트 IP 필드가 없다(실측).
@@ -442,7 +788,9 @@ Task 19의 (c) 등록 IP 불일치가 확정됐지만 **무료 해결 경로를 
 
 ---
 
-## 4. 현재 구현 상태 (`claude` head `b3e2245d` 기준, 2026-08-09 실측)
+## 4. 현재 구현 상태 (`claude` head `8afa03b` 기준)
+
+> **서버 코드는 `b3e2245d`(2026-08-09 실측) 이후 바뀌지 않았다** — 그 뒤 병합된 PR #19는 문서 전용(handoff·`lessons.md`·`CLAUDE.md`)이다. 따라서 아래 수치는 `8afa03b`에도 그대로 유효하다.
 
 ### 공개 API 9개 — 전부 구현 + 테스트
 
@@ -455,10 +803,12 @@ Task 19의 (c) 등록 IP 불일치가 확정됐지만 **무료 해결 경로를 
 | `GET /api/trips/{tripId}/status` | 구현·테스트 |
 | `POST /api/trips/{tripId}/bell/result` | 구현·테스트 |
 | `PATCH /api/trips/{tripId}` (`action: CANCEL`) | 구현·테스트 |
-| `GET /api/beacons` | 구현·테스트 |
+| `GET /api/beacons` | 구현·테스트. **2026-08-10 운영 통합 검증 11개 케이스 PASS**(Task 22). 단 `isMock=false` 경로는 데이터가 없어 미검증 |
 | `POST /api/realtime/session` | 구현·테스트. **유나 구조 + yemo 오류 계약(Task 15).** |
 
 서버 테스트 총 **108개**(PR #18 이 4개 추가). 2026-08-09에 `.worktrees/outbound-ip`에서 직접 실행해 **108/108 pass** 확인했다. 이전 판의 104/104 는 `122e86d` 기준 수치다.
+
+**2026-08-11 재검증(원격 무변화 확인 직후, 승인 불필요한 로컬 검증만)**: `.worktrees/outbound-ip`(HEAD `183e8de`, `apps/server`·`packages/shared`가 origin head `8afa03b`와 diff 0)에서 재실행 — 서버 테스트 **108/108 pass**, `pnpm -r typecheck` 3개 패키지(`packages/shared`, `apps/server`, `apps/mobile`) 전부 통과, `pnpm --filter @bus-ta/server build` exit 0. 8/9 이후 서버 코드 무변경 기록과 일치, 드리프트 없음.
 
 ### 앱(`apps/mobile`) 현황 — 2026-08-08 통합 브랜치 실측
 
@@ -500,7 +850,8 @@ cd apps/server && node --import tsx --test $(find src -name '*.test.ts')
 | --- | --- |
 | 실제 REST 요청과 Supabase row 함께 확인 | **완료** (Task 13) |
 | 실제 Kakao + ODsay 로 노선 후보 생성 | **완료 (2026-08-09).** 운영 프로브 6건 전부 후보 반환. `subPath` 공유 시 노선별 후보 분리(PR #14)도 함께 확인 |
-| 후보 → `POST /api/trips` → GBIS 도착 예정 시간 | **미실행.** 운영 DB 쓰기라 사전 승인 필요. 6절 4번 |
+| 후보 → `POST /api/trips` → GBIS 도착 예정 시간 | **완료 (2026-08-11).** 사용자 승인 후 실행. `predictedArrivalMinutes: 2`(실값) 확인. 운행 수명주기 전체 통과 후 테스트 데이터 전량 삭제. 0.1절 |
+| 서버가 fixture 가 아닌 실제 Supabase 를 읽는가 | **완료 (2026-08-11).** fixture 에 없는 `routeNo` 를 심어 조회해 확증. 0.1절 |
 | migration 작성과 실제 적용 분리 기록 | **완료** |
 | Realtime Function 결과가 프론트엔드 Dispatcher를 거쳐 모델에 전달 | 백엔드 단독 불가 — 앱 책임 |
 | PATCH `shouldTriggerBell: true`가 BLE/mock 흐름으로 한 번만 전달 | 부분 — 백엔드 측 1회 생성은 검증됨 |
@@ -569,7 +920,13 @@ PR #16·#17 병합됨, PR #3은 자동 `MERGED`. 통합 브랜치 head `122e86de
 
 부수 관측: Free 인스턴스 cold start가 이번에 약 **45초**였다(13:50:43 요청 → 13:51:28 응답). 장애로 오해하지 말 것.
 
-### 4. 실제 외부 API E2E
+### 4. ~~실제 외부 API E2E~~ — **✅ 2026-08-11 완료. 0.1절 참고**
+
+> 사용자 사전 승인 후 실행했다. `POST /api/trips`에서 **`predictedArrivalMinutes: 2`(GBIS 실값)** 확인, 운행 수명주기 전체(생성 → PATCH → 자동 하차벨 → `bell/result` SUCCESS → `TRIP_DONE`) 통과. 테스트 데이터는 exact-ID로 전량 삭제했고 정리 후 행 수 `0/0/0/0/1`이다.
+>
+> **함께 닫힌 것**: 5~7번(`end_trip` 취소·동시 `requestId`·종료 상태 보호 4종)과 8번의 잔여였던 fixture-vs-DB 확증까지 이 한 묶음에서 전부 통과했다.
+>
+> 아래는 당시 계획으로 보존한다.
 
 1번이 풀려야 의미가 있다. 검증할 것:
 
@@ -584,32 +941,69 @@ PR #16·#17 병합됨, PR #3은 자동 `MERGED`. 통합 브랜치 head `122e86de
 
 `KAKAO_REST_API_KEY` / `ODSAY_API_KEY` / `GBIS_SERVICE_KEY` 세 이름으로 값이 들어가 있어야 한다. 이름이 다르면 조용히 실패한다(Kakao 401 → 502, ODsay 빈 결과 → 200 + 빈 배열). `REALTIME_SHARED_SECRET`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `OPENAI_API_KEY`도 함께 확인한다. `SUPABASE_ANON_KEY`는 **넣지 않는다**(SEC-01 금지). Kakao는 2026-08-08 기준 정상 동작이 확인됐다.
 
-### 4-2. GBIS `occupancy` 구현 (계약 확정, 착수 안 함)
+### 4-2. ~~GBIS `occupancy` 구현~~ — **✅ 2026-08-11 완료·병합(PR #20). 0.4·0.4-A·0.4-B절 참고**
 
-「공통 API 및 Function Calling 명세서」 5.2-A 참고. 선행 미결(라벨 여부, 유나 확인) 해소 후 착수. 영향 범위는 `personal-notes/REMAINING_CHECKLIST.md` B절에 정리돼 있다.
+「공통 API 및 Function Calling 명세서」 5.2-A 구현. 최종 **128/128 pass**, typecheck 3/3, build exit 0, 마이그레이션 0건. Reviewer 2회 전부 `APPROVE`.
 
-### 5~9. 이전 판과 동일, 순서만 밀림
+**이 항목이 남긴 가장 중요한 교훈**: 첫 구현은 실측 캡처만 근거로 규칙을 만들었고 **결론은 맞았지만 규칙이 틀렸다.** 공식 문서를 확인해 `routeTypeCd` 기반 분기로 정정했다(0.4-A절). `lessons.md` 2026-08-11 항목에 기록.
 
-- `end_trip` 취소 흐름 운영 통합 검증
-- 동시 `requestId` 중복 처리 통합 검증
-- 종료 상태 보호 4종 분기 통합 검증
-- `GET /api/beacons` 통합 검증 (승인 없이 가능한 유일한 gate)
-- 노션 문서 정정: 단계 15-1·§19의 통합·배포 브랜치 서술(`yemo-develop`→`claude`), `restrict_future_data_api_access` pending 오기, `search_routes` mock 서술
+> `personal-notes/REMAINING_CHECKLIST.md`의 B절은 **occupancy 내용을 담고 있지 않은 구버전이다**(기준 커밋 `0c04a06`). 계약은 노션 5.2-A, 구현 상세는 `.agent-loop/CURRENT_TASK.md`를 본다.
 
-### 10. 정리·후속
+**남은 후속 하나 — 좌석형 노선의 `crowded` 값(미해결)**: 공식 문서는 `crowded`가 좌석형(11 등)에 제공되지 않는다고 하는데 **fixture의 type 11 노선에 값이 채워져 있고 좌석수와 모순되지 않는다**(`crowded=1` 여유 + 좌석 23·36·37석). 실질 영향은 **좌석형인데 `remainSeatCnt=-1`이고 `crowded`는 유효한 경우 지금 `UNAVAILABLE`이 나간다**는 것. 샘플 2건뿐이라 추측으로 fallback을 넣지 않았다. 혼잡 시간대 재캡처로 확인할 항목이며 효린에게 요청할 글은 이미 작성해 사용자에게 전달했다.
+
+### 5~7. ~~운영 통합 검증 3종~~ — **✅ 2026-08-11 완료. 4번과 한 묶음으로 닫았다. 0.1절 참고**
+
+- ~~`end_trip` 취소 흐름~~ — `200` + `CANCELLED` 확인
+- ~~동시 `requestId` 중복 처리~~ — 응답 멱등 + **DB 저장 레벨까지 1건씩 확인**
+- ~~종료 상태 보호 4종~~ — `409`/`409`/`409`/`200`(마지막은 멱등 설계대로)
+
+### 8. ~~`GET /api/beacons` 통합 검증~~ — **✅ 2026-08-10 케이스 11개 + 2026-08-11 fixture-vs-DB 확증까지 완료**
+
+11개 케이스 PASS(3절 Task 22). 남아 있던 **"fixture가 아닌 DB를 봤다"는 확증은 2026-08-11에 해소됐다** — fixture에 없는 `routeNo=TEST-9999`를 심어 조회해 정확히 반환되는 것을 확인했다(0.1절).
+
+**아직 남은 것은 `isMock=false` 경로 하나뿐이고, 이건 하드웨어(정민)가 실제 비콘 행을 넣어야 닫힌다.** 백엔드가 할 수 있는 일은 없다.
+
+### 9. 노션 문서 정정 — **완료 (2026-08-11 확인)**
+
+- ✅ **완료**: 「백엔드 개발 명세서」의 통합·배포 브랜치 서술 5곳(`yemo-develop`→`claude/nice-archimedes-iv7iu0`, 단계 15-1 본문·표, 19장 callout·마지막 문단, 단계 18 PR base)과 `restrict_future_data_api_access` pending 오기 3곳(단계 13·19장 표·20장). 상세는 0.4절.
+- ✅ **`search_routes` mock 서술 확인 — 문제 없음(2026-08-11).** 「백엔드 개발 명세서」 단계 4(경로 검색 API)를 직접 재조회했다. mock 어댑터에 대한 서술은 없고 실제 Kakao geocoding → ODsay 경로 검색 처리 순서만 기술돼 있다. 코드 대조 결과 `apps/server/src/routes/routes.ts`는 `hyorin-route-search.adapter.ts`(실제 연동)만 import하고, `mock-route-search.adapter.ts`는 자신의 테스트 파일(`search-routes.service.test.ts`)에서만 참조돼 프로덕션 라우팅에 없다. 문서·코드 일치, 정정 불필요.
+
+### 10. ~~`skills-lock.json`·전역 `CLAUDE.md` 정리~~ — **✅ 2026-08-11 완료. 0.5절 참고**
+
+사용자 결정에 따라 미설치 3개를 설치하지 않고 기록을 실제에 맞췄다. lock 파일 4개 → 1개, 전역 `CLAUDE.md` 304 → 270줄. 백업 `~/.claude/CLAUDE.md.bak-20260811`.
+
+**이 handoff는 여전히 `handoff` 스킬 형식이 아니라 이 파일의 기존 구조를 이어 쓴 것이다.** 그 스킬은 설치하지 않기로 확정했고(임시 디렉터리 저장 요구가 이 프로젝트와 충돌), 전역 `CLAUDE.md` 4절에 "인수인계 문서는 직접 작성한다"로 명문화했다.
+
+### 10-A. Task 23 후속 — `docs/` 서술형 문서의 `predictedArrivalMinutes` 언급 (미처리, 의도적)
+
+Task 23이 `create_trip` 응답을 `arrivals` 배열로 바꾸면서 아래 서술이 낡았다. **이번 코드 PR에는 넣지 않았다.**
+
+- `docs/ARCHITECTURE.md:176`, `docs/DEMO_SCENARIO.md:31·75`, `docs/MIDTERM_SCOPE.md:15·16`, `docs/REQUIREMENTS.md:50` — "GBIS 실패 시 `predictedArrivalMinutes`를 `null`로 둔다" 류. 지금은 `arrivals: []`다.
+- `docs/TROUBLESHOOTING.md:103`은 과거 진단 기록이므로 그대로 두는 것이 맞다.
+
+**넣지 않은 근거**: 프로젝트 `CLAUDE.md`의 문서 동기화 규칙이 지정한 두 파일은 수정할 것이 없다. `docs/API_SPEC.md`에는 이 필드가 **애초에 등장하지 않고**, `docs/DB_SCHEMA.md:15`와 `docs/database/schema.md:207`의 언급은 **DB를 바꾸지 않았으므로 여전히 정확하다**(`trips.predicted_arrival_minutes` 컬럼과 첫 차량 저장은 그대로다). 위 4개 파일은 동기화 규칙이 지정하지 않았고 계약 단일 출처도 노션이라 코드 PR 범위 밖으로 뒀다.
+
+### 11. 정리·후속
 
 - **ODsay 에 대역(CIDR) 등록 가능 여부 문의 — 미발송 시 유효.** `74.220.52.0/24`, `74.220.60.0/24` 를 등록할 수 있으면 Render outbound IP 변동 위험이 근본적으로 사라진다. 0.4절 참고.
-- `.worktrees/outbound-ip`는 PR #18 병합 완료로 제거 가능하지만, **node_modules 가 설치돼 있고 base 가 가장 최신이라 서버 테스트용으로 남겨두는 편이 유용하다.**
-
-- `.worktrees/chaerin-frontend-merge`는 PR #17 병합 완료로 **제거 가능**하다.
-- `.worktrees/route-search-observability`는 PR #16 병합 완료로 제거 가능하지만, **`node_modules`가 설치돼 있어 서버 테스트를 바로 돌릴 수 있으므로 남겨두는 편이 유용하다**(이번 세션의 104/104 실행도 여기서 했다).
-- `.worktrees/merge-hyorin`, `.worktrees/route-lane-candidates` worktree는 각각 PR #13·#14 병합 완료로 **제거 가능**
-- `yemo/note-gbis-occupancy-checklist` 브랜치(메인 checkout, 미커밋) — `REMAINING_CHECKLIST.md` 편집 2건을 커밋·push할지 결정
+- ~~worktree 5개 제거~~ — **✅ 2026-08-10 완료.** 남은 6개와 각각을 남긴 이유는 1.2절.
+- ~~fetch refspec 복구~~ — **✅ 2026-08-10 완료.** 1.1절.
+- **남은 worktree 정리 2건 — 미커밋 파일 처리가 선행이다.** `.worktrees/merge-hyorin`(`?? .agent-loop/`, `?? lessons.md`)과 `.codex/worktrees/sec01-security-contract-fix`(`M CODEX_HANDOFF.md`). 옛 세션 잔재로 보이지만 확인 없이 지우면 그 파일들이 사라진다.
+- **원격 브랜치 2건 삭제 판단 — 조사는 끝났고 실행만 남았다.** `feature/end-trip-cancelled`(PR #2), `codex`(PR #1). 둘 다 예모 본인 브랜치, 통합 브랜치의 조상, CI·`render.yaml` 참조 없음으로 **삭제 안전이 확인됐다.** 팀원 브랜치 3개와 하드웨어 브랜치 2개는 소유자가 따로 있어 건드리지 않는다.
+- `yemo/sec01-security-followups` 브랜치 — 통합 브랜치에 없는 커밋 2개를 가진 유일한 로컬 브랜치. 내용은 이미 다른 커밋으로 반영됐다. 삭제 여부 결정 필요.
+- `yemo/note-gbis-occupancy-checklist` 브랜치(메인 checkout, 미커밋) — `REMAINING_CHECKLIST.md` 편집을 커밋·push할지 결정
 - `apps/server/package.json`의 `main` 필드와 `tsconfig.json`의 `rootDir` 불일치 — 별도 이슈, 양쪽 부모 모두 동일해 이번 병합들이 만든 문제 아님
 - `mock-route-search.adapter.ts`는 라우트에서 쓰이지 않는다. 유지할지 제거할지 결정 필요
-- fetch refspec 복구 (1.1절)
 - 공유 상수 SSOT 소실(Task 15 후속): `packages/shared/src/constants/realtime.ts` 삭제로 헤더명·모델명이 서버·모바일에 중복 하드코딩됨. 후속 과제.
-- 이 handoff와 `.agent-loop/`, `lessons.md`를 커밋할지 결정 — 현재 전부 미커밋
+- 이 handoff와 `.agent-loop/`, `lessons.md`를 커밋할지 결정 — **현재 전부 미커밋이고, PR #19 이후 다시 앞서 나갔다.**
+
+### 12. 2026-08-11 세션 추가분 (미커밋)
+
+- **`scripts/check-api.mjs` 신설** (`.worktrees/outbound-ip`, `package.json`에 `pnpm check:api` 등록). Render cold start(관측 최대 72초 — 기존 기록된 30~60초보다 길게도 감)를 실제 장애와 구분하는 워밍업 헬퍼. `waitUntilHealthy`/`safeFetch`를 다른 E2E 스크립트가 import해 재사용 가능. curl 대신 Node 내장 fetch라 Windows 한글 인코딩 함정도 같이 피한다.
+- **검증된 교훈 1건 추가**(`lessons.md` 2026-08-11): Node v24(Windows)에서 `fetch()` 뒤 `process.exit()`을 쓰면 libuv assertion으로 죽는다. `process.exitCode` 대입으로 우회 확인.
+- **`apps/server/.env` 로컬 템플릿 생성** (`.worktrees/outbound-ip`, `.env.example` 복사 + `PORT=3111`/`NODE_ENV=development`만 채움). 실제 비밀값은 미기입 — 사용자가 직접 채워야 한다. `.gitignore`에 `.env` 포함 확인됨(커밋 안 됨).
+- ~~**Supabase MCP 연결 경로 확인, 미완료.**~~ — **✅ 해소됨(2026-08-11 후속 세션).** 예상대로 프로젝트 폴더를 작업 디렉터리로 시작하니 `.mcp.json`의 `supabase` HTTP 커넥터가 로드됐다. 다만 **OAuth 인증이 `{"message":"Unrecognized client_id"}`로 한 번 막혔고, 사용자가 `/mcp`를 실행해 해결됐다.** 연결 후 6절 4번(운영 E2E)을 실제로 완주했다. 상세와 이 과정에서 내가 한 잘못된 서술 정정은 0.2절.
+- `search_routes` mock 서술 재확인 결과는 9절에 이미 반영(완료 처리).
 
 ---
 
@@ -695,6 +1089,8 @@ Director 분석 → Implementer → Tester → Reviewer → Director 최종 검�
 
 - **⚠️ curl로 한글이 든 요청 본문을 보낼 때는 반드시 stdin으로 넘긴다(2026-08-07 실제 사고, 한 시간 손실).** Windows Git Bash에서 **명령줄 인자**(`-d '{"destination":"병점역후문",...}'`)로 넘긴 한글은 CP949로 변환돼 깨진다. heredoc(`-d @-` + `<<'EOF'`)이나 UTF-8 파일(`-d @body.json`)은 원본 바이트를 그대로 전달한다. 깨진 목적지는 Kakao에서 0건이 나와 `502 ROUTE_SEARCH_FAILED`가 되므로 **서버 장애로 오인하기 쉽다.** 로그에 `upstream=UNKNOWN status=unknown message=목적지를 찾을 수 없습니다: <깨진 문자열>`이 보이면 이 함정이다(`upstream=UNKNOWN`은 Kakao 호출 자체는 성공했다는 뜻). 자세한 내용은 `lessons.md`와 `docs/TROUBLESHOOTING.md`(PR #16).
 - **"같은 요청인데 결과가 달라졌다"고 판단하기 전에 내 명령 형태가 정말 같았는지 대조한다.** 위 사고에서 "장애 시작 시각"은 내가 프로브 명령 형태를 바꾼 시각과 초 단위로 일치했는데, 한 시간을 서버 쪽에서 찾았다. 관측 대상이 변했다고 결론 내리기 전에 관측 도구가 변하지 않았는지 먼저 본다.
+- **⚠️ worktree 제거가 두 단계로 실패하고, 실패가 깨끗하지 않다(2026-08-10 실제 사고).** 프로젝트가 OneDrive 안이라 하위 디렉터리가 "파일 온디맨드" 자리표시자(`ReadOnly`+`ReparsePoint`)이고, `.git/worktrees/` 관리 폴더도 마찬가지다 → `git worktree remove`가 `Permission denied`. `node_modules`가 있으면 pnpm 중첩 경로가 MAX_PATH를 넘겨 `Filename too long`. **git이 worktree 안의 `.git` 파일을 먼저 지운 뒤 실패하므로 "worktree list에서는 사라졌는데 디렉터리는 남은" 반쯤 제거된 상태가 생긴다 — 실패했으니 아무것도 안 바뀌었겠지라고 넘기면 안 된다.** 순서: ReadOnly 해제(양쪽) → robocopy 미러 → `git worktree remove` → `git worktree prune`. **robocopy는 exit 0이 아니어도 성공이다**(8 이상만 오류) — exit 2를 실패로 읽지 말고 출력을 본다. 상세는 `lessons.md`.
+- **auto mode 권한 분류기가 삭제 계열을 폭넓게 자동 거부한다.** `git worktree prune`, `Remove-Item -Recurse -Force`, 반복문으로 감싼 삭제가 전부 막혔다(2026-08-10 실측). `acceptEdits`로 바꾸면 자동 거부 대신 승인 프롬프트가 뜬다. 아래 Supabase `DELETE` 사례와 같은 패턴이다.
 - `date`의 `TZ=Asia/Seoul` 지정이 이 셸에서는 먹지 않는다. KST가 필요하면 `date -u`에 9시간을 더해 환산한다.
 - auto mode 권한 분류기가 Supabase `DELETE`를 자동 거부한다. `acceptEdits`나 `default` 모드로 바꾸면 자동 거부 대신 사용자 승인 프롬프트가 뜬다(Task 13 실측).
 - `bypassPermissions`나 `mcp__supabase__execute_sql` 영구 허용 규칙은 권하지 않는다.

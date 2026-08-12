@@ -10,7 +10,7 @@
 - `.agent-loop/DIRECTOR.md`
 - `.agent-loop/CURRENT_TASK.md`
 
-`.agent-loop/`는 저장소에 커밋하지 않는 로컬 운영 파일이므로 다른 checkout이나 Claude Code 클라우드에는 전달되지 않는다. handoff에 기록된 운영 쓰기·삭제 승인 대기는 별도 사용자 승인 없이 실행하지 않는다.
+`.agent-loop/`와 handoff는 저장소에 커밋해 동기화한다. 다만 마지막 동기화 PR 이후의 편집은 로컬 worktree에만 있을 수 있으므로, 다른 checkout이나 Claude Code 클라우드가 보는 내용은 최신이 아닐 수 있다. handoff에 기록된 운영 쓰기·삭제 승인 대기는 별도 사용자 승인 없이 실행하지 않는다.
 
 - `README.md`
 - `AGENTS.md`
