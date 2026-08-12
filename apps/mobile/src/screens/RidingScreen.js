@@ -4,6 +4,7 @@ import * as Speech from 'expo-speech';
 import * as Location from 'expo-location';
 import { useFocusEffect } from '@react-navigation/native';
 import { apiClient, ApiError } from '../api/client';
+import { useTrip } from '../state/TripContext';
 
 const INITIAL_STATUS = {
   currentStation: null,
@@ -23,6 +24,7 @@ export default function RidingScreen({ route, navigation }) {
   const bellHandledRef = useRef(false);
   const requestCounterRef = useRef(0);
   const stoppedRef = useRef(false);
+  const { dispatch } = useTrip();
 
   // 최초 진입 안내
   useFocusEffect(
@@ -114,10 +116,12 @@ export default function RidingScreen({ route, navigation }) {
       });
 
       setStatus(data);
+      dispatch({ type: 'UPDATE_TRIP_STATUS', status: data });
 
       // 9.2: 종료된 운행이면 전송 중단
       if (data.tripStatus === 'TRIP_DONE' || data.tripStatus === 'CANCELLED') {
         stoppedRef.current = true;
+        dispatch({ type: 'RESET_TRIP' });
       }
     } catch (error) {
       if (error instanceof ApiError) {
@@ -127,6 +131,7 @@ export default function RidingScreen({ route, navigation }) {
           try {
             const latest = await apiClient.trips.getStatus(tripId);
             setStatus(latest);
+            dispatch({ type: 'UPDATE_TRIP_STATUS', status: latest });
           } catch {
             // 최신 상태 조회도 실패하면 오류 화면으로
           }
@@ -134,6 +139,7 @@ export default function RidingScreen({ route, navigation }) {
         }
         if (error.errorCode === 'TRIP_NOT_FOUND') {
           stoppedRef.current = true;
+          dispatch({ type: 'RESET_TRIP' });
           navigation.navigate('Error');
           return;
         }

@@ -1,0 +1,92 @@
+import React, { createContext, useContext, useReducer } from 'react';
+
+// 초기 상태 — 노선 검색부터 하차까지 화면 간 공유되는 값
+const initialState = {
+  destination: null,
+  routeCandidates: null,   // 검색된 노선 후보 배열 (원본 그대로 보관, 재조립 금지)
+  selectedRoute: null,     // 사용자가 선택한 노선 후보 객체
+  tripId: null,
+  tripStatus: null,        // WAITING_BUS | ON_BUS | NEAR_DESTINATION | TRIP_DONE | CANCELLED | ERROR
+  currentStation: null,
+  nextStation: null,
+  remainingStations: null,
+  guideMessage: null,
+  bellStatus: 'NOT_REQUESTED',
+  bellRequestId: null,
+  command: null,
+  lastFunctionResult: null,   // Phase 5: Function Dispatcher가 마지막으로 처리한 결과
+  lastInjectedStatus: null,   // Phase 6: 이벤트 Dispatcher가 마지막으로 세션에 주입한 상태
+};
+
+function tripReducer(state, action) {
+  switch (action.type) {
+    case 'SET_DESTINATION_AND_ROUTES':
+      // ConfirmScreen에서 검색 성공 후 호출
+      return {
+        ...state,
+        destination: action.destination,
+        routeCandidates: action.routes,
+      };
+
+    case 'SELECT_ROUTE':
+      // RouteListScreen에서 노선 선택 시 호출
+      return {
+        ...state,
+        selectedRoute: action.route,
+      };
+
+    case 'START_TRIP':
+      // RouteListScreen에서 create_trip 성공 후 호출
+      return {
+        ...state,
+        tripId: action.tripId,
+        tripStatus: 'WAITING_BUS',
+      };
+
+    case 'UPDATE_TRIP_STATUS': {
+      // RidingScreen에서 PATCH /status 응답 반영 시 호출
+      // 서버 응답(action.status)을 그대로 신뢰해서 덮어씀 — 프론트에서 값 재계산 금지
+      const s = action.status;
+      return {
+        ...state,
+        tripStatus: s.tripStatus,
+        currentStation: s.currentStation,
+        nextStation: s.nextStation,
+        remainingStations: s.remainingStations,
+        guideMessage: s.guideMessage,
+        bellStatus: s.bellStatus,
+        bellRequestId: s.bellRequestId,
+        command: s.command,
+      };
+    }
+
+    case 'RESET_TRIP':
+      // TRIP_DONE, CANCELLED, TRIP_NOT_FOUND 발생 시 호출 — 다음 운행을 위해 초기화
+      return {
+        ...initialState,
+      };
+
+    default:
+      return state;
+  }
+}
+
+const TripContext = createContext(null);
+
+export function TripProvider({ children }) {
+  const [state, dispatch] = useReducer(tripReducer, initialState);
+  return (
+    <TripContext.Provider value={{ state, dispatch }}>
+      {children}
+    </TripContext.Provider>
+  );
+}
+
+// 화면에서 이 훅 하나로 상태와 dispatch를 모두 가져다 씀
+export function useTrip() {
+  const context = useContext(TripContext);
+  if (!context) {
+    throw new Error('useTrip은 TripProvider 내부에서만 사용할 수 있습니다.');
+  }
+  return context;
+}

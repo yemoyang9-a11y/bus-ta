@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import * as Speech from 'expo-speech';
 import { useFocusEffect } from '@react-navigation/native';
 import { apiClient, ApiError } from '../api/client';
+import { useTrip } from '../state/TripContext';
 
 export default function AlightScreen({ route, navigation }) {
   // RidingScreen에서 전달받은 값들
@@ -12,6 +13,7 @@ export default function AlightScreen({ route, navigation }) {
   // - guideMessage: 백엔드 안내 문장 (유나 AI 모듈 생성, 탑승 중 화면용 문장)
   const { tripId, bellRequestId, command, guideMessage } = route.params;
   const resultSentRef = useRef(false); // 중복 전송 방지
+  const { dispatch } = useTrip();
 
   useFocusEffect(
     React.useCallback(() => {
@@ -72,6 +74,12 @@ export default function AlightScreen({ route, navigation }) {
     }
   };
 
+  // 처음으로 돌아가기 — 다음 운행을 위해 공유 상태 초기화
+  const handleGoHome = () => {
+    dispatch({ type: 'RESET_TRIP' });
+    navigation.navigate('Main');
+  };
+
   return (
     <View style={styles.container}>
       <Text style={styles.emoji}>🚨</Text>
@@ -87,7 +95,7 @@ export default function AlightScreen({ route, navigation }) {
 
       <TouchableOpacity
         style={styles.button}
-        onPress={() => navigation.navigate('Main')}
+        onPress={handleGoHome}
       >
         <Text style={styles.buttonText}>처음으로 돌아가기</Text>
       </TouchableOpacity>

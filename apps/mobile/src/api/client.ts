@@ -75,6 +75,11 @@ export const apiClient = {
     getStatus: (tripId: string) => request(API_PATHS.trips.status(tripId)),
     updateStatus: (tripId: string, body: unknown) =>
       request(API_PATHS.trips.status(tripId), { method: "PATCH", body: JSON.stringify(body) }),
+    endTrip: (tripId: string) =>
+      request(API_PATHS.trips.byId(tripId), {
+        method: "PATCH",
+        body: JSON.stringify({ action: "CANCEL" }),
+      }),
     bell: {
       result: (tripId: string, body: unknown) =>
         request(API_PATHS.trips.bell.result(tripId), {

@@ -4,11 +4,13 @@ import * as Speech from 'expo-speech';
 import * as Location from 'expo-location';
 import { useFocusEffect } from '@react-navigation/native';
 import { apiClient, ApiError } from '../api/client';
+import { useTrip } from '../state/TripContext';
 
 export default function ConfirmScreen({ route, navigation }) {
   const { destinationText } = route.params;
   const tapCountRef = useRef(0);
   const tapTimerRef = useRef(null);
+  const { dispatch } = useTrip();
 
   useFocusEffect(
     React.useCallback(() => {
@@ -71,6 +73,12 @@ export default function ConfirmScreen({ route, navigation }) {
         });
         return;
       }
+
+      dispatch({
+        type: 'SET_DESTINATION_AND_ROUTES',
+        destination: destinationText,
+        routes: data.routes,
+      });
 
       Speech.speak('경로를 검색합니다.', {
         language: 'ko',

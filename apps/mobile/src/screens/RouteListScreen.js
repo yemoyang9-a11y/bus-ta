@@ -3,6 +3,7 @@ import { View, Text, TouchableOpacity, StyleSheet, FlatList, ActivityIndicator }
 import * as Speech from 'expo-speech';
 import { useFocusEffect } from '@react-navigation/native';
 import { apiClient, ApiError } from '../api/client';
+import { useTrip } from '../state/TripContext';
 
 export default function RouteListScreen({ route, navigation }) {
   // ConfirmScreen에서 전달받은 값들
@@ -11,6 +12,7 @@ export default function RouteListScreen({ route, navigation }) {
   // - guideMessage: 유나 AI 모듈이 생성한 안내 문장 (TTS로 출력)
   const { destinationText, routes, guideMessage } = route.params;
   const [loading, setLoading] = useState(false);
+  const { dispatch } = useTrip();
 
   // 화면 진입 시 guideMessage TTS 출력
   useFocusEffect(
@@ -32,6 +34,8 @@ export default function RouteListScreen({ route, navigation }) {
   const selectRoute = async (selectedRoute) => {
     Speech.stop();
     setLoading(true);
+
+    dispatch({ type: 'SELECT_ROUTE', route: selectedRoute });
 
     try {
       // 공통 API 명세서 5.2 기준 필드만 전달 (guideMessage·recommendationReason 등
@@ -56,6 +60,7 @@ export default function RouteListScreen({ route, navigation }) {
 
       const data = await apiClient.trips.create(tripRequest);
 
+      dispatch({ type: 'START_TRIP', tripId: data.tripId });
       navigation.navigate('Riding', { tripId: data.tripId, selectedRoute });
     } catch (error) {
       // errorCode별 분기 (13.2)
