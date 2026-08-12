@@ -4,6 +4,118 @@
 
 ---
 
+## 2026-08-12 — 미커밋 문서를 동기화할 때, 로컬 사본이 저장소보다 **오래된** 파일이 섞여 있다
+
+**증상(사전 발견 — 커밋 전에 잡았다)**
+오래된 브랜치의 worktree(`yemo/be16-api-state-test-coverage`, base `50834d4`)에 쌓인 미커밋 문서를
+통합 브랜치(`e7b4408`) 기준 브랜치로 옮겨 PR을 만들려 했다. 파일 4개 중 3개는 로컬이 최신이었지만
+`CLAUDE.md` **하나만 방향이 반대**였다. 그대로 복사했으면 「프로젝트 주요 흐름」의
+BLE·비콘 5줄(`targetBeaconId` 조회, 스마트지팡이 ESP32, RSSI 판단, 버스측 ESP32 LED·부저)이 조용히 사라졌다.
+
+**원인**
+"미커밋 = 로컬이 더 최신"이 아니다. worktree의 base가 오래됐으면 **그 사이 다른 PR이 저장소에서 고친
+tracked 파일**은 로컬 사본이 오히려 과거다. 미커밋 편집분과 낡은 base가 같은 파일에 겹쳐 있어 겉으로 구분되지 않는다.
+
+**검증된 해결책**
+동기화 대상 파일을 통째로 복사하지 말고 **파일별로 방향을 먼저 확인한다.**
+
+```bash
+# tracked 파일: 목표 base와 직접 비교해 어느 쪽이 최신인지 본다
+git diff <target-base> -- <path>          # '-' 줄 = base에만 있는 내용 = 잃게 될 내용
+
+# untracked 파일: 위 diff는 b쪽이 비어 "전량 삭제"처럼 보인다. 착각하지 말 것.
+git show <target-base>:<path> > /tmp/repo && comm -23 <(sort -u /tmp/repo) <(sort -u <path>)
+# 출력이 비면 저장소 내용이 전부 로컬에 있다(= 안전한 superset)
+```
+
+방향이 반대인 파일은 **저장소 최신본 위에서 필요한 편집만 다시 적용한다**(이번엔 `.agent-loop/` 문장 1줄).
+`git diff --cached --stat`의 삭제 라인 수가 0이 아니면 삭제분을 눈으로 읽는다 —
+2026-08-07 항목의 "grep·typecheck으로는 사라진 것을 못 잡는다"와 같은 실패 유형이다.
+
+**관련**: PR #21(`yemo/sync-handoff-docs-0812`), handoff 1.2절.
+
+---
+
+## 2026-08-11 — GBIS `remainSeatCnt=0`은 만석이 아니라 "미보고"다. 원본 값을 그대로 흘리면 여유 버스를 만석으로 안내한다
+
+**증상(사전 발견 — 실제 사고가 나기 전에 잡았다)**
+`crowded`·`remainSeatCnt`를 응답 계약에 그대로 실으면, 일반시내버스에서 "잔여좌석 0석"이 대량으로 나온다.
+실제 캡처(`apps/server/src/adapters/routes/__fixtures__/gbis-bus-arrival-list-station-233000575.json`, 2026-08-06 stationId=233000575)에서 일반시내버스 9건이 **전부** `crowded=1`(여유)이면서 동시에 `remainSeatCnt=0`이었다.
+
+**원인**
+`remainSeatCnt`는 좌석 수를 보고하는 차종(직행좌석 등)에서만 유효하다. 그 외 차종은 미사용 기본값 `0` 또는 `-1`을 넣는다.
+여유(`crowded=1`)인 버스가 0석일 수 없으므로 이 `0`은 "0석"이 아니라 "정보 없음"이다.
+`crowded` 쪽도 같은 구조라서 `""`와 `0`이 모두 정보 없음이고, 유효 범위는 `1~4`다.
+**우리 계약은 같은 숫자 `0`에 정반대 의미(만석)를 부여하고 있었다** — 원본 도메인과 계약 도메인에서 뜻이 뒤집히는 값이었다.
+
+**검증된 해결책**
+adapter 경계에서 원본 값을 계약값으로 변환한다. 판정 규칙은 다음과 같다.
+
+| 원본 | 값 | 해석 |
+| --- | --- | --- |
+| `crowded1/2` | `""`, `0` | 정보 없음 |
+| `crowded1/2` | `1~4` | `congestionLevel` 유효 |
+| `remainSeatCnt1/2` | `""`, `-1`, **`0`** | 정보 없음 |
+| `predictTime1/2` | `""` | 해당 순번 차량 없음 → 배열에 넣지 않음 |
+
+둘 다 유효하면 더 구체적인 잔여좌석을 우선하고(`REMAINING_SEATS`), 둘 다 없으면 `UNAVAILABLE`이다.
+`apps/server/src/adapters/routes/hyorin-route-search.adapter.ts`의 `readRemainingSeats`(유효값 `>= 1`)와
+"시내버스의 remainSeatCnt=0 은 잔여좌석 0석이 아니라 정보 없음으로 읽는다" 회귀 테스트로 고정했다. 서버 테스트 122/122 통과.
+
+**교훈 일반화**
+공공 API의 숫자 `0`은 "값이 0"과 "값 없음"을 구분하지 않는 경우가 많다.
+**같은 응답 안의 다른 필드(여기서는 `crowded=1`)와 모순되면 그 `0`은 데이터가 아니라 기본값이다** — 값 분포만 세지 말고 필드 조합을 함께 봐야 갈린다.
+원본을 그대로 공개 계약에 싣지 말고 adapter에서 해석을 끝내고, 그 해석을 실제 캡처 fixture 기반 테스트로 못박는다.
+
+---
+
+**⚠️ 위 규칙은 같은 날 정정됐다 — 실측 추정만으로 멈추지 말고 공식 문서를 찾아라 (2026-08-11 후속)**
+
+위 분석은 **결론이 우연히 맞았지만 규칙이 틀렸다.** GBIS 공식 매뉴얼(gbis.go.kr 버스 도착정보 항목조회)을 확인하니 실제 구조는 이랬다.
+
+- **`routeTypeCd`(노선유형)가 애초에 어느 필드가 유효한지 결정한다.** "한 버스가 둘 다 줄 수 있고 우선순위로 고른다"가 아니다.
+- `crowded` 유효 노선유형: `13`·`15`·`23` / `remainSeatCnt` 유효 노선유형: `11`·`12`·`14`·`16`·`17`·`21`·`22`
+- **`remainSeatCnt`의 공식 "정보없음" sentinel은 `-1` 뿐이다. `0`은 유효값(만석)이다.**
+
+즉 시내버스(13)의 `0`을 정보없음으로 본 것은 결과적으로 맞았지만(그 노선유형은 애초에 이 필드 대상이 아니므로), **"값이 0이면 무조건 정보없음"이라는 규칙은 좌석형 노선이 진짜 만석이 되어 `0`을 보낼 때 그것을 잘못 접는 결함이었다.** 실측 데이터에 그 사례가 없어서 테스트로도 안 걸렸다.
+
+**진짜 교훈**: 실측 캡처로 패턴을 찾았어도 그건 **가설**이다. 관측되지 않은 케이스(여기서는 "좌석형이 만석일 때")에서 그 가설이 어떻게 깨지는지는 데이터가 알려주지 않는다. **공식 문서에서 필드의 정의와 sentinel 규약을 확인하기 전까지 값 기반 추정을 최종 규칙으로 굳히지 마라.** 확인 비용은 검색 몇 분이었고, 안 했으면 좌석형 만석 안내가 조용히 사라지는 버그로 남았다.
+
+확정된 매핑 규칙은 노션 「공통 API 및 Function Calling 명세서」 5.2-A에 있다(공식 문서 근거로 재확정). 구현은 `hyorin-route-search.adapter.ts`의 `toOccupancy`가 `routeTypeCd`로 분기하며, 합성 테스트 5개로 고정했다.
+
+**남은 미확인**: 좌석형 노선이 실제 만석일 때 `remainSeatCnt=0`을 정말 보내는지는 실물로 관측된 적이 없다(fixture에 사례 없음). 혼잡 시간대 재캡처가 필요하다.
+
+---
+
+## 2026-08-11 — worktree 는 OneDrive 밖 짧은 경로에 만들면 기존 함정을 통째로 피한다
+
+**증상(기존 기록)**
+`.worktrees/` 아래(OneDrive 동기화 폴더)에 만든 worktree 는 제거할 때 OneDrive "파일 온디맨드" 자리표시자 때문에 `Permission denied` 가 나고, `node_modules` 가 있으면 pnpm 중첩 경로가 MAX_PATH 를 넘겨 `Filename too long` 이 난다. 게다가 git 이 `.git` 파일을 먼저 지운 뒤 실패해 "반쯤 제거된 상태"가 남는다(2026-08-10 항목 참고).
+
+**검증된 해결책**
+worktree 를 OneDrive 밖 짧은 경로에 만든다. `C:/Users/yemoy/bta-gbis` 로 생성한 결과 `pnpm install --frozen-lockfile` 이 1분 2초에 정상 완료됐고(778 패키지), 서버 테스트 108/108 이 그대로 통과했다. 자리표시자·MAX_PATH 문제가 발생하지 않았다.
+
+**적용 범위**
+새 작업용 worktree 는 `.worktrees/` 대신 OneDrive 밖 짧은 경로를 기본으로 쓴다. 다만 이미 `.worktrees/` 아래 있는 기존 worktree 를 옮기라는 뜻은 아니다 — 미커밋 파일이 있는 것들은 그대로 둔다.
+
+---
+
+## 2026-08-11 — Node v24(Windows)에서 fetch 호출 뒤 `process.exit()`을 쓰면 libuv assertion으로 죽는다
+
+**증상**
+`scripts/check-api.mjs`(Render cold start 워밍업 확인용, 내장 `fetch`로 `/api/health` 폴링)가 healthy 응답을 정확히 받고 정상 로그까지 찍은 뒤 `Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), file src\win\async.c, line 76`로 죽었다. `exit=127`. `fetch` 성공/실패, `AbortSignal.timeout()` 사용 여부와 무관하게 재현됐다 — 첫 시도(0.0초, 즉시 성공)에서도 동일하게 발생했다.
+
+**원인**
+`fetch()`(Node 내장 undici)가 남긴 내부 libuv 비동기 핸들이 아직 닫히는 중(`UV_HANDLE_CLOSING`)일 때 `process.exit()`으로 강제 종료하면 Windows 쪽 libuv 코드가 assertion으로 죽는다. Node v24.15.0, Windows 11에서 실측. `AbortSignal.timeout()`을 수동 `AbortController`+`clearTimeout`으로 바꿔도 재현됐으므로 원인은 그쪽이 아니라 `fetch` 자체 + `process.exit()` 조합이다.
+
+**검증된 해결책**
+`process.exit(code)` 대신 `process.exitCode = code`를 쓰고 자연 종료를 기다린다. 이벤트 루프가 스스로 비워지면서 정상적으로 exit code가 반영되고 assertion이 재발하지 않았다(같은 스크립트로 3회 재현·재확인).
+
+**적용 범위**
+Node 내장 `fetch`를 쓰는 CLI 스크립트에서 마지막에 `process.exit()`으로 종료 코드를 강제하는 패턴을 이 저장소에서 반복하지 않는다. `scripts/check-api.mjs` 참고.
+
+---
+
 ## 2026-08-09 — ODsay `ApiKeyAuthFailed`의 정체는 등록 IP 불일치였다. 배포처 outbound IP를 로그로 드러내 해결했다
 
 **증상**
@@ -360,6 +472,17 @@ git config --replace-all remote.origin.fetch "+refs/heads/*:refs/remotes/origin/
 git fetch origin --prune
 ```
 
+**2026-08-10 수행 완료.** 사용자 승인 후 위 두 줄을 실행했다.
+설정이 `+refs/heads/claude/nice-archimedes-iv7iu0:refs/remotes/origin/claude/nice-archimedes-iv7iu0`
+에서 `+refs/heads/*:refs/remotes/origin/*`로 바뀌었고, 원격 10개와 로컬 `origin/*` 10개가
+SHA까지 전부 일치하는 것을 대조로 확인했다(`origin/HEAD -> origin/main`은 심볼릭 ref라 별개).
+**이제 `git log origin/<브랜치>`와 ahead/behind 계산을 그대로 믿어도 된다.**
+
+수정 직전에 이 결함이 실제로 한 번 더 터졌다. 원격 브랜치 7개를 `git push origin --delete`로 지운 뒤
+`git fetch origin --prune`을 돌렸는데 **로컬 `origin/yemo/*` 7개가 그대로 남았다** — `--prune`은
+refspec이 덮는 범위만 청소하므로 좁은 refspec에서는 유령 ref를 못 지운다.
+그때는 `git branch -r -d origin/<이름>`으로 하나씩 지워야 했다.
+
 **왜 위험했나**
 `git log origin/yemo-develop`, `git diff origin/yemo-develop`, ahead/behind 계산이 전부 조용히 틀린 답을 준다.
 "내 브랜치가 1커밋 앞서 있다"고 읽었지만 실제로는 3커밋 뒤였고 내 작업은 이미 병합돼 있었다.
@@ -368,3 +491,66 @@ git fetch origin --prune
 **교훈 일반화**
 remote-tracking ref는 캐시다. 최신이라는 보장이 없고, fetch가 그것을 갱신한다는 보장도 없다.
 브랜치 관계가 판단의 근거가 될 때는 `ls-remote`나 명시적 fetch로 원본을 확인한다.
+
+---
+
+## 2026-08-10 — OneDrive + pnpm worktree는 `git worktree remove`가 두 단계로 실패한다
+
+**증상**
+병합이 끝난 worktree 6개를 정리하려고 `git worktree remove`를 돌렸더니 서로 다른 오류 두 종류가 났다.
+
+```text
+error: failed to delete '.../.worktrees/docs-sync': Permission denied
+error: failed to delete '.git/worktrees/docs-sync': Permission denied
+```
+
+```text
+error: failed to delete '.../.worktrees/chaerin-frontend-merge': Filename too long
+```
+
+**더 나쁜 것은 실패가 깨끗하지 않다는 점이다.** git은 worktree 안의 `.git` 파일을 먼저 지운 뒤
+디렉터리 삭제에서 실패했다. 그 결과 `git worktree list`에서는 사라졌는데 파일 166개가 든 디렉터리와
+`.git/worktrees/<name>` 관리 항목은 그대로 남는 **반쯤 제거된 상태**가 됐다.
+"실패했으니 아무것도 안 바뀌었겠지"라고 넘기면 안 된다.
+
+**원인 두 가지**
+
+1. `Permission denied` — 프로젝트가 OneDrive 안에 있어서 하위 디렉터리가 "파일 온디맨드"
+   자리표시자다. 속성이 `ReadOnly, Directory, ReparsePoint`라 unlink가 거부된다.
+   **저장소의 `.git/worktrees/` 관리 폴더도 같은 상태**라 작업 트리를 지워도 관리 항목이 남는다.
+2. `Filename too long` — `node_modules`가 설치된 worktree는 pnpm 중첩 경로가 Windows MAX_PATH를
+   넘긴다. `Remove-Item -Recurse -Force`도 같은 이유로 실패한다.
+
+**검증된 해결책**
+
+ReadOnly부터 푼다. 작업 트리와 `.git/worktrees/` 양쪽 모두 해야 한다.
+
+```powershell
+$p = "<worktree 경로>"
+Get-ChildItem -Path $p -Recurse -Force | ForEach-Object { try { $_.Attributes = 'Normal' } catch {} }
+(Get-Item $p -Force).Attributes = 'Normal'
+```
+
+`node_modules`가 있으면 robocopy 미러로 비운 뒤 지운다. 긴 경로를 처리하는 유일한 기본 도구다.
+
+```powershell
+robocopy <빈 디렉터리> <대상> /MIR /NFL /NDL /NJH /NJS /R:1 /W:1 | Out-Null
+Remove-Item -Path <대상> -Recurse -Force
+```
+
+**robocopy의 종료 코드 0이 아닌 것을 실패로 읽지 마라.** 이번에 exit 2로 "실패" 알림이 왔지만
+실제로는 3개 모두 삭제에 성공했다. robocopy는 0=변경 없음, 1=복사함, 2=추가 항목 정리함이며
+**8 이상만 오류**다. 스크립트 종료 코드가 robocopy 값을 그대로 물려받으니 출력을 직접 확인한다.
+
+마지막에 남은 관리 항목을 정리한다.
+
+```bash
+git worktree prune -v
+```
+
+**순서를 지키면 반쯤 제거된 상태를 안 만든다**: ReadOnly 해제 → (node_modules 있으면) robocopy →
+`git worktree remove` → `git worktree prune`.
+
+**부수 확인**: auto mode 권한 분류기가 `git worktree prune`, `Remove-Item -Recurse -Force`,
+반복문으로 감싼 삭제를 전부 자동 거부한다. `acceptEdits` 모드로 바꾸면 승인 프롬프트로 바뀐다.
+handoff 8절의 Supabase DELETE 사례와 같은 패턴이다.
