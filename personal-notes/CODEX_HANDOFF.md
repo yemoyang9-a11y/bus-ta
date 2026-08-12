@@ -1,23 +1,79 @@
-# 백엔드 인수인계 — Codex/Claude Code — 2026-08-11 (**운영 E2E 6개 gate 전부 통과**, fixture-vs-DB 확증 해소, **GBIS occupancy 구현·병합 완료(PR #20)**, 스킬 기록 불일치 정리)
+# 백엔드 인수인계 — Codex/Claude Code — 2026-08-12 (문서 동기화 병합 PR #21, 병합 완료 원격 브랜치 4개 삭제, **다음 작업 = Task 24 중복 `routeId` 도착정보 누락 수정**)
 
-> **통합 브랜치 head가 `e7b4408`로 올라갔다**(이전 `8afa03b`). PR #20 병합 2026-08-11T12:05:41Z. **열린 PR 0건.**
+> **통합 브랜치 head가 `5f13b27`로 올라갔다**(이전 `e7b4408`). PR #21 병합 2026-08-12T03:26:49Z. **열린 PR 0건.**
 >
 > **다음 세션이 지금 바로 할 수 있는 일**
-> - **승인 없이 가능**: 없음(코드 작업 대기 항목이 비었다). 아래 "남은 일" 참고.
+> - **승인 없이 가능**: **Task 24 — 중복 `routeId`로 도착정보를 놓치는 결함 수정.** 실측 근거는 0-A.3절, 상세는 `.agent-loop/CURRENT_TASK.md`.
 > - **사용자·팀원 몫**: Realtime smoke 2단계(시크릿), GBIS 재캡처 요청(효린), outbound IP 관측(Render 로그).
-> - **미커밋 문서 동기화 PR이 필요하다** — 이 파일·`lessons.md`·`.agent-loop/`·`CLAUDE.md`가 전부 로컬에만 있다. 1.2절 참고.
+> - **문서는 저장소와 동기화된 상태다** — PR #21로 이 파일·`lessons.md`·`.agent-loop/`·`CLAUDE.md`가 올라갔다. 그 이후 편집분은 다시 로컬에만 있을 수 있다.
 
 > 다음 로컬 에이전트가 현재 백엔드 상태를 사실대로 이어받기 위한 source of truth다.
 > 실제 비밀값, API 키, 토큰, Supabase 키, Realtime `clientSecret`, 응답 원문은 포함하지 않는다.
 > 이 문서 자체는 실행 승인서가 아니다. 운영 쓰기·삭제, 배포 설정 변경은 그때마다 사용자 승인을 다시 받는다.
 
-> **이 파일의 위치 주의**: 이 최신본은 `.worktrees/yemo-develop` worktree에 **미커밋 상태**로 있다.
-> PR #19(2026-08-10 병합)가 한 판을 저장소에 올렸지만 **그 뒤 이 파일이 다시 앞서 나갔다** — 저장소 버전은 0절(2026-08-10 세션)을 담고 있지 않다.
-> 다른 checkout이나 클라우드 세션은 이 내용을 볼 수 없다. 다음 문서 동기화 PR에 이 파일과 `lessons.md`, `.agent-loop/`를 함께 올려야 한다.
+> **절 번호 읽는 법**: `0-A`는 **`0`절보다 나중**이다(`0.4-A`·`6-A`와 같은 후속 표기).
+> 반대로 `0-0`, `0-1` … 은 **과거 판**이다. 시간순은 `0-A` → `0` → `0-0` → `0-1` … 순이다.
+> **절 번호를 재배치하지 마라** — 본문 상호참조가 20곳 넘게 기존 번호를 가리키고 있어 조용히 깨진다.
+> 새 세션은 번호를 바꾸지 말고 `0-A`처럼 접미사로 덧붙인다.
 
 ---
 
-## 0. 이번 세션(2026-08-11)에서 바뀐 것
+## 0-A. 0절 이후 추가분 (2026-08-12)
+
+**저장소 동기화가 실제로 닫혔고, 병합 완료 브랜치를 정리했다. 애플리케이션 코드 변경은 0건이다.**
+
+### 0-A.1 PR #21 병합 — 문서 동기화 완료. head `5f13b27`
+
+0절 0.6 ①이 닫혔다. `personal-notes/CODEX_HANDOFF.md`(+512/-58), `lessons.md`(+154, 삭제 0),
+`.agent-loop/`(`DIRECTOR.md`·`CURRENT_TASK.md`·`probe-routes.sh` 신규), `CLAUDE.md`(1줄).
+코드·마이그레이션 0건.
+
+**작업 중 `CLAUDE.md` 5줄 소실을 커밋 전에 잡았다.** 미커밋 문서 4종 중 3종은 로컬이 최신이었지만
+`CLAUDE.md`만 방향이 반대였다 — worktree base(`50834d4`)가 오래돼서, 그 사이 저장소에 추가된
+「프로젝트 주요 흐름」의 BLE·비콘 5줄이 로컬 사본에 없었다. 통째로 복사했으면 조용히 지워졌다.
+저장소 최신본 위에서 `.agent-loop/` 문장 하나만 고치는 방식으로 처리했다.
+**절차는 `lessons.md` 2026-08-12 항목에 기록했다**(tracked/untracked 각각의 방향 확인법).
+
+> `.agent-loop/`가 이제 저장소에 있다. DIRECTOR.md가 이를 **애플리케이션 변경 커밋**에서 제외하라는
+> 규칙은 그대로 유효하다 — 문서 동기화 커밋에만 함께 올린다.
+
+### 0-A.2 병합 완료 원격 브랜치 4개 삭제 (사용자 승인 후 실행)
+
+11절의 "조사는 끝났고 실행만 남았다" 항목을 닫았다. **삭제 직전에 조상 여부를 다시 검사해 통과한 것만 지웠고,
+삭제 후 커밋 4개가 통합 브랜치에서 여전히 도달 가능한 것도 재확인했다.**
+
+| 브랜치 | tip | PR | 병합 |
+| --- | --- | --- | --- |
+| `codex` | `34e78cd` | #1 | 2026-06-27 |
+| `feature/end-trip-cancelled` | `32255b1` | #2 | 2026-07-25 |
+| `yemo/gbis-occupancy` | `52bdbe1` | #20 | 2026-08-11 |
+| `yemo/sync-handoff-docs-0812` | `1f944d1` | #21 | 2026-08-12 |
+
+`render.yaml`·`.github/`에 이 이름을 참조하는 곳은 0건이라 배포·CI 영향이 없다.
+**원격 12개 → 8개.** 되살리려면 `git push origin <sha>:refs/heads/<이름>`.
+
+### 0-A.3 다음 작업 선정 — Task 24 (`FIX-GBIS-ARRIVAL-DUPLICATE-ROUTEID`)
+
+0절 0.4-A가 "범위 밖·미착수"로 등록만 해 둔 `.find()` 중복 `routeId` 이슈를 다음 작업으로 올린다.
+**PR #20이 occupancy를 출시한 지금은 이 결함이 그 기능을 직접 갉아먹기 때문이다.**
+
+fixture 24개 항목 실측(2026-08-12 재확인):
+
+```text
+routeId=233000281  idx3  predictTime1=""                    ← .find() 가 고르는 항목
+                   idx4  predictTime1=15  predictTime2=88   ← 실제 도착정보
+routeId=233000268  idx21 predictTime1=""                    ← .find() 가 고르는 항목
+                   idx22 predictTime1=43
+```
+
+`getArrivalInfo()`(`apps/server/src/adapters/routes/hyorin-route-search.adapter.ts:335`)의 `.find()`가
+첫 항목을 집어, **GBIS가 도착정보를 주는데도 `arrivals: []`(정보 없음)이 나간다.**
+
+**승인 없이 착수 가능하다** — 운영 DB 쓰기·마이그레이션·공개 API 신설이 없다. 상세는 `.agent-loop/CURRENT_TASK.md`.
+
+---
+
+## 0. 이전 판(2026-08-11)에서 바뀐 것
 
 **운영 E2E가 전부 통과했고, GBIS occupancy 명세의 마지막 미결이 해소됐다. 그 구현(Task 23)에 착수했다.**
 
@@ -165,9 +221,10 @@ PR 링크: `https://github.com/yemoyang9-a11y/bus-ta/pull/new/yemo/gbis-occupanc
 
 **백엔드에 승인 없이 착수할 수 있는 코드 작업이 지금 하나도 없다.** 명세서상 남은 구현 항목이 GBIS occupancy 하나였고 이번에 닫혔다. 아래는 성격별로 나눈 남은 일이다.
 
-**① 문서 동기화 PR (승인 없이 가능, 가장 먼저 할 것)**
+**① ~~문서 동기화 PR~~ — ✅ 2026-08-12 완료(PR #21). 0-A.1절 참고**
 
-이 handoff·`lessons.md`·`.agent-loop/`가 전부 미커밋이다. `claude` 최신(`e7b4408`) 기준으로 브랜치를 만들어 PR을 올린다. 1.2절 경고 참고 — **전역 `~/.claude/CLAUDE.md`는 저장소 밖이라 대상이 아니다.**
+> 이 handoff·`lessons.md`·`.agent-loop/`·`CLAUDE.md`를 `claude` 최신 기준 브랜치로 올려 병합했다.
+> **전역 `~/.claude/CLAUDE.md`는 저장소 밖이라 대상이 아니었다.**
 
 **② 사용자·팀원이 해야 하는 것 (에이전트가 못 함)**
 
@@ -477,21 +534,25 @@ ODsay 답이 오면 6절 1번으로 즉시 복귀한다.
 
 **2026-08-10 대청소로 브랜치가 크게 줄었다.** 아래는 청소 직후 `ls-remote`·`git branch` 실측이다.
 
-원격 **11개** (2026-08-11 `git ls-remote` 실측. PR #20 병합 후 `yemo/gbis-occupancy`가 남아 10개 → 11개):
+원격 **8개** (2026-08-12 `git ls-remote` 실측. 병합 완료 브랜치 4개를 삭제해 12개 → 8개. 0-A.2절):
 
 | 원격 브랜치 | 역할 | SHA |
 | --- | --- | --- |
-| `claude/nice-archimedes-iv7iu0` | **통합·배포·E2E 기준** | **`e7b4408`** (2026-08-11 PR #20 병합분. 이전 `8afa03b` = PR #19) |
-| `yemo/gbis-occupancy` | PR #20으로 **병합 완료**. 삭제해도 안전하다 | `52bdbe1` |
+| `claude/nice-archimedes-iv7iu0` | **통합·배포·E2E 기준** | **`5f13b27`** (2026-08-12 PR #21 병합분. 이전 `e7b4408` = PR #20) |
 | `main` | 기본 브랜치. 통합 브랜치보다 한참 뒤 | `ddb7ca6` |
 | `yemo-develop` | 개인 개발 브랜치(배포 기준 아님) | `9b1fb09` |
 | `chaerin-develop` | 채린 개인 브랜치. PR #3은 자동 `MERGED`됨 | `276e38b` |
 | `hyorin-develop` | 효린 개인 브랜치 | `34f52d2` |
 | `yuna-realtime-openai` | 유나 개인 브랜치 | `ef6390e` |
-| `codex` | PR #1(`remainingStops`→`remainingStations`). **병합 완료, 삭제해도 안전하다고 확인됐으나 남겨둠** | `34e78cd` |
-| `feature/end-trip-cancelled` | PR #2(`end_trip`). **병합 완료, 삭제해도 안전하다고 확인됐으나 남겨둠** | `32255b1` |
 | `feature/hardware-bus-beacon` | 정민 하드웨어. 내용은 통합 브랜치와 동일(0.6절) | `bc18ba0` |
 | `feature/hardware-smart-cane` | 정민 하드웨어. 내용은 통합 브랜치와 동일(0.6절) | `354bc15` |
+
+**2026-08-12 삭제된 4개**: `codex`(`34e78cd`, PR #1), `feature/end-trip-cancelled`(`32255b1`, PR #2),
+`yemo/gbis-occupancy`(`52bdbe1`, PR #20), `yemo/sync-handoff-docs-0812`(`1f944d1`, PR #21).
+전부 통합 브랜치의 조상이고 커밋은 그대로 살아 있다. 되살리려면 `git push origin <sha>:refs/heads/<이름>`.
+
+> 남은 8개는 **전부 기준 브랜치이거나 소유자가 따로 있다.** 팀원 3개(채린·효린·유나)와
+> 하드웨어 2개(정민)는 임의로 지우지 않는다.
 
 로컬 8개:
 
@@ -539,18 +600,21 @@ git fetch origin --prune
 
 ### 1.2 worktree 구성
 
-2026-08-11 `git worktree list` 실측. **7개다**(8/10에 6개로 줄였고, 이번에 Task 23용 `bta-gbis` 하나를 추가했다).
+2026-08-12 `git worktree list` 실측. **7개다**(8/10에 6개로 줄였고, 8/11에 `bta-gbis` 하나를 추가했다).
 
 ```text
-C:/Users/yemoy/bta-gbis                     yemo/gbis-occupancy (52bdbe1)   ← 2026-08-11 신규
-  └ PR #20 병합 완료. node_modules 설치됨(base e7b4408 직전이라 서버 테스트용 1순위).
-    OneDrive 밖 짧은 경로라 MAX_PATH·자리표시자 함정이 없다. 미커밋 0건이라 정리해도 안전하다.
+C:/Users/yemoy/bta-gbis                     yemo/sync-status-0812   ← 작업용 1순위
+  └ node_modules 설치됨. OneDrive 밖 짧은 경로라 MAX_PATH·자리표시자 함정이 없다.
+    PR #21·이 정정 PR을 여기서 만들었다. 다음 코드 작업(Task 24)도 여기서 시작하는 것이 가장 싸다
+    — claude 최신 SHA 기준으로 새 브랜치만 따면 된다.
 한이음_프로젝트_폴더/                        yemo/note-gbis-occupancy-checklist (메인 checkout, a718012)
   └ 미커밋 6건: M REMAINING_CHECKLIST.md, ?? .mcp.json, ?? lessons.md,
     ?? BACKEND_HANDOFF_2026-07-27/08-01/08-04.md, ?? skills-lock.json
-    주의: 메인 checkout의 HEAD는 a718012 로 원격 claude head(8afa03b)보다 여러 커밋 뒤다.
-.worktrees/yemo-develop/                    yemo/be16-api-state-test-coverage
-  └ 이 handoff·.agent-loop/·lessons.md 의 위치. 미커밋 5건.
+    주의: 메인 checkout의 HEAD는 a718012 로 원격 claude head(5f13b27)보다 여러 커밋 뒤다.
+.worktrees/yemo-develop/                    yemo/be16-api-state-test-coverage (50834d4)
+  └ 미커밋 5건. handoff·lessons.md·.agent-loop/ 는 PR #21로 저장소에 올라갔고 내용이 일치한다.
+    ⚠️ 단 `M CLAUDE.md`는 **저장소보다 오래된 사본**이다(BLE·비콘 5줄이 빠져 있다).
+    여기를 문서 출처로 삼지 마라 — 저장소 최신본이 정답이다. 0-A.1절 참고.
 .worktrees/outbound-ip/                     yemo/log-outbound-ip (183e8de)
   └ node_modules 설치됨. 108/108 실행을 여기서 했다. base 가 가장 최신이라 서버 테스트용 1순위.
 .worktrees/route-search-observability/      yemo/troubleshoot-windows-curl-encoding (6f9a6f8)
@@ -582,7 +646,7 @@ C:/Users/yemoy/bta-gbis                     yemo/gbis-occupancy (52bdbe1)   ← 
 1. `AGENTS.md`
 2. `CLAUDE.md`
 3. `.agent-loop/DIRECTOR.md`
-4. `.agent-loop/CURRENT_TASK.md` — **Task 23-A(`FIX-GBIS-OCCUPANCY-ROUTETYPE-GATING`, `COMPLETE`)와 그 아래 Task 23(`COMPLETE`)**. GBIS 원본 변환 규칙 표와 **미해결 후속(좌석형 `crowded`)**이 들어 있다. **이 Task 들은 끝났으므로 다음 세션은 아래 "남은 일"에서 다음 작업을 선정해 이 파일을 새로 쓴다.**
+4. `.agent-loop/CURRENT_TASK.md` — **맨 위가 Task 24(`FIX-GBIS-ARRIVAL-DUPLICATE-ROUTEID`, `READY`, 착수 대기)이고, 그 아래 Task 23-A·23은 `COMPLETE` 기록으로 보존돼 있다.** Task 23-A에는 GBIS 원본 변환 규칙 표와 **미해결 후속(좌석형 `crowded`)**이 들어 있어 계속 참고 대상이다.
 5. 이 `personal-notes/CODEX_HANDOFF.md`
 6. `lessons.md`
 7. `personal-notes/REMAINING_CHECKLIST.md` — GBIS occupancy, PR #3 진단 요약이 여기도 있다
@@ -989,7 +1053,9 @@ Task 23이 `create_trip` 응답을 `arrivals` 배열로 바꾸면서 아래 서�
 - ~~worktree 5개 제거~~ — **✅ 2026-08-10 완료.** 남은 6개와 각각을 남긴 이유는 1.2절.
 - ~~fetch refspec 복구~~ — **✅ 2026-08-10 완료.** 1.1절.
 - **남은 worktree 정리 2건 — 미커밋 파일 처리가 선행이다.** `.worktrees/merge-hyorin`(`?? .agent-loop/`, `?? lessons.md`)과 `.codex/worktrees/sec01-security-contract-fix`(`M CODEX_HANDOFF.md`). 옛 세션 잔재로 보이지만 확인 없이 지우면 그 파일들이 사라진다.
-- **원격 브랜치 2건 삭제 판단 — 조사는 끝났고 실행만 남았다.** `feature/end-trip-cancelled`(PR #2), `codex`(PR #1). 둘 다 예모 본인 브랜치, 통합 브랜치의 조상, CI·`render.yaml` 참조 없음으로 **삭제 안전이 확인됐다.** 팀원 브랜치 3개와 하드웨어 브랜치 2개는 소유자가 따로 있어 건드리지 않는다.
+- ~~**원격 브랜치 삭제**~~ — **✅ 2026-08-12 완료.** `codex`(#1)·`feature/end-trip-cancelled`(#2)에 `yemo/gbis-occupancy`(#20)·`yemo/sync-handoff-docs-0812`(#21)를 더해 4개를 지웠다. 원격 12개 → 8개. 0-A.2절. 팀원 브랜치 3개와 하드웨어 브랜치 2개는 소유자가 따로 있어 건드리지 않았다.
+- **로컬 브랜치 정리 — 미착수.** 위 삭제로 upstream이 `gone`이 된 로컬 브랜치가 늘었다: `yemo/gbis-occupancy`(체크아웃 안 됨, 바로 삭제 가능), `yemo/sync-handoff-docs-0812`. 그 전부터 `gone`이던 5개(`yemo/be16-api-state-test-coverage`, `yemo/log-outbound-ip`, `yemo/merge-hyorin-integration`, `yemo/render-deployment-readiness`, `yemo/troubleshoot-windows-curl-encoding`)는 **각자 worktree가 물고 있어 worktree 정리가 선행이다.**
+- **로컬 `claude/nice-archimedes-iv7iu0`가 `8afa03b`로 원격보다 여러 커밋 뒤다.** 판단 근거로 쓰기 전에 fast-forward 하거나 `origin/` ref를 직접 본다.
 - `yemo/sec01-security-followups` 브랜치 — 통합 브랜치에 없는 커밋 2개를 가진 유일한 로컬 브랜치. 내용은 이미 다른 커밋으로 반영됐다. 삭제 여부 결정 필요.
 - `yemo/note-gbis-occupancy-checklist` 브랜치(메인 checkout, 미커밋) — `REMAINING_CHECKLIST.md` 편집을 커밋·push할지 결정
 - `apps/server/package.json`의 `main` 필드와 `tsconfig.json`의 `rootDir` 불일치 — 별도 이슈, 양쪽 부모 모두 동일해 이번 병합들이 만든 문제 아님

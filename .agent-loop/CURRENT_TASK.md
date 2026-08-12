@@ -1,3 +1,85 @@
+# Task 24: FIX-GBIS-ARRIVAL-DUPLICATE-ROUTEID
+
+- 작업 식별자: `FIX-GBIS-ARRIVAL-DUPLICATE-ROUTEID`
+- 관련 명세: 「공통 API 및 Function Calling 명세서」 **5.2-A**(도착 차량 정보). 계약 변경은 없다 — 계약대로 채워지지 않는 결함을 고친다.
+- 현재 상태: **`READY`** (2026-08-12 선정, 착수 전)
+- 현재 재시도 횟수: `0`
+- 기준선: 서버 테스트 **128/128 pass**(2026-08-11 Task 23-A 시점 실측. 착수 시 재확인할 것)
+- 운영 DB 쓰기: **없음.** 마이그레이션도 만들지 않는다.
+- worktree: `C:/Users/yemoy/bta-gbis`(OneDrive 밖 짧은 경로, node_modules 설치됨). **`claude` 최신 SHA 기준으로 새 브랜치를 딴다.**
+
+## 왜 이것을 다음 작업으로 골랐나
+
+명세서상 남은 구현 항목은 없다. 이 결함은 PR #14 시절부터 "범위 밖·미착수"로 등록만 돼 있었으나,
+**PR #20이 `arrivals`·`occupancy`를 출시하면서 그 기능을 직접 갉아먹는 위치가 됐다.**
+승인 없이 착수 가능한 유일한 실질 코드 작업이기도 하다.
+
+## 결함 (2026-08-12 fixture 실측으로 재확인)
+
+`getArrivalInfo()`(`apps/server/src/adapters/routes/hyorin-route-search.adapter.ts:335`)가
+`busArrivalList.find(a => String(a.routeId) === String(localBusId))`로 **첫 일치 항목**을 고른다.
+그런데 GBIS 응답에는 같은 `routeId`가 두 번 나오고 **첫 항목이 빈 값인 경우가 실재한다.**
+
+```text
+routeId=233000281  idx3  predictTime1=""                    ← .find() 가 고르는 항목
+                   idx4  predictTime1=15  predictTime2=88   ← 실제 도착정보
+routeId=233000268  idx21 predictTime1=""                    ← .find() 가 고르는 항목
+                   idx22 predictTime1=43
+```
+
+근거 파일: `apps/server/src/adapters/routes/__fixtures__/gbis-bus-arrival-list-station-233000575.json`
+(24개 항목 중 중복 `routeId` 2쌍. 둘 다 `routeTypeCd=13`).
+
+**증상**: GBIS가 도착정보를 주는데도 `arrivals: []`가 나가 사용자에게 "도착 정보 없음"으로 안내된다.
+`occupancy`도 함께 사라진다. 502도 아니고 예외도 아니라서 **로그로는 드러나지 않는다.**
+
+## 작업 범위
+
+- `getArrivalInfo()`의 항목 선택 규칙만 고친다.
+- **선택 규칙**: 같은 `routeId` 항목 중 **`predictTime1`이 유효한 항목을 고른다.**
+  유효한 항목이 없으면 기존대로 첫 항목을 쓰고 결과는 `arrivals: []`로 지금과 같다.
+- 이 규칙은 GBIS 필드 의미를 새로 추정하지 않는다 — "빈 항목보다 값 있는 항목"일 뿐이다.
+  **Task 23-A에서 배운 실수(추정을 규칙으로 굳히기)를 반복하지 않기 위해 의도적으로 좁게 잡았다.**
+
+## 수정 가능 파일
+
+1. `apps/server/src/adapters/routes/hyorin-route-search.adapter.ts` — `getArrivalInfo()`의 선택 로직
+2. `apps/server/src/adapters/routes/hyorin-route-search.adapter.test.ts` — 아래 기존 테스트 갱신 + 회귀 테스트 추가
+
+## 수정 금지 범위
+
+- `OccupancySchema`·`ArrivalInfoSchema`·`CreateTripResponseSchema` 등 **계약 변경 금지.** 이번 건은 계약을 채우는 문제다.
+- `toOccupancy()`의 `routeTypeCd` 분기(Task 23-A 결과)에 손대지 않는다.
+- 좌석형 `crowded` fallback을 넣지 않는다 — **여전히 데이터가 부족하다**(아래 Task 23-A의 미해결 후속 참고).
+- Supabase 마이그레이션·공개 API 신설·운영 DB 쓰기 금지.
+- `search_routes` 응답 계약을 건드리지 않는다.
+
+## 구현 완료 조건
+
+1. `routeId=233000281` 조회 시 `arrivals`가 `predictTime` **15·88** 두 대를 반환한다(현재는 `[]`).
+2. `routeId=233000268` 조회 시 첫 차량 **43**을 반환한다.
+3. 중복이 없는 노선들의 기존 결과가 **하나도 바뀌지 않는다.**
+4. 모든 후보 항목이 빈 값이면 기존대로 `arrivals: []`이고 운행 생성은 201로 성공한다.
+5. `occupancy` 변환 결과는 선택된 항목 기준으로 따라 움직인다(별도 규칙 신설 없음).
+
+## 테스트 조건
+
+- TDD. **먼저 기존 테스트를 확인할 것** — Task 23-A가 현재(결함) 동작을 고정하는 테스트를 일부러 넣어 뒀다:
+  `apps/server/src/adapters/routes/hyorin-route-search.adapter.test.ts:544`
+  「같은 routeId 가 중복으로 오면 첫 항목만 보고 [] 를 반환한다 (선재 이슈, 미수정)」.
+  **이번 수정으로 깨지는 것이 정상이며, 기댓값을 실제 도착 정보로 갱신한다**(테스트 주석에 그렇게 하라고 적혀 있다).
+  같은 파일 `:501`의 다른 테스트는 이 두 `routeId`를 일부러 제외해 두었으니 함께 확인한다.
+- 실제 캡처 fixture를 근거로 쓴다. 합성 케이스는 "모든 항목이 빈 값" 경로에만 쓴다.
+- 기존 128개 중 위 고정 테스트를 제외한 나머지가 깨지지 않아야 한다.
+- `node --import tsx --test $(find src -name '*.test.ts')` (apps/server), `pnpm -r typecheck`, 서버 build 통과.
+
+## 참고
+
+- 이 Task는 코드 작업만으로 닫힌다. 운영 검증·PR 병합은 사용자 몫이다.
+- 착수 전 `git log origin/claude/nice-archimedes-iv7iu0 -1`로 최신 SHA를 다시 확인한다.
+
+---
+
 # Task 23-A: FIX-GBIS-OCCUPANCY-ROUTETYPE-GATING (Task 23 후속 정정, 같은 브랜치)
 
 - 작업 식별자: `FIX-GBIS-OCCUPANCY-ROUTETYPE-GATING`
