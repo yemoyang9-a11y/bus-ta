@@ -5,6 +5,8 @@ import * as Location from 'expo-location';
 import { useFocusEffect } from '@react-navigation/native';
 import { apiClient, ApiError } from '../api/client';
 import { useTrip } from '../state/TripContext';
+import { useRealtime } from '../realtime/RealtimeProvider';
+import { stopBeaconScan } from '../ble/bleManager';
 
 const INITIAL_STATUS = {
   currentStation: null,
@@ -24,7 +26,9 @@ export default function RidingScreen({ route, navigation }) {
   const bellHandledRef = useRef(false);
   const requestCounterRef = useRef(0);
   const stoppedRef = useRef(false);
+  const boardingHandledRef = useRef(false); // 정민님 확인: 탑승 완료 시 1회만 STOP_BEACON_SCAN
   const { dispatch } = useTrip();
+  const { session } = useRealtime();
 
   // 최초 진입 안내
   useFocusEffect(
@@ -49,6 +53,17 @@ export default function RidingScreen({ route, navigation }) {
       return () => clearTimeout(timer);
     }
   }, [status.guideMessage, status.remainingStations]);
+
+  // 정민님 확인(2026-08-12): 탑승 완료(WAITING_BUS → ON_BUS 전환) 시 비콘 스캔 중지
+  // "탑승하면 버스 찾는 진동이 필요 없으니까" — 하차벨 STOP_REQUEST와는 별개
+  useEffect(() => {
+    if (status.tripStatus === 'ON_BUS' && !boardingHandledRef.current) {
+      boardingHandledRef.current = true;
+      stopBeaconScan().catch((error) => {
+        console.log('비콘 스캔 중지 실패:', error);
+      });
+    }
+  }, [status.tripStatus]);
 
   // 1정거장 남았을 때 TTS 출력 후 하차 안내 화면 전환
   // API_SPEC.md 기준:
@@ -117,6 +132,9 @@ export default function RidingScreen({ route, navigation }) {
 
       setStatus(data);
       dispatch({ type: 'UPDATE_TRIP_STATUS', status: data });
+      // TripContext가 최신 상태로 갱신된 직후, RESET_TRIP 전에 세션에 변화를 알린다.
+      // (GitHub 코멘트 4번: RESET_TRIP이 먼저 호출되면 마지막 상태 전달이 안 될 수 있음)
+      session?.notifyStatusChange();
 
       // 9.2: 종료된 운행이면 전송 중단
       if (data.tripStatus === 'TRIP_DONE' || data.tripStatus === 'CANCELLED') {
@@ -132,6 +150,7 @@ export default function RidingScreen({ route, navigation }) {
             const latest = await apiClient.trips.getStatus(tripId);
             setStatus(latest);
             dispatch({ type: 'UPDATE_TRIP_STATUS', status: latest });
+            session?.notifyStatusChange();
           } catch {
             // 최신 상태 조회도 실패하면 오류 화면으로
           }

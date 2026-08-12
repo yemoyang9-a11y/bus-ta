@@ -25,7 +25,31 @@ type FunctionResult =
   | EndTripResponse
   | ApiErrorResult;
 
+// 동일 함수+인자 조합의 병렬 재호출 방지 (create_trip은 선택당 1회만 등)
+const inFlightCalls = new Map<string, Promise<RealtimeClientEvent[]>>();
+
+function buildCallKey(event: RealtimeFunctionCallEvent): string {
+  return `${event.name}:${event.arguments}`;
+}
+
 export async function dispatchRealtimeFunctionCall(
+  event: RealtimeFunctionCallEvent,
+  context: RealtimeGuideContext,
+): Promise<RealtimeClientEvent[]> {
+  const callKey = buildCallKey(event);
+
+  const existing = inFlightCalls.get(callKey);
+  if (existing) return existing;
+
+  const callPromise = executeFunctionCall(event, context).finally(() => {
+    inFlightCalls.delete(callKey);
+  });
+
+  inFlightCalls.set(callKey, callPromise);
+  return callPromise;
+}
+
+async function executeFunctionCall(
   event: RealtimeFunctionCallEvent,
   context: RealtimeGuideContext,
 ): Promise<RealtimeClientEvent[]> {
@@ -75,7 +99,7 @@ async function callBackendFunction(
 ): Promise<FunctionResult> {
   switch (name) {
     case "search_routes":
-      return apiClient.routes.search(assertRoutesSearchRequest(args));
+      return apiClient.routes.search(assertRoutesSearchRequest(args, context));
     case "create_trip":
       return apiClient.trips.create(assertCreateTripRequest(args, context));
     case "get_trip_status":
@@ -87,6 +111,9 @@ async function callBackendFunction(
   }
 }
 
+// Function 처리 결과를 TripContext(dispatchAppAction)에 반영한다.
+// RealtimeGuideContext는 더 이상 상태를 직접 들고 있지 않으므로, context.xxx = ... 대신
+// context.dispatchAppAction({ type: ... })으로만 상태를 바꾼다.
 function updateContext(
   name: RealtimeFunctionName,
   args: unknown,
@@ -98,23 +125,27 @@ function updateContext(
 
   if (name === "search_routes") {
     const searchResult = result as RoutesSearchResponse;
-    context.destination = searchResult.destination;
-    context.routes = searchResult.routes as Route[];
+    context.dispatchAppAction({
+      type: "SET_DESTINATION_AND_ROUTES",
+      destination: searchResult.destination,
+      routes: searchResult.routes as Route[],
+    });
     return;
   }
 
   if (name === "create_trip") {
     const createResult = result as CreateTripResponse;
-    context.selectedRoute = assertCreateTripRequest(args, context);
-    context.tripId = createResult.tripId;
-    context.tripStatus = createResult.tripStatus;
+    const selectedRoute = findSelectedRoute(args, context);
+    if (selectedRoute) {
+      context.dispatchAppAction({ type: "SELECT_ROUTE", route: selectedRoute });
+    }
+    context.dispatchAppAction({ type: "START_TRIP", tripId: createResult.tripId });
     return;
   }
 
   if (name === "get_trip_status") {
     const statusResult = result as TripStatusResponse;
-    context.tripId = statusResult.tripId;
-    context.tripStatus = statusResult.tripStatus;
+    context.dispatchAppAction({ type: "UPDATE_TRIP_STATUS", status: statusResult });
 
     if (statusResult.tripStatus === "CANCELLED" || statusResult.tripStatus === "TRIP_DONE") {
       clearActiveTripContext(context);
@@ -127,13 +158,32 @@ function updateContext(
   }
 }
 
-function assertRoutesSearchRequest(args: unknown): RoutesSearchRequest {
+function assertRoutesSearchRequest(
+  args: unknown,
+  context: RealtimeGuideContext,
+): RoutesSearchRequest {
   const value = assertRecord(args);
+
+  // 좌표는 모델이 지어낼 수 있는 값이라 Function 인자에서 받지 않고,
+  // 화면(GPS)이 갱신해 둔 실제 위치(getCurrentLocation)만 사용한다.
+  const currentLocation = context.getCurrentLocation();
+  if (!currentLocation) {
+    throw new Error("현재 위치를 확인할 수 없습니다.");
+  }
+
   return {
     destination: assertNonEmptyString(value.destination, "destination"),
-    latitude: assertFiniteNumber(value.latitude, "latitude"),
-    longitude: assertFiniteNumber(value.longitude, "longitude"),
+    latitude: currentLocation.latitude,
+    longitude: currentLocation.longitude,
   };
+}
+
+function findSelectedRoute(args: unknown, context: RealtimeGuideContext): Route | undefined {
+  const value = assertRecord(args);
+  const candidateId = assertPositiveInteger(value.candidateId, "candidateId");
+  const appState = context.getAppState();
+  const routeCandidates = (appState.routeCandidates ?? []) as Route[];
+  return routeCandidates.find((route) => route.candidateId === candidateId);
 }
 
 function assertCreateTripRequest(
@@ -141,16 +191,16 @@ function assertCreateTripRequest(
   context: RealtimeGuideContext,
 ): CreateTripRequest {
   const value = assertRecord(args);
-  const candidateId = assertPositiveInteger(value.candidateId, "candidateId");
-  const selectedRoute = context.routes.find((route) => route.candidateId === candidateId);
+  const selectedRoute = findSelectedRoute(args, context);
 
   if (selectedRoute == null) {
     throw new Error("선택한 경로 후보를 찾을 수 없습니다. 먼저 경로를 다시 검색해 주세요.");
   }
 
+  const appState = context.getAppState();
   return toCreateTripRequest(
     selectedRoute,
-    assertNonEmptyString(value.destination ?? context.destination, "destination"),
+    assertNonEmptyString(value.destination ?? appState.destination, "destination"),
   );
 }
 

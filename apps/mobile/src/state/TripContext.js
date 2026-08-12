@@ -60,6 +60,13 @@ function tripReducer(state, action) {
       };
     }
 
+    case 'SET_LAST_INJECTED_STATUS':
+      // event-dispatcher.ts가 세션에 이벤트를 보낸 뒤, 마지막으로 보낸 상태를 기록할 때 호출
+      return {
+        ...state,
+        lastInjectedStatus: action.status,
+      };
+
     case 'RESET_TRIP':
       // TRIP_DONE, CANCELLED, TRIP_NOT_FOUND 발생 시 호출 — 다음 운행을 위해 초기화
       return {

@@ -1,9 +1,13 @@
-import React, { useRef } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
+import React, { useRef, useState, useEffect } from 'react';
+import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator } from 'react-native';
 import * as Speech from 'expo-speech';
 import { useFocusEffect } from '@react-navigation/native';
 import { apiClient, ApiError } from '../api/client';
 import { useTrip } from '../state/TripContext';
+import { sendStopRequest, subscribeBellResult, disconnect } from '../ble/bleManager';
+
+// 정민님 확인(2026-08-12): 하차벨 응답을 못 받을 경우를 대비한 대기 시간
+const BELL_RESULT_TIMEOUT_MS = 10000;
 
 export default function AlightScreen({ route, navigation }) {
   // RidingScreen에서 전달받은 값들
@@ -14,6 +18,7 @@ export default function AlightScreen({ route, navigation }) {
   const { tripId, bellRequestId, command, guideMessage } = route.params;
   const resultSentRef = useRef(false); // 중복 전송 방지
   const { dispatch } = useTrip();
+  const [waitingForBell, setWaitingForBell] = useState(true);
 
   useFocusEffect(
     React.useCallback(() => {
@@ -23,7 +28,7 @@ export default function AlightScreen({ route, navigation }) {
         Speech.speak(ttsMessage, {
           language: 'ko',
           onDone: () => {
-            sendBellResult();
+            requestActualBellStop();
           },
         });
       }, 500);
@@ -35,13 +40,47 @@ export default function AlightScreen({ route, navigation }) {
     }, [])
   );
 
+  // 실제 하차벨(BLE)에 STOP_REQUEST를 전송하고, 결과(Notify)를 구독해서 받는다.
+  // (2026-08-12, GitHub 리뷰 2번 반영: mock 고정값 대신 실제 BLE 결과 사용)
+  const requestActualBellStop = () => {
+    let unsubscribe = () => {};
+    let timeoutId;
+
+    const handleBellResult = (result) => {
+      clearTimeout(timeoutId);
+      unsubscribe();
+      setWaitingForBell(false);
+      sendBellResult(result.result === 'SUCCESS' ? 'SUCCESS' : 'FAIL', false);
+    };
+
+    try {
+      unsubscribe = subscribeBellResult(handleBellResult);
+
+      // 결과를 기다리는 동안 명령 전송
+      sendStopRequest().catch((error) => {
+        console.log('하차벨 명령 전송 실패:', error);
+      });
+
+      // 정해진 시간 내 응답이 없으면, 실제 BLE 연동 없이 진행됐다고 보고 FAIL로 기록
+      timeoutId = setTimeout(() => {
+        unsubscribe();
+        setWaitingForBell(false);
+        sendBellResult('FAIL', false);
+      }, BELL_RESULT_TIMEOUT_MS);
+    } catch (error) {
+      // BLE 연결 자체가 안 되어 있는 경우 — 결과 없이 즉시 FAIL로 기록
+      console.log('하차벨 BLE 연결 실패:', error);
+      setWaitingForBell(false);
+      sendBellResult('FAIL', false);
+    }
+  };
+
   // 하차벨 결과 저장
   // API_SPEC.md 기준: POST /api/trips/{tripId}/bell/result
   // - bellRequestId: 백엔드가 PATCH /status에서 생성한 값 (프론트에서 생성 금지)
   // - command: 백엔드가 반환한 STOP_REQUEST 값
   // - bellStatus: PENDING → SUCCESS 로 변경됨
-  // TODO(Phase 7): 실제 BLE 스마트지팡이 결과로 대체. 현재는 mock 성공 결과를 보낸다.
-  const sendBellResult = async () => {
+  const sendBellResult = async (result, isMock) => {
     if (resultSentRef.current) return; // 중복 전송 방지
     resultSentRef.current = true;
 
@@ -49,9 +88,9 @@ export default function AlightScreen({ route, navigation }) {
       await apiClient.trips.bell.result(tripId, {
         bellRequestId,
         command,
-        result: 'SUCCESS',
-        resultMessage: 'mock 하차벨 작동 성공',
-        isMock: true,
+        result,
+        resultMessage: isMock ? 'mock 하차벨 작동 성공' : '실제 하차벨(BLE) 응답',
+        isMock,
         timestamp: new Date().toISOString(),
       });
     } catch (error) {
@@ -74,8 +113,10 @@ export default function AlightScreen({ route, navigation }) {
     }
   };
 
-  // 처음으로 돌아가기 — 다음 운행을 위해 공유 상태 초기화
+  // 처음으로 돌아가기 — 다음 운행을 위해 공유 상태 초기화, BLE 연결 해제
   const handleGoHome = () => {
+    disconnect('White_cane').catch(() => {});
+    disconnect('BUS_1551_001').catch(() => {});
     dispatch({ type: 'RESET_TRIP' });
     navigation.navigate('Main');
   };
@@ -89,7 +130,14 @@ export default function AlightScreen({ route, navigation }) {
       </Text>
 
       <View style={styles.infoBox}>
-        <Text style={styles.infoText}>✅ 하차벨이 요청되었습니다.</Text>
+        {waitingForBell ? (
+          <>
+            <ActivityIndicator size="small" color="#fff" style={{ marginBottom: 8 }} />
+            <Text style={styles.infoText}>하차벨 응답을 기다리는 중...</Text>
+          </>
+        ) : (
+          <Text style={styles.infoText}>✅ 하차벨이 요청되었습니다.</Text>
+        )}
         <Text style={styles.infoSubText}>안전하게 하차 준비를 해주세요.</Text>
       </View>
 
