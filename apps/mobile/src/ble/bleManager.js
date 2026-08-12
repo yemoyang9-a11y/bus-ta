@@ -6,7 +6,8 @@ const SERVICE_UUID = '4fa45540-8201-11e5-8223-0002a5d5c51b';
 const CHARACTERISTIC_UUID = '4fa45541-8201-11e5-8223-0002a5d5c51b';
 
 const CANE_DEVICE_NAME = 'White_cane';
-const BELL_DEVICE_NAME = 'MOCK_BELL_1551';
+// 정민님 확정(2026-08-12): 이 보드가 버스 비콘+하차벨 겸용이라 이름 하나로 둘 다 처리(MOCK 제거)
+const BELL_DEVICE_NAME = 'BUS_1551_001';
 
 const manager = new BleManager();
 
@@ -55,7 +56,7 @@ export async function connectToCane() {
   return connectByName(CANE_DEVICE_NAME);
 }
 
-/** 하차벨(MOCK_BELL_1551)에 연결한다. */
+/** 하차벨(BUS_1551_001, 버스 비콘 겸용)에 연결한다. */
 export async function connectToBell() {
   return connectByName(BELL_DEVICE_NAME);
 }
@@ -83,7 +84,7 @@ async function writeCommand(deviceName, payload) {
 
 /**
  * 지팡이에 타겟 비콘을 지정한다.
- * @param {string} targetBeaconId - 형식: MOCK_BUS_노선번호_차량번호 (백엔드 beacons API 응답값 그대로 사용)
+ * @param {string} targetBeaconId - 서버 beacons API 응답의 targetBeaconId 그대로 사용 (예: BUS_1551_001)
  */
 export async function setTargetBeacon(targetBeaconId) {
   const payload = JSON.stringify({ cmd: 'SET_TARGET_BEACON', target: targetBeaconId });
