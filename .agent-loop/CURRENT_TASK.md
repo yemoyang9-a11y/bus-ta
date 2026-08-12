@@ -1,3 +1,119 @@
+# Task 24: FIX-GBIS-ARRIVAL-DUPLICATE-ROUTEID
+
+- 작업 식별자: `FIX-GBIS-ARRIVAL-DUPLICATE-ROUTEID`
+- 관련 명세: 「공통 API 및 Function Calling 명세서」 **5.2-A**(도착 차량 정보). 계약 변경은 없다 — 계약대로 채워지지 않는 결함을 고친다.
+- 현재 상태: **`READY`** (2026-08-12 선정, 착수 전). **1단계는 조사다** — 방향 판별 수단을 확정한 뒤 구현한다.
+- **⚠️ 이 결함은 이미 배포된 코드에 있다.** 방향이 틀린 도착정보를 낼 수 있어 우선순위가 높다.
+- 현재 재시도 횟수: `0`
+- 기준선: 서버 테스트 **128/128 pass**(2026-08-11 Task 23-A 시점 실측. 착수 시 재확인할 것)
+- 운영 DB 쓰기: **없음.** 마이그레이션도 만들지 않는다.
+- worktree: `C:/Users/yemoy/bta-gbis`(OneDrive 밖 짧은 경로, node_modules 설치됨). **`claude` 최신 SHA 기준으로 새 브랜치를 딴다.**
+
+## 왜 이것을 다음 작업으로 골랐나
+
+명세서상 남은 구현 항목은 없다. 이 결함은 PR #14 시절부터 "범위 밖·미착수"로 등록만 돼 있었으나,
+**PR #20이 `arrivals`·`occupancy`를 출시하면서 그 기능을 직접 갉아먹는 위치가 됐다.**
+승인 없이 착수 가능한 유일한 실질 코드 작업이기도 하다.
+
+## 결함 (2026-08-12 fixture 실측 + Codex 리뷰 P1 반영으로 재정의)
+
+`getArrivalInfo()`(`apps/server/src/adapters/routes/hyorin-route-search.adapter.ts:335`)가
+`busArrivalList.find(a => String(a.routeId) === String(localBusId))`로 **첫 일치 항목**을 고른다.
+
+**중복 `routeId`는 "같은 버스가 두 번 실린 것"이 아니라 방향이 다른 별개 레코드다.**
+회차 노선이 같은 정류장을 두 방향으로 지나기 때문이다. 실측:
+
+```text
+routeId=233000281 (205), stationId=233000575
+  항목0: routeDestName=동탄파크릭스    staOrder=11   turnSeq=66  predictTime1=""      ← .find() 가 고름
+  항목1: routeDestName=경기고속차고지  staOrder=128  turnSeq=66  predictTime1=15/88
+routeId=233000268 (200), stationId=233000575
+  항목0: routeDestName=반도10차        staOrder=11   turnSeq=64  predictTime1=""      ← .find() 가 고름
+  항목1: routeDestName=경기고속차고지  staOrder=123  turnSeq=64  predictTime1=43
+```
+
+근거 파일: `apps/server/src/adapters/routes/__fixtures__/gbis-bus-arrival-list-station-233000575.json`.
+
+**따라서 결함은 두 겹이다.**
+
+1. **방향을 전혀 보지 않는다(진짜 결함, 안전 문제).** 첫 일치 레코드가 사용자 진행 방향과
+   반대일 수 있고, 그 레코드에 도착정보가 있으면 **반대 방향 버스를 안내한다.**
+   시각장애인 대상 앱에서 이건 정보 누락보다 나쁜 실패다. **이미 배포된 코드의 문제다.**
+2. 위 fixture처럼 반대 방향 레코드가 비어 있으면 `arrivals: []`가 나가 도착정보가 통째로 누락된다.
+   `occupancy`도 함께 사라지고, 예외도 502도 아니라 **로그에 드러나지 않는다.**
+
+> **⚠️ "`predictTime1`이 유효한 항목을 고른다"는 규칙을 쓰지 마라.**
+> 2026-08-12 최초 초안이 이 규칙이었고 Codex 리뷰가 P1으로 잡았다. 도착정보의 존재 여부를
+> 방향 선택자로 쓰는 셈이라, 사용자 방향에 마침 차가 없을 때 **반대 방향 차를 안내한다.**
+
+## 작업 범위
+
+**1단계 — 방향 판별 수단 확정 (조사, 승인 없이 가능. 이것부터 한다)**
+
+방향을 가릴 근거가 무엇인지 먼저 확정한다. 지금 확인된 재료:
+
+- `Route`(`packages/shared/src/types/route.ts`)에 `boardingStation`·`destinationStation`·`stationList`가 있다.
+  **ODsay `stationList`는 사용자 진행 순서**이므로 방향 정보 자체는 서버가 이미 갖고 있다.
+- 그러나 `getArrivalInfo(selectedCandidate)`는 `Pick<Route, "gbisStationId" | "localBusId">`만 받아
+  **방향 정보가 어댑터 경계까지 오지 않는다.**
+- GBIS 레코드 쪽 후보 키: `routeDestName`(그 방향의 종점), `staOrder`(정류장 순번), `turnSeq`(회차 순번).
+  `staOrder`와 `turnSeq`의 대소로 회차 전/후를 가르는 것이 성립하는지 **실측으로 확인해야 한다**(현재 미확인).
+
+산출물은 "무엇으로 방향을 가르는가"에 대한 근거 있는 답이다. **추정으로 규칙을 굳히지 않는다**
+(Task 23-A에서 정확히 그 실수를 했다).
+
+**2단계 — 구현**
+
+1단계에서 확정된 규칙으로 `getArrivalInfo()`가 선택 후보의 방향에 맞는 레코드를 고른다.
+어댑터 시그니처와 호출부(`create-trip.service.ts`) 변경이 필요할 수 있다.
+
+**안전 기본값(필수)**: 방향을 확정할 수 없으면 **`arrivals: []`를 낸다.**
+Task 23이 세운 원칙과 같다 — 접근성 앱에서 틀린 안내는 정보 누락보다 나쁘다.
+
+## 수정 가능 파일
+
+1. `apps/server/src/adapters/routes/hyorin-route-search.adapter.ts` — `getArrivalInfo()`의 선택 로직
+2. `apps/server/src/adapters/routes/hyorin-route-search.adapter.test.ts` — 아래 기존 테스트 갱신 + 회귀 테스트 추가
+
+## 수정 금지 범위
+
+- `OccupancySchema`·`ArrivalInfoSchema`·`CreateTripResponseSchema` 등 **계약 변경 금지.** 이번 건은 계약을 채우는 문제다.
+- `toOccupancy()`의 `routeTypeCd` 분기(Task 23-A 결과)에 손대지 않는다.
+- 좌석형 `crowded` fallback을 넣지 않는다 — **여전히 데이터가 부족하다**(아래 Task 23-A의 미해결 후속 참고).
+- Supabase 마이그레이션·공개 API 신설·운영 DB 쓰기 금지.
+- `search_routes` 응답 계약을 건드리지 않는다.
+
+## 구현 완료 조건
+
+1. **방향 판별 근거가 문서화돼 있다** — 무엇으로 방향을 갈랐는지, 그 근거가 실측인지 공식 문서인지 명시.
+2. 중복 `routeId`가 있을 때 **사용자 진행 방향의 레코드**를 고른다.
+   - `233000575`에서 **경기고속차고지 방향**을 탈 때 `205`는 `predictTime` **15·88**, `200`은 **43**을 반환한다.
+   - **동탄파크릭스/반도10차 방향**을 탈 때는 그 방향 레코드가 비어 있으므로 **`arrivals: []`**가 맞다.
+     반대 방향의 15·88·43을 여기에 내보내면 **실패다.**
+3. 방향을 확정할 수 없으면 `arrivals: []`이고 운행 생성은 201로 성공한다.
+4. 중복이 없는 노선들의 기존 결과가 **하나도 바뀌지 않는다.**
+5. `occupancy` 변환 결과는 선택된 레코드 기준으로 따라 움직인다(별도 규칙 신설 없음).
+
+## 테스트 조건
+
+- TDD. **먼저 기존 테스트를 확인할 것** — Task 23-A가 현재(결함) 동작을 고정하는 테스트를 일부러 넣어 뒀다:
+  `apps/server/src/adapters/routes/hyorin-route-search.adapter.test.ts:544`
+  「같은 routeId 가 중복으로 오면 첫 항목만 보고 [] 를 반환한다 (선재 이슈, 미수정)」.
+  **이번 수정으로 깨지는 것이 정상이며, 기댓값을 실제 도착 정보로 갱신한다**(테스트 주석에 그렇게 하라고 적혀 있다).
+  같은 파일 `:501`의 다른 테스트는 이 두 `routeId`를 일부러 제외해 두었으니 함께 확인한다.
+- 실제 캡처 fixture를 근거로 쓴다. **두 방향을 각각 테스트한다** — 도착정보가 있는 방향과 없는 방향
+  둘 다 넣어, 없는 방향에서 반대 방향 값이 새지 않는 것을 회귀 테스트로 고정한다.
+- 합성 케이스는 "방향 판별 불가" 경로에만 쓴다.
+- 기존 128개 중 위 고정 테스트를 제외한 나머지가 깨지지 않아야 한다.
+- `node --import tsx --test $(find src -name '*.test.ts')` (apps/server), `pnpm -r typecheck`, 서버 build 통과.
+
+## 참고
+
+- 이 Task는 코드 작업만으로 닫힌다. 운영 검증·PR 병합은 사용자 몫이다.
+- 착수 전 `git log origin/claude/nice-archimedes-iv7iu0 -1`로 최신 SHA를 다시 확인한다.
+
+---
+
 # Task 23-A: FIX-GBIS-OCCUPANCY-ROUTETYPE-GATING (Task 23 후속 정정, 같은 브랜치)
 
 - 작업 식별자: `FIX-GBIS-OCCUPANCY-ROUTETYPE-GATING`
