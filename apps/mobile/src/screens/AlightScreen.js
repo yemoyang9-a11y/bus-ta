@@ -1,4 +1,4 @@
-import React, { useRef, useState, useEffect } from 'react';
+import React, { useRef, useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator } from 'react-native';
 import * as Speech from 'expo-speech';
 import { useFocusEffect } from '@react-navigation/native';
@@ -20,8 +20,16 @@ export default function AlightScreen({ route, navigation }) {
   const { dispatch } = useTrip();
   const [waitingForBell, setWaitingForBell] = useState(true);
 
+  // 예모님 코멘트 6번(2026-08-13): 화면을 벗어나도 타이머·구독이 남아있어
+  // 뒤늦게 FAIL이 전송되는 문제 방지 — ref로 관리해서 언마운트 시 정리한다.
+  const unsubscribeRef = useRef(() => {});
+  const timeoutIdRef = useRef(null);
+  const isMountedRef = useRef(true);
+
   useFocusEffect(
     React.useCallback(() => {
+      isMountedRef.current = true;
+
       const timer = setTimeout(() => {
         // 하차 안내 화면 전용 TTS 문장 (탑승 중 화면과 중복되지 않도록 별도 문장 사용)
         const ttsMessage = '하차벨을 요청했습니다. 안전하게 하차하세요.';
@@ -36,6 +44,14 @@ export default function AlightScreen({ route, navigation }) {
       return () => {
         clearTimeout(timer);
         Speech.stop();
+
+        // 화면을 벗어나면 타이머·구독 정리, 이후 콜백이 상태를 건드리지 않도록 표시
+        isMountedRef.current = false;
+        if (timeoutIdRef.current) {
+          clearTimeout(timeoutIdRef.current);
+          timeoutIdRef.current = null;
+        }
+        unsubscribeRef.current();
       };
     }, [])
   );
@@ -43,18 +59,19 @@ export default function AlightScreen({ route, navigation }) {
   // 실제 하차벨(BLE)에 STOP_REQUEST를 전송하고, 결과(Notify)를 구독해서 받는다.
   // (2026-08-12, GitHub 리뷰 2번 반영: mock 고정값 대신 실제 BLE 결과 사용)
   const requestActualBellStop = () => {
-    let unsubscribe = () => {};
-    let timeoutId;
-
     const handleBellResult = (result) => {
-      clearTimeout(timeoutId);
-      unsubscribe();
+      if (timeoutIdRef.current) {
+        clearTimeout(timeoutIdRef.current);
+        timeoutIdRef.current = null;
+      }
+      unsubscribeRef.current();
+      if (!isMountedRef.current) return; // 화면을 이미 벗어났으면 상태·전송 처리하지 않음
       setWaitingForBell(false);
       sendBellResult(result.result === 'SUCCESS' ? 'SUCCESS' : 'FAIL', false);
     };
 
     try {
-      unsubscribe = subscribeBellResult(handleBellResult);
+      unsubscribeRef.current = subscribeBellResult(handleBellResult);
 
       // 결과를 기다리는 동안 명령 전송
       sendStopRequest().catch((error) => {
@@ -62,14 +79,16 @@ export default function AlightScreen({ route, navigation }) {
       });
 
       // 정해진 시간 내 응답이 없으면, 실제 BLE 연동 없이 진행됐다고 보고 FAIL로 기록
-      timeoutId = setTimeout(() => {
-        unsubscribe();
+      timeoutIdRef.current = setTimeout(() => {
+        unsubscribeRef.current();
+        if (!isMountedRef.current) return; // 화면을 이미 벗어났으면 상태·전송 처리하지 않음
         setWaitingForBell(false);
         sendBellResult('FAIL', false);
       }, BELL_RESULT_TIMEOUT_MS);
     } catch (error) {
       // BLE 연결 자체가 안 되어 있는 경우 — 결과 없이 즉시 FAIL로 기록
       console.log('하차벨 BLE 연결 실패:', error);
+      if (!isMountedRef.current) return;
       setWaitingForBell(false);
       sendBellResult('FAIL', false);
     }
@@ -115,6 +134,11 @@ export default function AlightScreen({ route, navigation }) {
 
   // 처음으로 돌아가기 — 다음 운행을 위해 공유 상태 초기화, BLE 연결 해제
   const handleGoHome = () => {
+    if (timeoutIdRef.current) {
+      clearTimeout(timeoutIdRef.current);
+      timeoutIdRef.current = null;
+    }
+    unsubscribeRef.current();
     disconnect('White_cane').catch(() => {});
     disconnect('BUS_1551_001').catch(() => {});
     dispatch({ type: 'RESET_TRIP' });

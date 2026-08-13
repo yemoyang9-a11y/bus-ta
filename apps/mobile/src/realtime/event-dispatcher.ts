@@ -48,27 +48,26 @@ function buildStatusChangeEvent(
 }
 
 /**
- * TripContext의 최신 상태를 확인해서, 변화가 있으면 세션에 시스템 이벤트를 주입하고
- * lastInjectedStatus를 갱신한다. 변화가 없으면 아무것도 하지 않는다.
+ * 방금 받은 최신 상태(nextStatus)를 이전에 세션에 보낸 상태와 비교해서,
+ * 변화가 있으면 세션에 시스템 이벤트를 주입하고 lastInjectedStatus를 갱신한다.
  *
- * @param context - RealtimeGuideContext (getAppState/dispatchAppAction 창구)
+ * (2026-08-13, 예모님 코멘트 2번 반영) TripContext를 다시 읽지 않고,
+ * 호출부(RidingScreen)가 방금 서버에서 받은 데이터를 직접 넘겨받아 사용한다.
+ * React state의 dispatch는 비동기라, dispatch 직후 context.getAppState()를
+ * 호출하면 아직 갱신되지 않은 오래된 상태를 읽을 위험이 있기 때문이다.
+ *
+ * @param context - RealtimeGuideContext (lastInjectedStatus 조회·갱신에 사용)
+ * @param nextStatus - 방금 서버에서 받은 최신 상태
  * @param sendSystemEvent - 세션에 이벤트를 실제로 전송하는 함수 (session.ts가 제공)
  */
 export function checkAndDispatchStatusChange(
   context: RealtimeGuideContext,
+  nextStatus: TripStatusSnapshot,
   sendSystemEvent: (event: TripStatusChangedEvent) => void,
 ) {
-  const appState = context.getAppState();
+  const prevStatus = context.getAppState().lastInjectedStatus;
 
-  const nextStatus: TripStatusSnapshot = {
-    tripStatus: appState.tripStatus,
-    remainingStations: appState.remainingStations,
-    currentStation: appState.currentStation,
-    bellStatus: appState.bellStatus,
-    guideMessage: appState.guideMessage,
-  };
-
-  const event = buildStatusChangeEvent(appState.lastInjectedStatus, nextStatus);
+  const event = buildStatusChangeEvent(prevStatus, nextStatus);
   if (!event) return;
 
   sendSystemEvent(event);

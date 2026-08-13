@@ -7,6 +7,7 @@ import type {
   RealtimeGuideContext,
   RealtimeTransport,
   TripStatusChangedEvent,
+  TripStatusSnapshot,
 } from "./types";
 import { getRealtimeSharedSecret } from "./runtime-config";
 import { RealtimeWebRTCTransport } from "./webrtc-transport";
@@ -55,14 +56,16 @@ export class HaneumRealtimeSession {
   }
 
   /**
-   * TripContext의 최신 상태를 확인해서, 변화가 있으면 세션에 시스템 이벤트를 주입한다.
-   * RidingScreen 등에서 GPS 응답을 받을 때마다 호출한다.
+   * 방금 서버에서 받은 최신 상태(nextStatus)를 세션에 알린다.
+   * RidingScreen이 PATCH /status 응답(data)을 받는 즉시, dispatch 결과를 기다리지 않고
+   * 이 값을 직접 넘겨서 호출한다. (2026-08-13, 예모님 코멘트 2번 반영)
+   *
    * 연결 전(this.transport가 없음)이면 아무것도 하지 않는다.
    */
-  notifyStatusChange() {
+  notifyStatusChange(nextStatus: TripStatusSnapshot) {
     if (!this.transport) return;
 
-    checkAndDispatchStatusChange(this.context, (event: TripStatusChangedEvent) => {
+    checkAndDispatchStatusChange(this.context, nextStatus, (event: TripStatusChangedEvent) => {
       this.transport?.send({
         type: "conversation.item.create",
         item: {
@@ -74,6 +77,16 @@ export class HaneumRealtimeSession {
               text: JSON.stringify(event),
             },
           ],
+        },
+      });
+
+      // 예모님 코멘트 3번(2026-08-13): 상태 메시지만 보내면 AI가 응답을 생성하지 않는다.
+      // Function 결과 처리와 마찬가지로 response.create를 이어서 보내야 음성 안내가 생성된다.
+      this.transport?.send({
+        type: "response.create",
+        response: {
+          instructions:
+            "방금 전달된 운행 상태 변화만 근거로 사용자에게 짧고 명확한 한국어 음성 안내를 생성한다. 내부 식별자와 오류 코드는 그대로 읽지 않는다.",
         },
       });
     });

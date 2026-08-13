@@ -132,9 +132,15 @@ export default function RidingScreen({ route, navigation }) {
 
       setStatus(data);
       dispatch({ type: 'UPDATE_TRIP_STATUS', status: data });
-      // TripContext가 최신 상태로 갱신된 직후, RESET_TRIP 전에 세션에 변화를 알린다.
-      // (GitHub 코멘트 4번: RESET_TRIP이 먼저 호출되면 마지막 상태 전달이 안 될 수 있음)
-      session?.notifyStatusChange();
+      // dispatch는 비동기라, TripContext를 다시 읽지 않고 방금 받은 data를 직접 넘긴다.
+      // (예모님 코멘트 2번, 2026-08-13 반영)
+      session?.notifyStatusChange({
+        tripStatus: data.tripStatus,
+        remainingStations: data.remainingStations,
+        currentStation: data.currentStation,
+        bellStatus: data.bellStatus,
+        guideMessage: data.guideMessage,
+      });
 
       // 9.2: 종료된 운행이면 전송 중단
       if (data.tripStatus === 'TRIP_DONE' || data.tripStatus === 'CANCELLED') {
@@ -150,7 +156,13 @@ export default function RidingScreen({ route, navigation }) {
             const latest = await apiClient.trips.getStatus(tripId);
             setStatus(latest);
             dispatch({ type: 'UPDATE_TRIP_STATUS', status: latest });
-            session?.notifyStatusChange();
+            session?.notifyStatusChange({
+              tripStatus: latest.tripStatus,
+              remainingStations: latest.remainingStations,
+              currentStation: latest.currentStation,
+              bellStatus: latest.bellStatus,
+              guideMessage: latest.guideMessage,
+            });
           } catch {
             // 최신 상태 조회도 실패하면 오류 화면으로
           }
