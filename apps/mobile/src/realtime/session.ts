@@ -79,7 +79,16 @@ export class HaneumRealtimeSession {
       return;
     }
 
-    if (value.type === "response.done" || value.type === "error") {
+    if (value.type === "response.done") {
+      // 예모님 코멘트 4번(2026-08-13): 원인 파악을 위해 로그로 남긴다.
+      console.log("[Realtime] response.done:", JSON.stringify(value));
+      this.isResponseActive = false;
+      this.flushPendingResponse();
+      return;
+    }
+
+    if (value.type === "error") {
+      console.log("[Realtime] error event:", JSON.stringify(value));
       this.isResponseActive = false;
       this.flushPendingResponse();
     }

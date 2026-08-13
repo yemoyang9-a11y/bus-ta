@@ -3,6 +3,7 @@ import {
   RTCPeerConnection,
   RTCSessionDescription,
   type MediaStream,
+  type MediaStreamTrack,
 } from "react-native-webrtc";
 import type { RealtimeTransport } from "./types";
 
@@ -46,7 +47,7 @@ export class RealtimeWebRTCTransport implements RealtimeTransport {
       mediaStream = await mediaDevices.getUserMedia({ audio: true, video: false });
       const dataChannel = peerConnection.createDataChannel("oai-events") as unknown as RealtimeDataChannel;
 
-      mediaStream.getTracks().forEach((track) => {
+      mediaStream.getTracks().forEach((track: MediaStreamTrack) => {
         peerConnection.addTrack(track, mediaStream as MediaStream);
       });
 
@@ -97,7 +98,7 @@ export class RealtimeWebRTCTransport implements RealtimeTransport {
     } catch (error) {
       // 예모님 코멘트 1번 추가 사항: 실패 시 만들어둔 리소스를 정리한다.
       // 지금까지는 예외 경로에서 close()가 실행되지 않아 peer connection·마이크 stream이 남아있었다.
-      mediaStream?.getTracks().forEach((track) => track.stop());
+      mediaStream?.getTracks().forEach((track: MediaStreamTrack) => track.stop());
       peerConnection.close();
       throw error;
     }
@@ -134,7 +135,7 @@ export class RealtimeWebRTCTransport implements RealtimeTransport {
 
   close() {
     this.dataChannel?.close();
-    this.mediaStream?.getTracks().forEach((track) => {
+    this.mediaStream?.getTracks().forEach((track: MediaStreamTrack) => {
       track.stop();
     });
     this.peerConnection?.close();
