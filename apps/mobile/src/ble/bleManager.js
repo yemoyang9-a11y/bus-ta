@@ -15,50 +15,74 @@ const manager = new BleManager();
 const connectedDevices = new Map();
 
 /**
- * 지정한 이름의 BLE 기기를 스캔해서 찾은 뒤 연결한다.
- * @param {string} deviceName - CANE_DEVICE_NAME 또는 BELL_DEVICE_NAME
- * @returns {Promise<import('react-native-ble-plx').Device>}
+ * 여러 개의 device name을 한 번의 스캔으로 동시에 찾아서 연결한다.
+ * (예모님 코멘트 3번, 2026-08-13 반영)
+ * BleManager 인스턴스가 하나뿐이라 startDeviceScan을 두 번 부르면 서로의
+ * stopDeviceScan()이 충돌하던 문제를, 스캔 자체를 한 번만 실행하는 방식으로 해결한다.
+ *
+ * @param {string[]} deviceNames - 찾을 기기 이름 목록
+ * @returns {Promise<Map<string, import('react-native-ble-plx').Device>>} 이름별 연결 결과
+ *   연결 성공한 기기만 담기고, 실패(타임아웃 등)한 기기는 결과에서 빠진다.
  */
-function connectByName(deviceName) {
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
+function connectByNames(deviceNames) {
+  return new Promise((resolve) => {
+    const remaining = new Set(deviceNames);
+    const found = new Map();
+    let settled = false;
+
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
       manager.stopDeviceScan();
-      reject(new Error(`BLE_SCAN_TIMEOUT: ${deviceName}을(를) 10초 내에 찾지 못했습니다.`));
-    }, 10000);
+      resolve(found);
+    };
+
+    const timeout = setTimeout(finish, 10000);
 
     manager.startDeviceScan([SERVICE_UUID], null, async (error, device) => {
       if (error) {
-        clearTimeout(timeout);
-        manager.stopDeviceScan();
-        reject(error);
+        finish();
         return;
       }
 
-      if (device?.name === deviceName) {
-        clearTimeout(timeout);
-        manager.stopDeviceScan();
+      if (device?.name && remaining.has(device.name)) {
+        remaining.delete(device.name);
 
         try {
           const connected = await device.connect();
           await connected.discoverAllServicesAndCharacteristics();
-          connectedDevices.set(deviceName, connected);
-          resolve(connected);
-        } catch (connectError) {
-          reject(connectError);
+          connectedDevices.set(device.name, connected);
+          found.set(device.name, connected);
+        } catch {
+          // 연결 실패한 기기는 found에 담지 않는다. 호출부가 개별 처리.
+        }
+
+        if (remaining.size === 0) {
+          finish();
         }
       }
     });
   });
 }
 
-/** 스마트지팡이(White_cane)에 연결한다. */
-export async function connectToCane() {
-  return connectByName(CANE_DEVICE_NAME);
+/**
+ * 지팡이·하차벨을 한 번의 스캔으로 동시에 연결한다.
+ * 각 기기별 성공/실패 여부를 개별적으로 반환하므로, 호출부는 필요한 기기가
+ * 연결됐는지 결과 Map으로 확인해야 한다.
+ */
+export async function connectAll() {
+  return connectByNames([CANE_DEVICE_NAME, BELL_DEVICE_NAME]);
 }
 
-/** 하차벨(BUS_1551_001, 버스 비콘 겸용)에 연결한다. */
-export async function connectToBell() {
-  return connectByName(BELL_DEVICE_NAME);
+/** 스마트지팡이(White_cane) 연결 여부를 확인한다. */
+export function isCaneConnected() {
+  return connectedDevices.has(CANE_DEVICE_NAME);
+}
+
+/** 하차벨(BUS_1551_001, 버스 비콘 겸용) 연결 여부를 확인한다. */
+export function isBellConnected() {
+  return connectedDevices.has(BELL_DEVICE_NAME);
 }
 
 /**

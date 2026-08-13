@@ -9,6 +9,18 @@ import { sendStopRequest, subscribeBellResult, disconnect } from '../ble/bleMana
 // 정민님 확인(2026-08-12): 하차벨 응답을 못 받을 경우를 대비한 대기 시간
 const BELL_RESULT_TIMEOUT_MS = 10000;
 
+// 예모님 코멘트 5번(2026-08-13): 성공·실패·타임아웃을 화면·음성에서 구분해 안내한다.
+const BELL_OUTCOME_TEXT = {
+  waiting: '하차벨 응답을 기다리는 중...',
+  success: '✅ 하차벨이 정상적으로 작동했습니다.',
+  fail: '⚠️ 하차벨 응답을 받지 못했습니다. 기사님께 직접 말씀해주세요.',
+};
+
+const BELL_OUTCOME_TTS = {
+  success: '하차벨이 정상적으로 작동했습니다.',
+  fail: '하차벨 응답을 받지 못했습니다. 기사님께 직접 말씀해주세요.',
+};
+
 export default function AlightScreen({ route, navigation }) {
   // RidingScreen에서 전달받은 값들
   // - tripId: 운행 ID
@@ -17,8 +29,8 @@ export default function AlightScreen({ route, navigation }) {
   // - guideMessage: 백엔드 안내 문장 (유나 AI 모듈 생성, 탑승 중 화면용 문장)
   const { tripId, bellRequestId, command, guideMessage } = route.params;
   const resultSentRef = useRef(false); // 중복 전송 방지
-  const { dispatch } = useTrip();
-  const [waitingForBell, setWaitingForBell] = useState(true);
+  const { state, dispatch } = useTrip();
+  const [bellOutcome, setBellOutcome] = useState('waiting'); // 'waiting' | 'success' | 'fail'
 
   // 예모님 코멘트 6번(2026-08-13): 화면을 벗어나도 타이머·구독이 남아있어
   // 뒤늦게 FAIL이 전송되는 문제 방지 — ref로 관리해서 언마운트 시 정리한다.
@@ -56,18 +68,28 @@ export default function AlightScreen({ route, navigation }) {
     }, [])
   );
 
+  // 결과를 확정하고, 화면·음성 안내를 결과에 맞게 갱신한 뒤 서버에 전송한다.
+  const finalizeBellOutcome = (outcome, isMock) => {
+    if (!isMountedRef.current) return;
+    setBellOutcome(outcome);
+    Speech.speak(BELL_OUTCOME_TTS[outcome], { language: 'ko' });
+    sendBellResult(outcome === 'success' ? 'SUCCESS' : 'FAIL', isMock);
+  };
+
   // 실제 하차벨(BLE)에 STOP_REQUEST를 전송하고, 결과(Notify)를 구독해서 받는다.
   // (2026-08-12, GitHub 리뷰 2번 반영: mock 고정값 대신 실제 BLE 결과 사용)
   const requestActualBellStop = () => {
+    // 예모님 코멘트 2번(2026-08-13): RouteListScreen이 저장해 둔 실제 isMock 값을 사용한다.
+    // BLE 교신이 0회였는데도 isMock: false로 기록되던 문제를 막는다.
+    const isMock = state.bleIsMock ?? true;
+
     const handleBellResult = (result) => {
       if (timeoutIdRef.current) {
         clearTimeout(timeoutIdRef.current);
         timeoutIdRef.current = null;
       }
       unsubscribeRef.current();
-      if (!isMountedRef.current) return; // 화면을 이미 벗어났으면 상태·전송 처리하지 않음
-      setWaitingForBell(false);
-      sendBellResult(result.result === 'SUCCESS' ? 'SUCCESS' : 'FAIL', false);
+      finalizeBellOutcome(result.result === 'SUCCESS' ? 'success' : 'fail', isMock);
     };
 
     try {
@@ -81,16 +103,12 @@ export default function AlightScreen({ route, navigation }) {
       // 정해진 시간 내 응답이 없으면, 실제 BLE 연동 없이 진행됐다고 보고 FAIL로 기록
       timeoutIdRef.current = setTimeout(() => {
         unsubscribeRef.current();
-        if (!isMountedRef.current) return; // 화면을 이미 벗어났으면 상태·전송 처리하지 않음
-        setWaitingForBell(false);
-        sendBellResult('FAIL', false);
+        finalizeBellOutcome('fail', isMock);
       }, BELL_RESULT_TIMEOUT_MS);
     } catch (error) {
       // BLE 연결 자체가 안 되어 있는 경우 — 결과 없이 즉시 FAIL로 기록
       console.log('하차벨 BLE 연결 실패:', error);
-      if (!isMountedRef.current) return;
-      setWaitingForBell(false);
-      sendBellResult('FAIL', false);
+      finalizeBellOutcome('fail', true); // 연결 자체가 없었으니 명백히 mock
     }
   };
 
@@ -154,13 +172,14 @@ export default function AlightScreen({ route, navigation }) {
       </Text>
 
       <View style={styles.infoBox}>
-        {waitingForBell ? (
+        {bellOutcome === 'waiting' && (
           <>
             <ActivityIndicator size="small" color="#fff" style={{ marginBottom: 8 }} />
-            <Text style={styles.infoText}>하차벨 응답을 기다리는 중...</Text>
+            <Text style={styles.infoText}>{BELL_OUTCOME_TEXT.waiting}</Text>
           </>
-        ) : (
-          <Text style={styles.infoText}>✅ 하차벨이 요청되었습니다.</Text>
+        )}
+        {bellOutcome !== 'waiting' && (
+          <Text style={styles.infoText}>{BELL_OUTCOME_TEXT[bellOutcome]}</Text>
         )}
         <Text style={styles.infoSubText}>안전하게 하차 준비를 해주세요.</Text>
       </View>

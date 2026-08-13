@@ -16,6 +16,7 @@ const initialState = {
   command: null,
   lastFunctionResult: null,   // Phase 5: Function Dispatcher가 마지막으로 처리한 결과
   lastInjectedStatus: null,   // Phase 6: 이벤트 Dispatcher가 마지막으로 세션에 주입한 상태
+  bleIsMock: null,   // 예모님 코멘트 2번(2026-08-13): 하차벨 결과가 실제 BLE 응답인지, mock인지 표시
 };
 
 function tripReducer(state, action) {
@@ -65,6 +66,14 @@ function tripReducer(state, action) {
       return {
         ...state,
         lastInjectedStatus: action.status,
+      };
+
+    case 'SET_BLE_MOCK_STATUS':
+      // RouteListScreen에서 비콘 조회 + BLE 연결 시도 후 호출
+      // 서버가 알려준 isMock과 실제 BLE 연결 성공 여부를 조합한 최종값을 저장
+      return {
+        ...state,
+        bleIsMock: action.isMock,
       };
 
     case 'RESET_TRIP':
