@@ -80,6 +80,31 @@ Function은 사용자 의도를 처리하는 경로다. 자동 GPS·하차벨 �
 
 > 일반형시내버스 응답에도 `remainSeatCnt = 0`이 실려 오지만 그 노선유형은 이 필드의 대상이 아니다. 노선유형을 보지 않고 값만으로 판정하면 **여유로운 시내버스를 만석으로 안내**하거나, 반대로 **실제 만석인 좌석형 버스의 `0`을 정보 없음으로 잘못 접는다.** 근거는 GBIS 공유서비스 「버스 도착정보 항목조회」 매뉴얼이다.
 
+## 비콘 조회
+
+`GET /api/beacons?routeNo=`은 노선별 ESP32 비콘 식별자를 반환한다. 응답 계약은 `packages/shared`의 beacon Schema를 단일 출처로 사용한다.
+
+| 필드 | 타입 | 설명 |
+| --- | --- | --- |
+| `routeNo` | string | 요청한 노선 번호 |
+| `targetBeaconId` | string | 앱이 스마트지팡이에 `SET_TARGET_BEACON`으로 넘기는 값. **ESP32가 BLE로 광고하는 device name과 정확히 같아야 한다** |
+| `isMock` | boolean | 실물 비콘이면 `false`, mock이면 `true` |
+
+`targetBeaconId` 형식은 두 가지다. 값 자체에 대한 형식 검증은 하지 않으므로(`z.string()`), 아래는 운영 규칙이다.
+
+| 종류 | 형식 | `isMock` |
+| --- | --- | --- |
+| 실물 ESP32 | `BUS_{routeToken}_{vehicleToken}` (예: `BUS_1551_001`) | `false` |
+| mock | `MOCK_BUS_{routeToken}_{vehicleToken}` (예: `MOCK_BUS_7002_001`) | `true` |
+
+> `targetBeaconId`가 펌웨어의 광고 이름과 어긋나면 지팡이가 존재하지 않는 이름을 스캔해 **탑승 안내 진동이 아예 울리지 않는다.** 값은 예외도 오류도 내지 않으므로 로그에 드러나지 않는다. 펌웨어 `DEVICE_NAME`을 바꾸면 `bus_beacons.target_beacon_id`와 `packages/shared/src/fixtures/demo-beacon.ts`를 같은 변경 단위에서 함께 맞춘다.
+>
+> 시연 노선 `1551`은 2026-08-14부터 실물 비콘(`BUS_1551_001`, `isMock: false`)이다.
+
+`isMock`은 서버 로직 분기에 쓰이지 않고 응답 필드로만 나간다. 앱은 이 값과 실제 BLE 연결 성공 여부를 함께 보고 `POST /api/trips/{tripId}/bell/result`의 `isMock`을 정한다.
+
+상태 코드는 `200`(조회 성공) · `400`(`routeNo` 누락) · `404`(`BEACON_NOT_FOUND`) · `500`(`DB_ERROR`)이다.
+
 ## Realtime 세션
 
 `POST /api/realtime/session`은 백엔드가 OpenAI `POST /v1/realtime/client_secrets`를 호출해 단기 키를 반환하는 계약이다. 요청에는 `session.model`과 `expires_after`만 전달하고, `instructions`와 `tools`는 WebRTC 연결 후 앱이 설정한다. 장기 OpenAI API 키는 앱 번들에 포함하지 않고, 공유 비밀은 `EXPO_PUBLIC_`로 노출하지 않는다.

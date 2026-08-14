@@ -97,13 +97,13 @@
 - 우선순위: 높음
 - 구현 상태: 확인 필요
 
-## mock 비콘 조회
+## 비콘 조회
 
-- 기능 설명: 중간평가에서 노선별 mock 비콘 ID를 반환한다.
+- 기능 설명: 노선별 `targetBeaconId`를 반환한다. 실물 ESP32 비콘이 준비된 노선은 실물 ID를, 아직 준비되지 않은 노선은 mock ID를 반환한다.
 - 입력값: `routeNo`
-- 처리 내용: `MOCK_BUS_{routeToken}_{vehicleToken}` 형식의 `targetBeaconId` 반환
+- 처리 내용: 실물은 `BUS_{routeToken}_{vehicleToken}`(`isMock: false`), mock은 `MOCK_BUS_{routeToken}_{vehicleToken}`(`isMock: true`) 형식의 `targetBeaconId` 반환
 - 출력값: `targetBeaconId`, `isMock`
-- 성공 조건: 예: `MOCK_BUS_7002_001` 형식으로 반환된다.
+- 성공 조건: 예: 시연 노선 `1551`은 `BUS_1551_001`, `isMock: false`로 반환된다(2026-08-14 정렬).
 - 실패 조건: `routeNo` 누락, 매칭 없음
 - 우선순위: 중간
 - 구현 상태: 확인 필요

@@ -42,8 +42,9 @@
 > 판단이 필요한 항목은 여기 대신 `PENDING_DECISIONS.md`에 있다. 결정이 끝나야 착수 가능한 항목은
 > 거기서 먼저 확정한 뒤 이 체크리스트로 옮긴다.
 
-- [ ] `docs/API_SPEC.md`의 `GET /api/beacons?routeNo=` 상태 코드 목록(`200, 400, 404`)에 `500` 추가
+- [x] `docs/API_SPEC.md`의 `GET /api/beacons?routeNo=` 상태 코드 목록(`200, 400, 404`)에 `500` 추가
   - 현재 서비스(`get-beacon.service.ts`)는 이미 500 DB_ERROR를 반환하지만 문서에 누락됨
+  - 2026-08-14: 「비콘 조회」절을 새로 만들면서 `200 · 400 · 404 · 500` 전부 기재
 - [ ] `supabase/migrations/20260716_seed_bus_beacons.sql`의 `on conflict (beacon_id) do nothing`을
       필요 시 `do update set ...`로 보강 검토 (기존 행이 fixture와 값이 어긋나 있어도 갱신되지 않는 문제)
 - [ ] `apps/server/src/repositories/supabase/beacon.repository.ts`와 `trip.repository.ts`에 중복된
@@ -52,9 +53,13 @@
 - [ ] `SupabaseBeaconRepository.findAll`/`findById` — 실사용처가 없으면 인터페이스에서 빼거나,
       실제로 쓸 곳(관리자 조회 등)이 생기면 그때 유지
   - code-review(2026-07-16)에서 발견: 테스트 외 호출처 0건
-- [ ] 정민 ESP32가 실제 `BUS_{routeToken}_{vehicleToken}` 비콘을 방송하기 시작하면
-      `bus_beacons`에 non-mock 행 추가 (현재는 `MOCK_BUS_1551_001` 1건만 시드됨)
-  - 차단 요인: 정민 하드웨어 준비 상태
+- [x] 정민 ESP32가 실제 `BUS_{routeToken}_{vehicleToken}` 비콘을 방송하기 시작하면
+      `bus_beacons`에 non-mock 행 추가
+  - 2026-08-14: 행을 추가하지 않고 **기존 시연 행(`BUSTA-1551-DEMO01`)을 갱신**하는 쪽으로 처리했다.
+    시연 노선이 하나뿐이라 mock 행과 실물 행이 공존하면 `findByRouteNo('1551')`이 어느 쪽을 고를지
+    불확실해지기 때문이다. `20260814023000_align_demo_beacon_to_real_esp32.sql` +
+    `demo-beacon.ts`를 `BUS_1551_001` / `isMock: false`로 정렬.
+  - 원격 DB 적용은 별도 (migration 파일 작성과 적용 상태를 분리해 기록한다)
 
 ## E. 관리·검증
 
