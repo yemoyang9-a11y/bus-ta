@@ -20,9 +20,11 @@ jobs:
       # 셋업 단계에서 실패한다(2026-06-29 이후 CI 가 전부 이 이유로 죽어 있었다).
       - uses: pnpm/action-setup@v4
 
+      # 배포(render.yaml 의 NODE_VERSION)와 같은 22.17.0 을 쓴다.
+      # 20 으로 두면 pnpm 11.7.0 이 node:sqlite 를 찾지 못해 죽는다(>= 22.13 요구).
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22.17.0
           cache: pnpm
 
       - name: Install dependencies
