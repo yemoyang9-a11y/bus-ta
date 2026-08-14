@@ -4,6 +4,9 @@ import * as Speech from 'expo-speech';
 import * as Location from 'expo-location';
 import { useFocusEffect } from '@react-navigation/native';
 import { apiClient, ApiError } from '../api/client';
+import { useTrip } from '../state/TripContext';
+import { useRealtime } from '../realtime/RealtimeProvider';
+import { stopBeaconScan } from '../ble/bleManager';
 
 const INITIAL_STATUS = {
   currentStation: null,
@@ -23,6 +26,9 @@ export default function RidingScreen({ route, navigation }) {
   const bellHandledRef = useRef(false);
   const requestCounterRef = useRef(0);
   const stoppedRef = useRef(false);
+  const stoppingBeaconScanRef = useRef(false); // 예모님 P0-2: 중복 재시도 방지용 진행중 플래그
+  const { state, dispatch } = useTrip();
+  const { session } = useRealtime();
 
   // 최초 진입 안내
   useFocusEffect(
@@ -47,6 +53,34 @@ export default function RidingScreen({ route, navigation }) {
       return () => clearTimeout(timer);
     }
   }, [status.guideMessage, status.remainingStations]);
+
+  // 정민님 확인(2026-08-12): 탑승 완료(WAITING_BUS → ON_BUS 전환) 시 비콘 스캔 중지
+  // "탑승하면 버스 찾는 진동이 필요 없으니까" — 하차벨 STOP_REQUEST와는 별개
+  //
+  // 예모님 코멘트 P0-2(2026-08-14): 이전에는 시도 여부만 기록해서 stopBeaconScan()이
+  // 실패해도 "처리 완료"로 간주되고 재시도가 없었다. 이제 TripContext의
+  // beaconScanActive(RouteListScreen이 스캔 시작 성공 시에만 true로 세팅)를 확인해서,
+  // 스캔이 실제로 켜져 있고 아직 안 껐을 때만 시도하고, 성공했을 때만 false로 바꾼다.
+  // 실패하면 beaconScanActive가 true로 남아있어 다음 GPS 주기(3초 후)에 다시 시도된다.
+  useEffect(() => {
+    if (
+      status.tripStatus === 'ON_BUS' &&
+      state.beaconScanActive &&
+      !stoppingBeaconScanRef.current
+    ) {
+      stoppingBeaconScanRef.current = true;
+      stopBeaconScan()
+        .then(() => {
+          dispatch({ type: 'SET_BEACON_SCAN_ACTIVE', active: false });
+        })
+        .catch((error) => {
+          console.log('비콘 스캔 중지 실패, 다음 주기에 재시도:', error);
+        })
+        .finally(() => {
+          stoppingBeaconScanRef.current = false;
+        });
+    }
+  }, [status.tripStatus, state.beaconScanActive]);
 
   // 1정거장 남았을 때 TTS 출력 후 하차 안내 화면 전환
   // API_SPEC.md 기준:
@@ -114,10 +148,21 @@ export default function RidingScreen({ route, navigation }) {
       });
 
       setStatus(data);
+      dispatch({ type: 'UPDATE_TRIP_STATUS', status: data });
+      // dispatch는 비동기라, TripContext를 다시 읽지 않고 방금 받은 data를 직접 넘긴다.
+      // (예모님 코멘트 2번, 2026-08-13 반영)
+      session?.notifyStatusChange({
+        tripStatus: data.tripStatus,
+        remainingStations: data.remainingStations,
+        currentStation: data.currentStation,
+        bellStatus: data.bellStatus,
+        guideMessage: data.guideMessage,
+      });
 
       // 9.2: 종료된 운행이면 전송 중단
       if (data.tripStatus === 'TRIP_DONE' || data.tripStatus === 'CANCELLED') {
         stoppedRef.current = true;
+        dispatch({ type: 'RESET_TRIP' });
       }
     } catch (error) {
       if (error instanceof ApiError) {
@@ -127,6 +172,14 @@ export default function RidingScreen({ route, navigation }) {
           try {
             const latest = await apiClient.trips.getStatus(tripId);
             setStatus(latest);
+            dispatch({ type: 'UPDATE_TRIP_STATUS', status: latest });
+            session?.notifyStatusChange({
+              tripStatus: latest.tripStatus,
+              remainingStations: latest.remainingStations,
+              currentStation: latest.currentStation,
+              bellStatus: latest.bellStatus,
+              guideMessage: latest.guideMessage,
+            });
           } catch {
             // 최신 상태 조회도 실패하면 오류 화면으로
           }
@@ -134,6 +187,7 @@ export default function RidingScreen({ route, navigation }) {
         }
         if (error.errorCode === 'TRIP_NOT_FOUND') {
           stoppedRef.current = true;
+          dispatch({ type: 'RESET_TRIP' });
           navigation.navigate('Error');
           return;
         }
@@ -144,9 +198,13 @@ export default function RidingScreen({ route, navigation }) {
   };
 
   // 하차 안내 화면으로 이동
+  // 예모님 코멘트 P1-2(2026-08-14): navigate()는 이전 화면을 언마운트하지 않아
+  // GPS 폴링(setInterval)과 TTS가 계속 실행될 수 있다. 화면 전환 직전에 명시적으로 멈춘다.
   const handleAlightNavigation = () => {
     if (bellHandledRef.current) return;
     bellHandledRef.current = true;
+    stoppedRef.current = true;
+    Speech.stop();
 
     navigation.navigate('Alight', {
       tripId,

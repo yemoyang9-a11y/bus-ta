@@ -3,6 +3,8 @@ import { View, Text, TouchableOpacity, StyleSheet, FlatList, ActivityIndicator }
 import * as Speech from 'expo-speech';
 import { useFocusEffect } from '@react-navigation/native';
 import { apiClient, ApiError } from '../api/client';
+import { useTrip } from '../state/TripContext';
+import { connectAll, setTargetBeacon, startBeaconScan } from '../ble/bleManager';
 
 export default function RouteListScreen({ route, navigation }) {
   // ConfirmScreen에서 전달받은 값들
@@ -11,6 +13,7 @@ export default function RouteListScreen({ route, navigation }) {
   // - guideMessage: 유나 AI 모듈이 생성한 안내 문장 (TTS로 출력)
   const { destinationText, routes, guideMessage } = route.params;
   const [loading, setLoading] = useState(false);
+  const { dispatch } = useTrip();
 
   // 화면 진입 시 guideMessage TTS 출력
   useFocusEffect(
@@ -28,10 +31,50 @@ export default function RouteListScreen({ route, navigation }) {
     }, [guideMessage])
   );
 
+  // 정민님 확인(2026-08-12): 노선 선택 후(=여기) BLE 연결 시작, 배터리 절약을 위해
+  // 앱 켤 때가 아니라 실제 필요 시점에 연결한다.
+  // BLE는 보조 기능이라, 실패해도 노선 안내 자체(화면 전환)는 막지 않는다.
+  //
+  // 예모님 코멘트 3번(2026-08-13): BleManager 인스턴스가 하나뿐이라 스캔을 두 번
+  // 따로 시작하면 서로의 stopDeviceScan()이 충돌했다. 스캔을 한 번만 실행해
+  // 두 기기를 동시에 찾는 connectAll()로 변경.
+  //
+  // 예모님 코멘트 P0-2(2026-08-14): 지팡이 스캔이 실제로 시작됐는지 TripContext에
+  // 기록해야, RidingScreen이 stopBeaconScan()을 정확한 시점에만 시도할 수 있다.
+  // setTargetBeacon·startBeaconScan까지 전부 성공했을 때만 beaconScanActive: true로 표시한다.
+  //
+  // @returns {boolean} 하차벨(비콘 겸용) 연결 성공 여부 — AlightScreen에 전달할 isMock 판단에 사용
+  const setupBle = async (targetBeaconId) => {
+    const connected = await connectAll();
+
+    if (connected.has('White_cane')) {
+      try {
+        await setTargetBeacon(targetBeaconId);
+        await startBeaconScan();
+        dispatch({ type: 'SET_BEACON_SCAN_ACTIVE', active: true });
+      } catch (error) {
+        console.log('스마트지팡이 명령 전송 실패:', error);
+      }
+    } else {
+      console.log('스마트지팡이 연결 실패');
+    }
+
+    const bellConnected = connected.has('BUS_1551_001');
+    if (!bellConnected) {
+      console.log('하차벨 연결 실패');
+    }
+    // 예모님 코멘트 P1-1(2026-08-14): 이 구독은 결과를 어디에도 전달하지 않고,
+    // AlightScreen이 sendStopRequest() 호출 전에 이미 자체 구독을 걸기 때문에 안전하게 제거.
+
+    return bellConnected;
+  };
+
   // 노선 선택 시 POST /api/trips 호출 후 탑승 중 화면으로 이동
   const selectRoute = async (selectedRoute) => {
     Speech.stop();
     setLoading(true);
+
+    dispatch({ type: 'SELECT_ROUTE', route: selectedRoute });
 
     try {
       // 공통 API 명세서 5.2 기준 필드만 전달 (guideMessage·recommendationReason 등
@@ -55,6 +98,26 @@ export default function RouteListScreen({ route, navigation }) {
       };
 
       const data = await apiClient.trips.create(tripRequest);
+
+      dispatch({ type: 'START_TRIP', tripId: data.tripId });
+
+      // 예모님 코멘트 5번 반영: BLE 연결은 화면 전환을 기다리지 않는다.
+      // 예모님 코멘트 2번 반영: 서버가 알려준 isMock을 보존해서, 실제 BLE 교신 여부와
+      // 무관하게 무조건 isMock: false로 기록되던 문제를 해결한다.
+      apiClient.beacons
+        .list(selectedRoute.routeNo)
+        .then(async (beaconData) => {
+          const bleConnected = await setupBle(beaconData.targetBeaconId);
+          // 서버 비콘이 mock이 아니고, 실제로 BLE 연결까지 성공했을 때만 "실제 응답"으로 취급
+          dispatch({
+            type: 'SET_BLE_MOCK_STATUS',
+            isMock: beaconData.isMock || !bleConnected,
+          });
+        })
+        .catch((beaconError) => {
+          console.log('비콘 조회 실패:', beaconError);
+          dispatch({ type: 'SET_BLE_MOCK_STATUS', isMock: true });
+        });
 
       navigation.navigate('Riding', { tripId: data.tripId, selectedRoute });
     } catch (error) {

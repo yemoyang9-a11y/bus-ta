@@ -2,7 +2,6 @@ import type {
   CreateTripRequest,
   RealtimeSessionResponse,
   Route,
-  TripStatusResponse,
 } from "@bus-ta/shared";
 
 export type RealtimeFunctionName =
@@ -22,12 +21,56 @@ export type RealtimeTransport = {
   send(event: unknown): void;
 };
 
+// 상태 변화 감지의 대상이 되는 필드만 담은 축소본 (event-dispatcher.ts에서 사용)
+export type TripStatusSnapshot = {
+  tripStatus: string | null;
+  remainingStations: number | null;
+  currentStation: { stationName: string } | null;
+  bellStatus: string;
+  guideMessage: string | null;
+};
+
+// 서버 상태 변화를 세션에 알리는 시스템 이벤트
+export type TripStatusChangedEvent = {
+  type: "trip_status_changed";
+  tripStatus: string | null;
+  remainingStations: number | null;
+  currentStationName: string | null;
+  bellStatus: string;
+  guideMessage: string | null;
+};
+
+// TripContext(state/TripContext.js)의 state 구조와 대응한다.
+export type AppTripState = {
+  destination: string | null;
+  routeCandidates: Route[] | null;
+  selectedRoute: Route | null;
+  tripId: string | null;
+  tripStatus: string | null;
+  currentStation: { stationName: string } | null;
+  nextStation: unknown;
+  remainingStations: number | null;
+  guideMessage: string | null;
+  bellStatus: string;
+  bellRequestId: string | null;
+  command: string | null;
+  lastFunctionResult: unknown;
+  lastInjectedStatus: TripStatusSnapshot | null;
+};
+
+export type AppAction =
+  | { type: "SET_DESTINATION_AND_ROUTES"; destination: string; routes: Route[] }
+  | { type: "SELECT_ROUTE"; route: Route }
+  | { type: "START_TRIP"; tripId: string }
+  | { type: "UPDATE_TRIP_STATUS"; status: unknown }
+  | { type: "RESET_TRIP" }
+  | { type: "SET_LAST_INJECTED_STATUS"; status: TripStatusSnapshot };
+
+// Realtime Dispatcher가 TripContext 상태를 읽고 쓰기 위한 창구.
 export type RealtimeGuideContext = {
-  destination?: string;
-  routes: Route[];
-  selectedRoute?: CreateTripRequest;
-  tripId?: string;
-  tripStatus?: TripStatusResponse["tripStatus"];
+  getAppState(): AppTripState;
+  getCurrentLocation(): { latitude: number; longitude: number } | undefined;
+  dispatchAppAction(action: AppAction): void;
   lastFunctionResult?: unknown;
 };
 
