@@ -57,9 +57,10 @@
       `bus_beacons`에 non-mock 행 추가
   - 2026-08-14: 행을 추가하지 않고 **기존 시연 행(`BUSTA-1551-DEMO01`)을 갱신**하는 쪽으로 처리했다.
     시연 노선이 하나뿐이라 mock 행과 실물 행이 공존하면 `findByRouteNo('1551')`이 어느 쪽을 고를지
-    불확실해지기 때문이다. `20260814023000_align_demo_beacon_to_real_esp32.sql` +
+    불확실해지기 때문이다. `20260814063714_align_demo_beacon_to_real_esp32.sql` +
     `demo-beacon.ts`를 `BUS_1551_001` / `isMock: false`로 정렬.
-  - 원격 DB 적용은 별도 (migration 파일 작성과 적용 상태를 분리해 기록한다)
+  - 2026-08-14 **원격 적용 완료**. `bus_beacons` 1행이 `BUS_1551_001` / `is_mock=false`이고,
+    배포본 `GET /api/beacons?routeNo=1551`도 같은 값을 반환하는 것까지 확인했다.
 
 ## E. 관리·검증
 

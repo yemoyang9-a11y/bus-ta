@@ -9,7 +9,7 @@
  *
  * 2026-08-14: 정민 ESP32 펌웨어(beacon_bell.ino)가 실제로 광고하는 이름에 맞춰
  * MOCK_BUS_1551_001 / isMock: true 에서 BUS_1551_001 / isMock: false 로 정렬했다.
- * DB 쪽 대응 migration 은 supabase/migrations/20260814023000_align_demo_beacon_to_real_esp32.sql.
+ * DB 쪽 대응 migration 은 supabase/migrations/20260814063714_align_demo_beacon_to_real_esp32.sql.
  */
 import { asBeaconId } from "../types/ids.js";
 import type { Beacon } from "../types/beacon.js";
