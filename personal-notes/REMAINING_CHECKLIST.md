@@ -52,9 +52,13 @@
 - [ ] `SupabaseBeaconRepository.findAll`/`findById` — 실사용처가 없으면 인터페이스에서 빼거나,
       실제로 쓸 곳(관리자 조회 등)이 생기면 그때 유지
   - code-review(2026-07-16)에서 발견: 테스트 외 호출처 0건
-- [ ] 정민 ESP32가 실제 `BUS_{routeToken}_{vehicleToken}` 비콘을 방송하기 시작하면
-      `bus_beacons`에 non-mock 행 추가 (현재는 `MOCK_BUS_1551_001` 1건만 시드됨)
-  - 차단 요인: 정민 하드웨어 준비 상태
+- [x] 정민 ESP32가 실제 `BUS_{routeToken}_{vehicleToken}` 비콘을 방송하기 시작하면
+      `bus_beacons`에 non-mock 행 추가
+  - 2026-08-14: 행을 추가하지 않고 **기존 시연 행(`BUSTA-1551-DEMO01`)을 갱신**하는 쪽으로 처리했다.
+    시연 노선이 하나뿐이라 mock 행과 실물 행이 공존하면 `findByRouteNo('1551')`이 어느 쪽을 고를지
+    불확실해지기 때문이다. `20260814023000_align_demo_beacon_to_real_esp32.sql` +
+    `demo-beacon.ts`를 `BUS_1551_001` / `isMock: false`로 정렬.
+  - 원격 DB 적용은 별도 (migration 파일 작성과 적용 상태를 분리해 기록한다)
 
 ## E. 관리·검증
 

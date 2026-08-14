@@ -101,6 +101,8 @@
 - mock 위치 요청에는 `source: "MOCK"`, `isMock: true`를 포함할 수 있다.
 - mock 비콘 ID 형식은 `MOCK_BUS_{routeToken}_{vehicleToken}`을 사용한다.
 - 예: `MOCK_BUS_7002_001`
+- 실물 ESP32 비콘은 `BUS_{routeToken}_{vehicleToken}`을 사용하고 `isMock: false`로 반환한다.
+- 2026-08-14: 시연 노선 `1551`은 실물 비콘이 준비되어 `BUS_1551_001`, `isMock: false`로 정렬했다.
 
 ## 하차 조건
 

@@ -6,7 +6,7 @@ import { FixtureBeaconRepository } from "../../repositories/beacon.repository.js
 
 const repository = new FixtureBeaconRepository();
 
-test("returns the mock targetBeaconId for a known routeNo", async () => {
+test("returns the fixture targetBeaconId for a known routeNo", async () => {
   const demo = DEMO_BEACONS[0]!;
 
   const result = await getBeaconByRoute(demo.routeNo, {
