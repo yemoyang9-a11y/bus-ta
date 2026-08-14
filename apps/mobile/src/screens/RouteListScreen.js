@@ -4,7 +4,7 @@ import * as Speech from 'expo-speech';
 import { useFocusEffect } from '@react-navigation/native';
 import { apiClient, ApiError } from '../api/client';
 import { useTrip } from '../state/TripContext';
-import { connectAll, setTargetBeacon, startBeaconScan, subscribeBellResult } from '../ble/bleManager';
+import { connectAll, setTargetBeacon, startBeaconScan } from '../ble/bleManager';
 
 export default function RouteListScreen({ route, navigation }) {
   // ConfirmScreen에서 전달받은 값들
@@ -39,27 +39,32 @@ export default function RouteListScreen({ route, navigation }) {
   // 따로 시작하면 서로의 stopDeviceScan()이 충돌했다. 스캔을 한 번만 실행해
   // 두 기기를 동시에 찾는 connectAll()로 변경.
   //
+  // 예모님 코멘트 P0-2(2026-08-14): 지팡이 스캔이 실제로 시작됐는지 TripContext에
+  // 기록해야, RidingScreen이 stopBeaconScan()을 정확한 시점에만 시도할 수 있다.
+  // setTargetBeacon·startBeaconScan까지 전부 성공했을 때만 beaconScanActive: true로 표시한다.
+  //
   // @returns {boolean} 하차벨(비콘 겸용) 연결 성공 여부 — AlightScreen에 전달할 isMock 판단에 사용
   const setupBle = async (targetBeaconId) => {
     const connected = await connectAll();
 
     if (connected.has('White_cane')) {
-      setTargetBeacon(targetBeaconId)
-        .then(() => startBeaconScan())
-        .catch((error) => console.log('스마트지팡이 명령 전송 실패:', error));
+      try {
+        await setTargetBeacon(targetBeaconId);
+        await startBeaconScan();
+        dispatch({ type: 'SET_BEACON_SCAN_ACTIVE', active: true });
+      } catch (error) {
+        console.log('스마트지팡이 명령 전송 실패:', error);
+      }
     } else {
       console.log('스마트지팡이 연결 실패');
     }
 
     const bellConnected = connected.has('BUS_1551_001');
-    if (bellConnected) {
-      // 정민님 확인: STOP_REQUEST 응답을 놓치지 않으려면 연결 즉시부터 계속 구독해야 한다.
-      subscribeBellResult((result) => {
-        console.log('하차벨 결과 수신:', result);
-      });
-    } else {
+    if (!bellConnected) {
       console.log('하차벨 연결 실패');
     }
+    // 예모님 코멘트 P1-1(2026-08-14): 이 구독은 결과를 어디에도 전달하지 않고,
+    // AlightScreen이 sendStopRequest() 호출 전에 이미 자체 구독을 걸기 때문에 안전하게 제거.
 
     return bellConnected;
   };

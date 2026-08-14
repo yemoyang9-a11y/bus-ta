@@ -121,12 +121,19 @@ export default function AlightScreen({ route, navigation }) {
     if (resultSentRef.current) return; // 중복 전송 방지
     resultSentRef.current = true;
 
+    // 예모님 코멘트 P0-3(2026-08-14): result 값으로 먼저 분기하고, isMock은 부가 정보로만 붙인다.
+    // 기존엔 isMock만 보고 문구를 정해서, result: 'FAIL'인데도 "작동 성공"으로 기록되는 모순이 있었다.
+    const resultMessage =
+      result === 'SUCCESS'
+        ? (isMock ? 'mock 하차벨 작동 성공' : '실제 하차벨(BLE) 작동 성공')
+        : (isMock ? 'BLE 미연결 - 하차벨 미작동' : '실제 하차벨(BLE) 응답 없음');
+
     try {
       await apiClient.trips.bell.result(tripId, {
         bellRequestId,
         command,
         result,
-        resultMessage: isMock ? 'mock 하차벨 작동 성공' : '실제 하차벨(BLE) 응답',
+        resultMessage,
         isMock,
         timestamp: new Date().toISOString(),
       });

@@ -17,6 +17,8 @@ const initialState = {
   lastFunctionResult: null,   // Phase 5: Function Dispatcher가 마지막으로 처리한 결과
   lastInjectedStatus: null,   // Phase 6: 이벤트 Dispatcher가 마지막으로 세션에 주입한 상태
   bleIsMock: null,   // 예모님 코멘트 2번(2026-08-13): 하차벨 결과가 실제 BLE 응답인지, mock인지 표시
+  beaconScanActive: false,   // 예모님 코멘트 P0-2(2026-08-14): 비콘 스캔이 실제로 시작됐는지 추적,
+                              // stopBeaconScan() 성공 후에만 false로 바뀌어야 한다
 };
 
 function tripReducer(state, action) {
@@ -74,6 +76,14 @@ function tripReducer(state, action) {
       return {
         ...state,
         bleIsMock: action.isMock,
+      };
+
+    case 'SET_BEACON_SCAN_ACTIVE':
+      // RouteListScreen에서 startBeaconScan() 성공 시 true,
+      // RidingScreen에서 stopBeaconScan() 성공 시 false로 호출
+      return {
+        ...state,
+        beaconScanActive: action.active,
       };
 
     case 'RESET_TRIP':
