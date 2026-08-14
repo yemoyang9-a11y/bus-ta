@@ -4,7 +4,9 @@ on:
   push:
     branches: [main, "claude/**", "feat/**", "fix/**"]
   pull_request:
-    branches: [main]
+    # 통합 브랜치(claude/**)를 base 로 하는 팀원 PR 도 검증한다.
+    # main 만 걸려 있던 동안 PR #23·#24 가 CI 없이 올라왔다.
+    branches: [main, "claude/**"]
 
 jobs:
   typecheck:
@@ -13,9 +15,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # pnpm 버전은 package.json 의 packageManager 를 단일 출처로 쓴다.
+      # 여기에 version 을 함께 적으면 action 이 "Multiple versions of pnpm specified" 로
+      # 셋업 단계에서 실패한다(2026-06-29 이후 CI 가 전부 이 이유로 죽어 있었다).
       - uses: pnpm/action-setup@v4
-        with:
-          version: 9
 
       - uses: actions/setup-node@v4
         with:
@@ -25,5 +28,5 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Typecheck (shared + server)
-        run: pnpm -r --filter=!@bus-ta/mobile exec tsc --noEmit
+      - name: Typecheck (shared + server + mobile)
+        run: pnpm -r typecheck
