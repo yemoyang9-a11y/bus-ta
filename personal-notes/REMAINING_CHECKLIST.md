@@ -42,8 +42,9 @@
 > 판단이 필요한 항목은 여기 대신 `PENDING_DECISIONS.md`에 있다. 결정이 끝나야 착수 가능한 항목은
 > 거기서 먼저 확정한 뒤 이 체크리스트로 옮긴다.
 
-- [ ] `docs/API_SPEC.md`의 `GET /api/beacons?routeNo=` 상태 코드 목록(`200, 400, 404`)에 `500` 추가
+- [x] `docs/API_SPEC.md`의 `GET /api/beacons?routeNo=` 상태 코드 목록(`200, 400, 404`)에 `500` 추가
   - 현재 서비스(`get-beacon.service.ts`)는 이미 500 DB_ERROR를 반환하지만 문서에 누락됨
+  - 2026-08-14: 「비콘 조회」절을 새로 만들면서 `200 · 400 · 404 · 500` 전부 기재
 - [ ] `supabase/migrations/20260716_seed_bus_beacons.sql`의 `on conflict (beacon_id) do nothing`을
       필요 시 `do update set ...`로 보강 검토 (기존 행이 fixture와 값이 어긋나 있어도 갱신되지 않는 문제)
 - [ ] `apps/server/src/repositories/supabase/beacon.repository.ts`와 `trip.repository.ts`에 중복된
