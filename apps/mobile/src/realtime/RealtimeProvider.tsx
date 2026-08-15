@@ -29,6 +29,7 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
 
   const [transport, setTransport] = useState<RealtimeWebRTCTransport | null>(null);
   const [isConnected, setIsConnected] = useState(false);
+  const connectPromiseRef = useRef<Promise<void> | null>(null);
 
   // Function Dispatcher가 항상 최신 state/dispatch를 참조하도록 ref로 보관
   // (클로저에 갇힌 오래된 state를 참조하지 않기 위함)
@@ -39,22 +40,25 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
 
   const currentLocationRef = useRef<{ latitude: number; longitude: number } | undefined>(undefined);
 
+  const refreshCurrentLocation = async () => {
+    const { status } = await Location.requestForegroundPermissionsAsync();
+    if (status !== 'granted') return;
+
+    const location = await Location.getCurrentPositionAsync({});
+    currentLocationRef.current = {
+      latitude: location.coords.latitude,
+      longitude: location.coords.longitude,
+    };
+  };
+
   // 위치 권한이 있으면 현재 위치를 주기적으로 갱신해 둔다.
   // search_routes 등에서 모델이 지어낼 수 없는 실제 좌표로만 쓰인다.
   useEffect(() => {
     let isMounted = true;
 
     (async () => {
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== 'granted' || !isMounted) return;
-
-      const location = await Location.getCurrentPositionAsync({});
-      if (isMounted) {
-        currentLocationRef.current = {
-          latitude: location.coords.latitude,
-          longitude: location.coords.longitude,
-        };
-      }
+      await refreshCurrentLocation();
+      if (!isMounted) currentLocationRef.current = undefined;
     })();
 
     return () => {
@@ -74,9 +78,19 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
 
   const connect = async () => {
     if (!sessionRef.current) return;
-    const connectedTransport = await sessionRef.current.connectWebRTC();
-    setTransport(connectedTransport);
-    setIsConnected(true);
+    if (isConnected || transport) return;
+    if (connectPromiseRef.current) return connectPromiseRef.current;
+
+    connectPromiseRef.current = (async () => {
+      await refreshCurrentLocation();
+      const connectedTransport = await sessionRef.current!.connectWebRTC();
+      setTransport(connectedTransport);
+      setIsConnected(true);
+    })().finally(() => {
+      connectPromiseRef.current = null;
+    });
+
+    return connectPromiseRef.current;
   };
 
   return (

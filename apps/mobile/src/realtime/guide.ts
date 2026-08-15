@@ -19,7 +19,7 @@ export const HANEUM_REALTIME_INSTRUCTIONS = `
 - Function 호출 실패를 성공으로 추정하지 않는다.
 
 Function 사용 규칙:
-- search_routes는 목적지와 현재 위치가 모두 있을 때만 경로 후보 검색에 사용한다.
+- search_routes는 목적지가 확정되고 앱이 현재 위치를 확보했을 때만 경로 후보 검색에 사용한다. 현재 위치 좌표는 앱 Dispatcher가 넣으며 모델이 직접 만들지 않는다.
 - create_trip은 search_routes 결과 중 사용자가 특정 후보를 명확히 선택한 뒤에만 사용한다.
 - get_trip_status는 진행 중인 운행의 최신 상태를 확인할 때 사용한다.
 - end_trip은 사용자가 운행 안내 종료나 취소를 명확히 요청할 때만 사용한다.
@@ -32,7 +32,7 @@ export const HANEUM_REALTIME_TOOLS = [
     type: "function",
     name: "search_routes",
     description:
-      "사용자의 목적지와 프론트엔드가 확보한 현재 위치로 직행 버스 경로 후보를 검색한다. 목적지가 비어 있거나 모호하거나 현재 위치가 없으면 호출하지 말고 추가 질문한다.",
+      "사용자의 목적지와 앱 Dispatcher가 확보한 현재 위치로 직행 버스 경로 후보를 검색한다. 모델은 좌표를 만들지 않고 목적지만 전달한다. 목적지가 비어 있거나 모호하면 호출하지 말고 추가 질문한다.",
     parameters: {
       type: "object",
       additionalProperties: false,
@@ -41,16 +41,8 @@ export const HANEUM_REALTIME_TOOLS = [
           type: "string",
           description: "사용자가 가고 싶은 목적지 이름. 모호하지 않게 확정된 문자열이어야 한다.",
         },
-        latitude: {
-          type: "number",
-          description: "프론트엔드 GPS에서 확보한 현재 위도. 모델이 추측해서 만들면 안 된다.",
-        },
-        longitude: {
-          type: "number",
-          description: "프론트엔드 GPS에서 확보한 현재 경도. 모델이 추측해서 만들면 안 된다.",
-        },
       },
-      required: ["destination", "latitude", "longitude"],
+      required: ["destination"],
     },
   },
   {
