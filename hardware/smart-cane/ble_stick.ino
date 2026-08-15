@@ -1,3 +1,22 @@
+/*
+ * 스마트 지팡이 (White_cane) - ESP32
+ *
+ * [역할]
+ *  - BLE 스캔: 버스 비콘(BUS_1551_001)을 스캔해서 RSSI로 거리·상태 판정
+ *  - 진동 안내: 상태에 따라 진동모터(GPIO25) 제어
+ *  - 앱 명령 수신: SET_TARGET_BEACON / START_BEACON_SCAN / STOP_BEACON_SCAN
+ *  - 상태 전송: 판정한 상태(APPROACHING/ARRIVED 등)를 앱에 Notify로 전송
+ *
+ * [BLE]
+ *  - device name: White_cane
+ *  - Service/Characteristic UUID: 하차벨과 동일 (앱은 device name으로 구분)
+ *  - 명령 수신(Write): JSON {"cmd":"...","target":"..."}
+ *  - 상태 전송(Notify): JSON {"state":"...","rssi":...}
+ *
+ * [상태 판정] RSSI 평균+추세 기반: APPROACHING/ARRIVED/PASSING/PASSED_STOPPED/LEAVING
+ * ※ 판정 기준값은 실환경 거리 테스트로 조정 예정 (현재 근접 테스트 기준)
+ */
+
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLEUtils.h>
@@ -11,21 +30,20 @@
 #define DEVICE_NAME         "White_cane"
 
 #define TEST_MODE false   // true: 앱 명령 없이 부팅 시 자동 스캔 (테스트용)
-                         // false: 앱이 START_BEACON_SCAN 보내야 시작 (실제 동작)
+                          // false: 앱이 START_BEACON_SCAN 보내야 시작 (실제 동작)
 
 const int MOTOR_PIN = 25;
 
-// 찾을 비콘 (앱이 SET_TARGET_BEACON으로 바꿀 수 있음, 기본값은 테스트용)
+// 찾을 비콘 (앱이 SET_TARGET_BEACON으로 변경, 기본값은 테스트용)
 String targetBeacon = "BUS_1551_001";
 
-// 스캔 상태 (START/STOP으로 제어)
 bool scanning = false;
 
 BLEScan *pBLEScan;
 BLECharacteristic *pCharacteristic;
 
 // ===== RSSI 기록용 =====
-const int HISTORY_SIZE = 6;
+const int HISTORY_SIZE = 10;
 int rssiHistory[HISTORY_SIZE];
 int historyCount = 0;
 int notFoundCount = 0;
@@ -41,8 +59,8 @@ enum BusState {
 };
 BusState currentState = STATE_NONE;
 
-int stableCount = 0;       // 안정적으로 유지된 횟수 (정차 판정용)
-bool passedPeak = false;   // 피크 후 급락이 있었는지 (지나감 기억)
+int stableCount = 0;
+bool passedPeak = false;
 
 // ===== RSSI 기록 추가 =====
 void addRSSI(int rssi) {
@@ -54,95 +72,122 @@ void addRSSI(int rssi) {
   }
 }
 
+// ===== 최근 평균 (노이즈 완화) =====
+int getAverageRSSI() {
+  if (historyCount == 0) return -100;
+  int sum = 0;
+  int n = min(historyCount, HISTORY_SIZE);
+  for (int i = 0; i < n; i++) sum += rssiHistory[i];
+  return sum / n;
+}
+
+// ===== 추세 (최근 절반 - 이전 절반 평균) =====
+int getTrend() {
+  if (historyCount < 4) return 0;
+  int n = min(historyCount, HISTORY_SIZE);
+  int half = n / 2;
+  int recentSum = 0, olderSum = 0;
+  for (int i = 0; i < half; i++) olderSum += rssiHistory[i];
+  for (int i = n - half; i < n; i++) recentSum += rssiHistory[i];
+  return (recentSum / half) - (olderSum / half);
+}
+
 // ===== 상태 판정 =====
 BusState judgeState() {
-  if (historyCount < 3) return STATE_APPROACHING;
+  if (historyCount < 6) return STATE_NONE;
 
-  int latest = rssiHistory[historyCount - 1];
-  int prev   = rssiHistory[historyCount - 2];
-  int oldest = rssiHistory[0];
+  int trend = getTrend();
 
-  // 1. 피크 후 급락 감지 → "지나감" 기억
-  if (prev - latest >= 10) {
-    passedPeak = true;   // 방금 급락했다 = 지나가는 중
+  // 1. 큰 급락 → 통과
+  if (trend <= -20) {
+    passedPeak = true;
     stableCount = 0;
     return STATE_PASSING;
   }
 
-  // 2. 값이 안정적으로 유지되는지 (정차 후보)
-  if (abs(latest - prev) <= 3 && abs(latest - oldest) <= 5) {
+  // 2. 안정 + 충분히 가까움 → 정차
+  if (abs(trend) <= 6 && getAverageRSSI() >= -68) {
     stableCount++;
-    if (stableCount >= 4) {
-      // 안정적으로 유지됨 = 정차. 근데 지나갔었나?
-      if (passedPeak) {
-        return STATE_PASSED_STOPPED;  // 지나가서 다른 곳 정차
-      } else {
-        return STATE_ARRIVED;         // 다가와서 앞에 정차
-      }
+    if (stableCount >= 3) {
+      if (passedPeak) return STATE_PASSED_STOPPED;
+      else return STATE_ARRIVED;
     }
+    return currentState;
   } else {
     stableCount = 0;
   }
 
-  // 3. 계속 강해지는 중 → 접근
-  if (latest > oldest + 2) {
-    passedPeak = false;  // 다시 다가오면 지나감 기억 리셋
+  // 3. 뚜렷하게 강해짐 → 접근
+  if (trend >= 8) {
+    passedPeak = false;
     return STATE_APPROACHING;
   }
 
-  // 4. 계속 약해지는 중 → 멀어짐
-  if (latest < oldest - 3) {
+  // 4. 뚜렷하게 약해짐 → 멀어짐
+  if (trend <= -8) {
     return STATE_LEAVING;
   }
 
-  return currentState;  // 변화 없으면 유지
+  return currentState;
 }
 
-// ===== 진동 (패턴 없이 세기/촘촘함으로 자연스럽게) =====
-void vibrateByState(BusState state, int rssi) {
+// ===== 상태 → 영문 코드 (앱 전송용) =====
+const char* stateToCode(BusState s) {
+  switch (s) {
+    case STATE_APPROACHING:    return "APPROACHING";
+    case STATE_ARRIVED:        return "ARRIVED";
+    case STATE_PASSING:        return "PASSING";
+    case STATE_PASSED_STOPPED: return "PASSED_STOPPED";
+    case STATE_LEAVING:        return "LEAVING";
+    default:                   return "NONE";
+  }
+}
+
+// ===== 상태를 앱에 Notify 전송 =====
+void notifyState(BusState state, int avgRssi) {
+  if (pCharacteristic == NULL) return;
+  String json = "{\"state\":\"";
+  json += stateToCode(state);
+  json += "\",\"rssi\":";
+  json += String(avgRssi);
+  json += "}";
+  pCharacteristic->setValue(json.c_str());
+  pCharacteristic->notify();
+  Serial.print("[BLE→앱] 상태 전송: ");
+  Serial.println(json);
+}
+
+// ===== 진동 (세기/촘촘함으로 자연스럽게) =====
+void vibrateByState(BusState state, int avgRssi) {
   switch (state) {
     case STATE_APPROACHING: {
-      // 거리 가까울수록 촘촘하게 (부드러운 유도)
-      Serial.print("[상태] 접근 중 (RSSI "); Serial.print(rssi); Serial.println(")");
       int onTime, offTime;
-      if (rssi >= -60)      { onTime = 200; offTime = 60;  }  // 가까움: 촘촘
-      else if (rssi >= -70) { onTime = 150; offTime = 180; }  // 중간
-      else                  { onTime = 100; offTime = 350; }  // 멀음: 띄엄
+      if (avgRssi >= -60)      { onTime = 200; offTime = 60;  }
+      else if (avgRssi >= -70) { onTime = 150; offTime = 180; }
+      else                     { onTime = 100; offTime = 350; }
       digitalWrite(MOTOR_PIN, HIGH); delay(onTime);
       digitalWrite(MOTOR_PIN, LOW);  delay(offTime);
       break;
     }
     case STATE_ARRIVED:
-      // 다가와서 앞 정차: 강하게 지속
-      Serial.println("[상태] 정차 (탈 수 있음)");
       digitalWrite(MOTOR_PIN, HIGH); delay(400);
       digitalWrite(MOTOR_PIN, LOW);  delay(100);
       break;
 
     case STATE_PASSED_STOPPED:
-      // 지나가서 다른 곳 정차: 중간 세기 (이동 필요 신호)
-      Serial.println("[상태] 지나가서 정차 (이동 필요)");
       digitalWrite(MOTOR_PIN, HIGH); delay(200);
       digitalWrite(MOTOR_PIN, LOW);  delay(300);
       break;
 
     case STATE_PASSING:
-      Serial.println("[상태] 통과 중 (진동 억제)");
-      digitalWrite(MOTOR_PIN, LOW);
-      break;
-
     case STATE_LEAVING:
-      Serial.println("[상태] 멀어지는 중");
-      digitalWrite(MOTOR_PIN, LOW);
-      break;
-
     default:
       digitalWrite(MOTOR_PIN, LOW);
       break;
   }
 }
 
-// ===== 스캔 상태 초기화 =====
+// ===== 스캔 데이터 초기화 =====
 void resetScanData() {
   historyCount = 0;
   stableCount = 0;
@@ -160,9 +205,7 @@ class CommandCallbacks : public BLECharacteristicCallbacks {
     Serial.print("[BLE] 명령 수신: ");
     Serial.println(value);
 
-    // 간단 파싱 (JSON 라이브러리 없이 문자열 검색)
     if (value.indexOf("SET_TARGET_BEACON") >= 0) {
-      // "target":"..." 값 추출
       int ti = value.indexOf("\"target\"");
       if (ti >= 0) {
         int c1 = value.indexOf(':', ti);
@@ -196,10 +239,9 @@ void setup() {
   pinMode(MOTOR_PIN, OUTPUT);
   digitalWrite(MOTOR_PIN, LOW);
 
-  // BLE 초기화 (서버 + 스캐너 둘 다)
   BLEDevice::init(DEVICE_NAME);
 
-  // --- BLE 서버 (앱 명령 수신용) ---
+  // --- BLE 서버 (앱 명령 수신 + 상태 전송) ---
   BLEServer *pServer = BLEDevice::createServer();
   BLEService *pService = pServer->createService(SERVICE_UUID);
   pCharacteristic = pService->createCharacteristic(
@@ -216,7 +258,7 @@ void setup() {
   BLEDevice::startAdvertising();
   Serial.println("[BLE] 서버 광고 시작 (앱 연결 대기)");
 
-  // --- BLE 스캐너 (비콘 감지용) ---
+  // --- BLE 스캐너 (비콘 감지) ---
   pBLEScan = BLEDevice::getScan();
   pBLEScan->setActiveScan(true);
   pBLEScan->setInterval(100);
@@ -224,9 +266,7 @@ void setup() {
 
   if (TEST_MODE) {
     scanning = true;
-    Serial.println("[TEST_MODE] 앱 명령 없이 자동 스캔 시작");
-    Serial.print("[설정] 타겟 비콘 = ");
-    Serial.println(targetBeacon);
+    Serial.println("[TEST_MODE] 자동 스캔 시작");
   } else {
     Serial.println("[대기] 앱의 START_BEACON_SCAN 명령 대기 중");
   }
@@ -234,7 +274,7 @@ void setup() {
 
 void loop() {
   if (!scanning) {
-    delay(200);   // 스캔 꺼져 있으면 대기
+    delay(200);
     return;
   }
 
@@ -250,8 +290,13 @@ void loop() {
       int rssi = device.getRSSI();
       notFoundCount = 0;
       addRSSI(rssi);
-      currentState = judgeState();
-      vibrateByState(currentState, rssi);
+
+      BusState newState = judgeState();
+      if (newState != currentState) {          // 상태 바뀔 때만 앱에 전송
+        currentState = newState;
+        notifyState(currentState, getAverageRSSI());
+      }
+      vibrateByState(currentState, getAverageRSSI());
     }
   }
 
@@ -259,7 +304,6 @@ void loop() {
     notFoundCount++;
     digitalWrite(MOTOR_PIN, LOW);
     if (notFoundCount >= 3) {
-      Serial.println("[상태] 비콘 사라짐 → 초기화");
       resetScanData();
     }
   }
