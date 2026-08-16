@@ -75,3 +75,11 @@
 - 실제 화면에서 `HaneumRealtimeSession.connectWebRTC()` 호출
 - 위치 권한을 받아 `search_routes` Function 인자에 현재 GPS 주입
 - 실제 음성 대화 시나리오 테스트
+
+## 2026-08-15 PR #24 통합 브랜치 재반영
+
+- 이미 병합된 PR #23의 Realtime·BLE·화면 상태 처리와 후속 수정은 최신 통합 브랜치 버전을 유지했다.
+- `RealtimeProvider.tsx`에는 진행 중인 `connect()` Promise를 재사용해 중복 WebRTC 연결을 방지하는 처리만 선별 반영했다.
+- Realtime 연결 직전에 현재 위치를 다시 갱신해 `search_routes`가 오래되거나 비어 있는 위치를 사용하는 위험을 줄였다.
+- `guide.ts`의 `search_routes` 도구 입력은 목적지만 받으며, 실제 좌표는 앱 Dispatcher가 주입하도록 계약을 맞췄다.
+- `apps/mobile/package.json`의 `buffer`와 `react-native-ble-plx`는 각각 한 번만 선언되도록 유지했다.
