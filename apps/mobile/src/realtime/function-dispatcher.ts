@@ -10,6 +10,7 @@ import type {
   UpdateTripRequest,
 } from "@bus-ta/shared";
 import { clearActiveTripContext } from "./context";
+import { assertActiveTripId } from "./function-guards";
 import type {
   ApiErrorResult,
   RealtimeClientEvent,
@@ -103,9 +104,9 @@ async function callBackendFunction(
     case "create_trip":
       return apiClient.trips.create(assertCreateTripRequest(args, context));
     case "get_trip_status":
-      return apiClient.trips.getStatus(assertTripId(args));
+      return apiClient.trips.getStatus(assertTripId(args, context));
     case "end_trip": {
-      const { tripId, body } = assertEndTripRequest(args);
+      const { tripId, body } = assertEndTripRequest(args, context);
       return apiClient.trips.end(tripId, body);
     }
   }
@@ -231,12 +232,15 @@ function toCreateTripRequest(selectedRoute: Route, destination: string): CreateT
   return request;
 }
 
-function assertTripId(args: unknown): string {
+function assertTripId(args: unknown, context: RealtimeGuideContext): string {
   const value = assertRecord(args);
-  return assertNonEmptyString(value.tripId, "tripId");
+  return assertActiveTripId(value.tripId, context.getAppState().tripId);
 }
 
-function assertEndTripRequest(args: unknown): { tripId: string; body: UpdateTripRequest } {
+function assertEndTripRequest(
+  args: unknown,
+  context: RealtimeGuideContext,
+): { tripId: string; body: UpdateTripRequest } {
   const value = assertRecord(args);
   const action = assertNonEmptyString(value.action, "action");
 
@@ -245,7 +249,7 @@ function assertEndTripRequest(args: unknown): { tripId: string; body: UpdateTrip
   }
 
   return {
-    tripId: assertNonEmptyString(value.tripId, "tripId"),
+    tripId: assertActiveTripId(value.tripId, context.getAppState().tripId),
     body: { action },
   };
 }
