@@ -4,6 +4,7 @@ import { useTrip } from '../state/TripContext';
 import { HaneumRealtimeSession } from './session';
 import { createRealtimeGuideContext } from './context';
 import { connectWithBestEffortLocation, runSingleFlight } from './connect-best-effort';
+import { createLocationRefreshCoordinator } from './location-refresh';
 import type { RealtimeWebRTCTransport } from './webrtc-transport';
 import type { AppAction, AppTripState } from './types';
 
@@ -40,27 +41,36 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
   dispatchRef.current = dispatch;
 
   const currentLocationRef = useRef<{ latitude: number; longitude: number } | undefined>(undefined);
+  const locationRefreshRef = useRef<ReturnType<typeof createLocationRefreshCoordinator> | null>(null);
+
+  if (!locationRefreshRef.current) {
+    locationRefreshRef.current = createLocationRefreshCoordinator({
+      setLocation: (location) => {
+        currentLocationRef.current = location;
+      },
+    });
+  }
 
   const refreshCurrentLocation = async () => {
-    const { status } = await Location.requestForegroundPermissionsAsync();
-    if (status !== 'granted') {
-      currentLocationRef.current = undefined;
-      return;
-    }
-
-    const location = await Location.getCurrentPositionAsync({});
-    currentLocationRef.current = {
-      latitude: location.coords.latitude,
-      longitude: location.coords.longitude,
-    };
+    await locationRefreshRef.current!({
+      requestPermission: async () => {
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        return status;
+      },
+      getPosition: async () => {
+        const location = await Location.getCurrentPositionAsync({});
+        return {
+          latitude: location.coords.latitude,
+          longitude: location.coords.longitude,
+        };
+      },
+    });
   };
 
   // 위치 권한이 있으면 현재 위치를 주기적으로 갱신해 둔다.
   // search_routes 등에서 모델이 지어낼 수 없는 실제 좌표로만 쓰인다.
   useEffect(() => {
-    void refreshCurrentLocation().catch(() => {
-      currentLocationRef.current = undefined;
-    });
+    void refreshCurrentLocation().catch(() => undefined);
   }, []);
 
   const sessionRef = useRef<HaneumRealtimeSession | null>(null);
@@ -81,10 +91,6 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
       const connectedTransport = await connectWithBestEffortLocation({
         refreshCurrentLocation,
         connectWebRTC: () => sessionRef.current!.connectWebRTC(),
-        onLocationError: () => {
-          // 위치 오류는 search_routes에서 처리하고 Realtime 연결에는 전파하지 않는다.
-          currentLocationRef.current = undefined;
-        },
       });
       setTransport(connectedTransport);
       setIsConnected(true);

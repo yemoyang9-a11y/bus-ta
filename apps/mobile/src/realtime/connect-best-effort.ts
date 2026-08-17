@@ -1,7 +1,6 @@
 type ConnectWithBestEffortLocationOptions<T> = {
   refreshCurrentLocation: () => Promise<void>;
   connectWebRTC: () => Promise<T>;
-  onLocationError?: () => void;
 };
 
 type PromiseRef<T> = {
@@ -37,11 +36,10 @@ export function runSingleFlight<T>(
 export async function connectWithBestEffortLocation<T>({
   refreshCurrentLocation,
   connectWebRTC,
-  onLocationError,
 }: ConnectWithBestEffortLocationOptions<T>): Promise<T> {
-  void refreshCurrentLocation().catch(() => {
-    onLocationError?.();
-  });
+  // 일시적인 GPS 오류는 이전에 확보한 유효 좌표를 지우지 않는다.
+  // 권한 거부와 좌표 갱신 순서는 location-refresh가 별도로 처리한다.
+  void refreshCurrentLocation().catch(() => undefined);
 
   return connectWebRTC();
 }

@@ -49,7 +49,6 @@ test('위치 권한 거부처럼 위치 갱신이 결과 없이 끝나도 WebRTC
 });
 
 test('위치 조회 오류를 격리하고 WebRTC를 연결한다', async () => {
-  let locationErrorHandled = false;
   let connectCount = 0;
 
   await connectWithBestEffortLocation({
@@ -60,14 +59,10 @@ test('위치 조회 오류를 격리하고 WebRTC를 연결한다', async () => 
       connectCount += 1;
       return undefined;
     },
-    onLocationError: () => {
-      locationErrorHandled = true;
-    },
   });
 
   await Promise.resolve();
   assert.equal(connectCount, 1);
-  assert.equal(locationErrorHandled, true);
 });
 
 test('위치 조회가 끝나지 않아도 WebRTC 연결 Promise는 완료된다', async () => {
