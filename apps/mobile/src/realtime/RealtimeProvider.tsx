@@ -3,6 +3,7 @@ import * as Location from 'expo-location';
 import { useTrip } from '../state/TripContext';
 import { HaneumRealtimeSession } from './session';
 import { createRealtimeGuideContext } from './context';
+import { connectWithBestEffortLocation, runSingleFlight } from './connect-best-effort';
 import type { RealtimeWebRTCTransport } from './webrtc-transport';
 import type { AppAction, AppTripState } from './types';
 
@@ -42,7 +43,10 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
 
   const refreshCurrentLocation = async () => {
     const { status } = await Location.requestForegroundPermissionsAsync();
-    if (status !== 'granted') return;
+    if (status !== 'granted') {
+      currentLocationRef.current = undefined;
+      return;
+    }
 
     const location = await Location.getCurrentPositionAsync({});
     currentLocationRef.current = {
@@ -54,16 +58,9 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
   // 위치 권한이 있으면 현재 위치를 주기적으로 갱신해 둔다.
   // search_routes 등에서 모델이 지어낼 수 없는 실제 좌표로만 쓰인다.
   useEffect(() => {
-    let isMounted = true;
-
-    (async () => {
-      await refreshCurrentLocation();
-      if (!isMounted) currentLocationRef.current = undefined;
-    })();
-
-    return () => {
-      isMounted = false;
-    };
+    void refreshCurrentLocation().catch(() => {
+      currentLocationRef.current = undefined;
+    });
   }, []);
 
   const sessionRef = useRef<HaneumRealtimeSession | null>(null);
@@ -76,21 +73,22 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
     sessionRef.current = new HaneumRealtimeSession(guideContext);
   }
 
-  const connect = async () => {
-    if (!sessionRef.current) return;
-    if (isConnected || transport) return;
-    if (connectPromiseRef.current) return connectPromiseRef.current;
+  const connect = () => {
+    if (!sessionRef.current) return Promise.resolve();
+    if (isConnected || transport) return Promise.resolve();
 
-    connectPromiseRef.current = (async () => {
-      await refreshCurrentLocation();
-      const connectedTransport = await sessionRef.current!.connectWebRTC();
+    return runSingleFlight(connectPromiseRef, async () => {
+      const connectedTransport = await connectWithBestEffortLocation({
+        refreshCurrentLocation,
+        connectWebRTC: () => sessionRef.current!.connectWebRTC(),
+        onLocationError: () => {
+          // 위치 오류는 search_routes에서 처리하고 Realtime 연결에는 전파하지 않는다.
+          currentLocationRef.current = undefined;
+        },
+      });
       setTransport(connectedTransport);
       setIsConnected(true);
-    })().finally(() => {
-      connectPromiseRef.current = null;
     });
-
-    return connectPromiseRef.current;
   };
 
   return (
