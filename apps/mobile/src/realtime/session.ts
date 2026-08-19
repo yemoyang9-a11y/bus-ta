@@ -11,17 +11,23 @@ import type {
 } from "./types";
 import { getRealtimeSharedSecret } from "./runtime-config";
 import { RealtimeWebRTCTransport } from "./webrtc-transport";
+import { RealtimeResponseQueue, type PendingResponse } from "./response-queue";
+import { getRealtimeErrorDetails } from "./server-event";
 
-// 예모님 코멘트 4번(2026-08-13): OpenAI Realtime은 동시에 하나의 active response만 허용한다.
-// 상태 변화(3초 주기)와 Function 결과가 겹치면 response.create가 거부될 수 있어,
-// 지금 응답이 진행 중인지 추적해서 큐로 순서를 보장한다.
+// OpenAI Realtime은 동시에 하나의 active response만 허용한다.
 const RESPONSE_CREATE_EVENT_TYPE = "response.create";
+const ACTIVE_RESPONSE_ERROR_CODE = "conversation_already_has_active_response";
+const STATUS_RESPONSE_INSTRUCTIONS =
+  "방금 전달된 운행 상태 변화만 근거로 사용자에게 짧고 명확한 한국어 음성 안내를 생성한다. 내부 식별자와 오류 코드는 그대로 읽지 않는다.";
 
 export class HaneumRealtimeSession {
   readonly context: RealtimeGuideContext;
   private transport: RealtimeTransport | null = null;
   private isResponseActive = false;
-  private pendingResponseInstructions: string[] = [];
+  private responseQueue = new RealtimeResponseQueue();
+  private activeResponse: PendingResponse | null = null;
+  private awaitingRetry: PendingResponse | null = null;
+  private eventIdCounter = 0;
 
   // context는 RealtimeProvider가 TripContext와 연결해서 만든 것을 그대로 받는다.
   // (2026-08-12, 예모님 확정: TripContext를 운행 상태의 유일한 원본으로 사용)
@@ -48,8 +54,8 @@ export class HaneumRealtimeSession {
     });
 
     await transport.connect();
-    this.sendSessionUpdate(transport);
     this.transport = transport;
+    this.sendSessionUpdate(transport);
     return transport;
   }
 
@@ -67,8 +73,7 @@ export class HaneumRealtimeSession {
 
   /**
    * 서버 이벤트를 보고 응답 진행 상태(isResponseActive)를 갱신한다.
-   * response.created면 진행 중으로 표시하고, response.done이면 해제하고
-   * 대기 중인 response.create가 있으면 이어서 보낸다.
+   * response.done이 확인된 뒤에만 다음 대기 응답을 전송한다.
    */
   private trackResponseLifecycle(event: unknown) {
     if (event == null || typeof event !== "object") return;
@@ -80,34 +85,85 @@ export class HaneumRealtimeSession {
     }
 
     if (value.type === "response.done") {
-      // 예모님 코멘트 4번(2026-08-13): 원인 파악을 위해 로그로 남긴다.
       console.log("[Realtime] response.done:", JSON.stringify(value));
       this.isResponseActive = false;
+      this.activeResponse = null;
       this.flushPendingResponse();
       return;
     }
 
     if (value.type === "error") {
       console.log("[Realtime] error event:", JSON.stringify(value));
-      this.isResponseActive = false;
-      this.flushPendingResponse();
+      this.handleErrorEvent(value);
     }
   }
 
   /**
-   * 대기열에 쌓인 응답 요청 중 가장 오래된 것을 하나 보낸다.
-   * 여러 개가 쌓여 있어도 한 번에 하나만 보내고, 나머지는 response.done을 기다린다.
+   * active response 오류는 응답 종료가 아니므로 실제 response.done 뒤에 재시도한다.
+   * 그 외 오류는 해당 response.create 요청의 오류일 때만 다음 요청으로 넘어간다.
    */
+  private handleErrorEvent(value: Record<string, unknown>) {
+    const { code, clientEventId } = getRealtimeErrorDetails(value);
+    const isActiveRequestError =
+      this.activeResponse != null &&
+      (clientEventId === undefined || clientEventId === this.activeResponse.eventId);
+
+    if (code === ACTIVE_RESPONSE_ERROR_CODE) {
+      if (isActiveRequestError && !this.awaitingRetry) {
+        this.awaitingRetry = {
+          ...this.activeResponse!,
+          // 상태 시스템 이벤트는 이미 전달했으므로 response.create만 다시 보낸다.
+          precedingEvents: [],
+        };
+        this.activeResponse = null;
+      }
+      this.isResponseActive = true;
+      return;
+    }
+
+    if (!isActiveRequestError) return;
+
+    this.activeResponse = null;
+    this.isResponseActive = false;
+    this.flushPendingResponse();
+  }
+
   private flushPendingResponse() {
     if (this.isResponseActive || !this.transport) return;
-    const instructions = this.pendingResponseInstructions.shift();
-    if (instructions === undefined) return;
 
+    const next = this.awaitingRetry ?? this.responseQueue.dequeue();
+    if (!next) return;
+
+    this.awaitingRetry = null;
+    this.dispatchResponseCreate(next);
+  }
+
+  private dispatchResponseCreate(pending: PendingResponse) {
+    if (!this.transport) return;
+
+    for (const event of pending.precedingEvents) {
+      this.transport.send(event);
+    }
+
+    const dispatched = { ...pending, precedingEvents: [] };
+    this.activeResponse = dispatched;
     this.isResponseActive = true;
     this.transport.send({
       type: RESPONSE_CREATE_EVENT_TYPE,
-      response: { instructions },
+      event_id: pending.eventId,
+      response: { instructions: pending.instructions },
     });
+  }
+
+  private createPendingResponse(
+    instructions: string,
+    precedingEvents: unknown[] = [],
+  ): PendingResponse {
+    return {
+      eventId: `resp_${++this.eventIdCounter}`,
+      instructions,
+      precedingEvents,
+    };
   }
 
   /**
@@ -118,14 +174,8 @@ export class HaneumRealtimeSession {
     if (event != null && typeof event === "object" && (event as Record<string, unknown>).type === RESPONSE_CREATE_EVENT_TYPE) {
       const instructions =
         ((event as { response?: { instructions?: string } }).response?.instructions) ?? "";
-
-      if (this.isResponseActive) {
-        this.pendingResponseInstructions.push(instructions);
-        return;
-      }
-
-      this.isResponseActive = true;
-      transport.send(event);
+      this.responseQueue.enqueueDirect(this.createPendingResponse(instructions));
+      this.flushPendingResponse();
       return;
     }
 
@@ -141,10 +191,9 @@ export class HaneumRealtimeSession {
    */
   notifyStatusChange(nextStatus: TripStatusSnapshot) {
     if (!this.transport) return;
-    const transport = this.transport;
 
     checkAndDispatchStatusChange(this.context, nextStatus, (event: TripStatusChangedEvent) => {
-      transport.send({
+      const statusEvent = {
         type: "conversation.item.create",
         item: {
           type: "message",
@@ -156,21 +205,14 @@ export class HaneumRealtimeSession {
             },
           ],
         },
-      });
+      };
 
-      // 예모님 코멘트 3번(2026-08-13): 상태 메시지만 보내면 AI가 응답을 생성하지 않는다.
-      // 예모님 코멘트 4번(2026-08-13): 이미 응답이 진행 중이면 send()가 대기열에 넣어
-      // response.done 이후 자동으로 전송하도록 한다.
-      this.send(
-        {
-          type: RESPONSE_CREATE_EVENT_TYPE,
-          response: {
-            instructions:
-              "방금 전달된 운행 상태 변화만 근거로 사용자에게 짧고 명확한 한국어 음성 안내를 생성한다. 내부 식별자와 오류 코드는 그대로 읽지 않는다.",
-          },
-        },
-        transport,
+      this.responseQueue.enqueueStatus(
+        this.createPendingResponse(STATUS_RESPONSE_INSTRUCTIONS, [statusEvent]),
+        event,
+        this.context.getAppState().tripId,
       );
+      this.flushPendingResponse();
     });
   }
 }
