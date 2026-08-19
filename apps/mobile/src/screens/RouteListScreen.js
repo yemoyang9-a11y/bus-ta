@@ -1,35 +1,23 @@
 import React, { useState } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, FlatList, ActivityIndicator } from 'react-native';
-import * as Speech from 'expo-speech';
-import { useFocusEffect } from '@react-navigation/native';
 import { apiClient, ApiError } from '../api/client';
 import { useTrip } from '../state/TripContext';
 import { connectAll, setTargetBeacon, startBeaconScan } from '../ble/bleManager';
 
-export default function RouteListScreen({ route, navigation }) {
-  // ConfirmScreen에서 전달받은 값들
-  // - destinationText: 목적지 텍스트 (예: '병점역')
-  // - routes: POST /api/routes/search 응답의 노선 후보 배열
-  // - guideMessage: 유나 AI 모듈이 생성한 안내 문장 (TTS로 출력)
-  const { destinationText, routes, guideMessage } = route.params;
+export default function RouteListScreen({ navigation }) {
+  // 예모님 확인(2026-08-15): ConfirmScreen 삭제에 따라 route.params 대신 TripContext에서 값을 가져온다.
+  // destination, routeCandidates는 function-dispatcher.ts의 search_routes 처리 결과로 채워진다.
+  const { state, dispatch } = useTrip();
+  const { destination, routeCandidates } = state;
+  // guideMessage는 별도 필드가 없어, 첫 번째 후보에 실려온 안내 문장을 그대로 사용한다
+  // (기존 ConfirmScreen이 data.routes[0]?.guideMessage로 쓰던 방식과 동일)
+  const guideMessage = routeCandidates?.[0]?.guideMessage || '';
+
   const [loading, setLoading] = useState(false);
-  const { dispatch } = useTrip();
 
-  // 화면 진입 시 guideMessage TTS 출력
-  useFocusEffect(
-    React.useCallback(() => {
-      const timer = setTimeout(() => {
-        if (guideMessage) {
-          Speech.speak(guideMessage, { language: 'ko' });
-        }
-      }, 500);
-
-      return () => {
-        clearTimeout(timer);
-        Speech.stop();
-      };
-    }, [guideMessage])
-  );
+  // 채린님 확인(2026-08-15): Realtime 세션이 이미 같은 내용을 음성으로 안내하고 있어서,
+  // 화면 TTS(Speech.speak)와 겹쳐 들리는 문제 발견 — 이 화면의 TTS 호출을 제거한다.
+  // guideMessage는 텍스트로만 표시(보조 정보), 음성 안내는 Realtime 대화가 전담한다.
 
   // 정민님 확인(2026-08-12): 노선 선택 후(=여기) BLE 연결 시작, 배터리 절약을 위해
   // 앱 켤 때가 아니라 실제 필요 시점에 연결한다.
@@ -43,7 +31,7 @@ export default function RouteListScreen({ route, navigation }) {
   // 기록해야, RidingScreen이 stopBeaconScan()을 정확한 시점에만 시도할 수 있다.
   // setTargetBeacon·startBeaconScan까지 전부 성공했을 때만 beaconScanActive: true로 표시한다.
   //
-  // @returns {boolean} 하차벨(비콘 겸용) 연결 성공 여부 — AlightScreen에 전달할 isMock 판단에 사용
+  // @returns {boolean} 하차벨(비콘 겸용) 연결 성공 여부 — TripContext에 전달할 isMock 판단에 사용
   const setupBle = async (targetBeaconId) => {
     const connected = await connectAll();
 
@@ -63,15 +51,12 @@ export default function RouteListScreen({ route, navigation }) {
     if (!bellConnected) {
       console.log('하차벨 연결 실패');
     }
-    // 예모님 코멘트 P1-1(2026-08-14): 이 구독은 결과를 어디에도 전달하지 않고,
-    // AlightScreen이 sendStopRequest() 호출 전에 이미 자체 구독을 걸기 때문에 안전하게 제거.
 
     return bellConnected;
   };
 
   // 노선 선택 시 POST /api/trips 호출 후 탑승 중 화면으로 이동
   const selectRoute = async (selectedRoute) => {
-    Speech.stop();
     setLoading(true);
 
     dispatch({ type: 'SELECT_ROUTE', route: selectedRoute });
@@ -80,7 +65,7 @@ export default function RouteListScreen({ route, navigation }) {
       // 공통 API 명세서 5.2 기준 필드만 전달 (guideMessage·recommendationReason 등
       // 스펙에 없는 필드는 보내지 않는다 — 백엔드 스키마 검증 대상이 아님)
       const tripRequest = {
-        destination: destinationText || selectedRoute.destinationStation?.stationName,
+        destination: destination || selectedRoute.destinationStation?.stationName,
         candidateId: selectedRoute.candidateId,
         routeNo: selectedRoute.routeNo,
         localBusId: selectedRoute.localBusId,
@@ -108,7 +93,6 @@ export default function RouteListScreen({ route, navigation }) {
         .list(selectedRoute.routeNo)
         .then(async (beaconData) => {
           const bleConnected = await setupBle(beaconData.targetBeaconId);
-          // 서버 비콘이 mock이 아니고, 실제로 BLE 연결까지 성공했을 때만 "실제 응답"으로 취급
           dispatch({
             type: 'SET_BLE_MOCK_STATUS',
             isMock: beaconData.isMock || !bleConnected,
@@ -141,12 +125,12 @@ export default function RouteListScreen({ route, navigation }) {
   }
 
   // 노선 없을 때 처리
-  if (!routes || routes.length === 0) {
+  if (!routeCandidates || routeCandidates.length === 0) {
     return (
       <View style={styles.emptyContainer}>
         <Text style={styles.emptyText}>이용 가능한 노선이 없습니다.</Text>
-        <TouchableOpacity style={styles.backButton} onPress={() => navigation.goBack()}>
-          <Text style={styles.backButtonText}>다시 검색</Text>
+        <TouchableOpacity style={styles.backButton} onPress={() => navigation.navigate('Main')}>
+          <Text style={styles.backButtonText}>처음으로</Text>
         </TouchableOpacity>
       </View>
     );
@@ -154,10 +138,10 @@ export default function RouteListScreen({ route, navigation }) {
 
   return (
     <View style={styles.container}>
-      {/* 유나 AI 안내 문장 화면에도 표시 */}
+      {/* 보조 정보 표시용 — 음성 안내는 Realtime 대화가 전담 (Speech.speak 없음) */}
       <Text style={styles.guideMessage}>{guideMessage}</Text>
       <FlatList
-        data={routes}
+        data={routeCandidates}
         keyExtractor={(item) => String(item.candidateId)}
         renderItem={({ item }) => (
           <TouchableOpacity style={styles.routeCard} onPress={() => selectRoute(item)}>

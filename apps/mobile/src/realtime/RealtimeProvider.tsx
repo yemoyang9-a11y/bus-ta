@@ -6,11 +6,16 @@ import { createRealtimeGuideContext } from './context';
 import type { RealtimeWebRTCTransport } from './webrtc-transport';
 import type { AppAction, AppTripState } from './types';
 
+// 예모님 지침(2026-08-15): MainScreen이 연결 상태를 텍스트로 보여줘야 하므로 세분화한다.
+export type RealtimeConnectionStatus = 'idle' | 'connecting' | 'connected' | 'error';
+
 // RealtimeProvider가 화면에 제공하는 것
 type RealtimeContextValue = {
   session: HaneumRealtimeSession | null;
   transport: RealtimeWebRTCTransport | null;
   isConnected: boolean;
+  connectionStatus: RealtimeConnectionStatus;
+  connectionError: string | null;
   connect: () => Promise<void>;
 };
 
@@ -29,6 +34,8 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
 
   const [transport, setTransport] = useState<RealtimeWebRTCTransport | null>(null);
   const [isConnected, setIsConnected] = useState(false);
+  const [connectionStatus, setConnectionStatus] = useState<RealtimeConnectionStatus>('idle');
+  const [connectionError, setConnectionError] = useState<string | null>(null);
   const connectPromiseRef = useRef<Promise<void> | null>(null);
 
   // Function Dispatcher가 항상 최신 state/dispatch를 참조하도록 ref로 보관
@@ -81,11 +88,23 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
     if (isConnected || transport) return;
     if (connectPromiseRef.current) return connectPromiseRef.current;
 
+    setConnectionStatus('connecting');
+    setConnectionError(null);
+
     connectPromiseRef.current = (async () => {
-      await refreshCurrentLocation();
-      const connectedTransport = await sessionRef.current!.connectWebRTC();
-      setTransport(connectedTransport);
-      setIsConnected(true);
+      try {
+        await refreshCurrentLocation();
+        const connectedTransport = await sessionRef.current!.connectWebRTC();
+        setTransport(connectedTransport);
+        setIsConnected(true);
+        setConnectionStatus('connected');
+      } catch (error) {
+        setConnectionStatus('error');
+        setConnectionError(
+          error instanceof Error ? error.message : '음성 연결에 실패했습니다.',
+        );
+        throw error;
+      }
     })().finally(() => {
       connectPromiseRef.current = null;
     });
@@ -95,7 +114,7 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <RealtimeContext.Provider
-      value={{ session: sessionRef.current, transport, isConnected, connect }}
+      value={{ session: sessionRef.current, transport, isConnected, connectionStatus, connectionError, connect }}
     >
       {children}
     </RealtimeContext.Provider>

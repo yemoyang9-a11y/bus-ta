@@ -51,6 +51,19 @@ export class RealtimeWebRTCTransport implements RealtimeTransport {
         peerConnection.addTrack(track, mediaStream as MediaStream);
       });
 
+      // 유나님 확인(2026-08-15): 실제 오디오 재생은 addTrack()이 만든 협상으로
+      // react-native-webrtc가 네이티브에서 처리한다. 이 핸들러는 새 protocol을
+      // 추가하는 게 아니라, 원격 오디오 트랙 수신 여부를 진단·확인하기 위한 용도다.
+      // addTransceiver()는 addTrack()과 중복 협상을 만들 수 있어 추가하지 않는다.
+      peerConnection.addEventListener("track", (event: unknown) => {
+        const trackEvent = event as { track?: { kind?: string; id?: string } };
+        console.log(
+          "[Realtime] remote track received:",
+          trackEvent.track?.kind,
+          trackEvent.track?.id,
+        );
+      });
+
       dataChannel.onclose = () => {
         this.options.onClose?.();
       };
