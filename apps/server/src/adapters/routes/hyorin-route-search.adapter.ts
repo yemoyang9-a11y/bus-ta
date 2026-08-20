@@ -320,19 +320,128 @@ function toArrival(
 }
 
 // ─────────────────────────────────────────────
+// GBIS 노선별 경유정류소 목록 조회 (회차 노선 방향 판별용)
+// ─────────────────────────────────────────────
+async function getBusRouteStations(routeId: string) {
+  const url = "https://apis.data.go.kr/6410000/busrouteservice/v2/getBusRouteStationListv2";
+  const res = await axios.get(url, {
+    params: {
+      serviceKey: process.env.GBIS_SERVICE_KEY,
+      routeId,
+      format: "json",
+    },
+    timeout: GBIS_REQUEST_TIMEOUT_MS,
+  });
+  const items = res.data?.response?.msgBody?.busRouteStationList;
+  if (!items) return [];
+  return Array.isArray(items) ? items : [items];
+}
+
+// 인접 정류장 좌표는 시스템 간 소수점 오차가 있을 수 있어 이름 불일치 시의
+// 폴백 판정에만 쓰는 허용 거리다. 서로 다른 정류장을 같은 정류장으로 착각하지
+// 않도록 일반적인 정류장 간 간격보다 훨씬 좁게 잡는다.
+const SAME_STATION_DISTANCE_KM = 0.1;
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function stationMatches(
+  gbisStation: any,
+  target: { stationName: string; latitude: number; longitude: number },
+): boolean {
+  if (gbisStation.stationName === target.stationName) return true;
+
+  const lat = typeof gbisStation.y === "number" ? gbisStation.y : parseFloat(gbisStation.y);
+  const lng = typeof gbisStation.x === "number" ? gbisStation.x : parseFloat(gbisStation.x);
+  if (Number.isNaN(lat) || Number.isNaN(lng)) return false;
+
+  return distanceKm(lat, lng, target.latitude, target.longitude) < SAME_STATION_DISTANCE_KM;
+}
+
+/**
+ * 회차 노선은 같은 정류장이 GBIS 도착정보에 방향별로 두 번 나올 수 있다.
+ *
+ * 처음엔 "보딩역 바로 다음 정류장이 일치하는 쪽"으로 방향을 가르려 했으나,
+ * 실측(2026-08-20, routeId 233000281·233000268)에서 회차 전/후 구간이 같은
+ * 도로를 그대로 다시 지나는 노선은 두 occurrence의 다음 정류장이 완전히
+ * 동일해서 구분이 안 됐다. 대신 노선 전체 정류장 순서에서 "목적지가 어디
+ * 있는지"를 찾아, 그보다 앞서면서 가장 가까운 보딩역 occurrence를 사용자가
+ * 탈 방향으로 확정한다. 같은 실측 데이터로 왕복 방향 모두 검증했다.
+ *
+ * 방향을 하나로 확정하지 못하면(목적지 불일치, 노선 조회 실패, 목적지
+ * occurrence마다 다른 방향을 가리키는 모호한 경우 등) null을 반환하고,
+ * 호출부는 arrivals: [] 로 안전하게 접는다 — 접근성 앱에서 틀린 방향 안내는
+ * 정보 누락보다 나쁘다.
+ */
+async function resolveDirectionalStaOrder(
+  routeId: string,
+  gbisStationId: string,
+  destinationStation: { stationName: string; latitude: number; longitude: number } | undefined,
+): Promise<number | null> {
+  if (!destinationStation) return null;
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let routeStations: any[];
+  try {
+    routeStations = await getBusRouteStations(routeId);
+  } catch {
+    return null;
+  }
+  if (routeStations.length === 0) return null;
+
+  const boardingIndexes: number[] = [];
+  routeStations.forEach((s, i) => {
+    if (String(s.stationId ?? "") === gbisStationId) boardingIndexes.push(i);
+  });
+  if (boardingIndexes.length === 0) return null;
+
+  const destinationIndexes: number[] = [];
+  routeStations.forEach((s, i) => {
+    if (stationMatches(s, destinationStation)) destinationIndexes.push(i);
+  });
+  if (destinationIndexes.length === 0) return null;
+
+  const resolvedStaOrders = new Set<number>();
+  for (const destIndex of destinationIndexes) {
+    const precedingBoarding = boardingIndexes.filter((b) => b < destIndex);
+    if (precedingBoarding.length === 0) continue;
+
+    const chosen = Math.max(...precedingBoarding);
+    const staOrder = readGbisNumber(routeStations[chosen]?.stationSeq);
+    if (staOrder !== null) resolvedStaOrders.add(staOrder);
+  }
+
+  // 목적지가 여러 번 나오는데 각기 다른 방향을 가리키면(모호) 확정하지 않는다.
+  return resolvedStaOrders.size === 1 ? [...resolvedStaOrders][0]! : null;
+}
+
+// ─────────────────────────────────────────────
 // 도착 예정 정보 조회 adapter (효린 담당)
 // selectedCandidate: searchRoutes()가 반환한 Route 객체 중 사용자가 선택한 것
 // 반환: { gbisStationId, localBusId, arrivals } — arrivals 는 도착 순서대로 최대 2대
 // ─────────────────────────────────────────────
 export async function getArrivalInfo(
-  selectedCandidate: Pick<Route, "gbisStationId" | "localBusId">,
+  selectedCandidate: Pick<Route, "gbisStationId" | "localBusId"> & {
+    destinationStation?: { stationName: string; latitude: number; longitude: number };
+  },
 ): Promise<{ gbisStationId: string; localBusId: string; arrivals: ArrivalInfo[] }> {
-  const { gbisStationId, localBusId } = selectedCandidate;
+  const { gbisStationId, localBusId, destinationStation } = selectedCandidate;
 
   // ODsay startLocalStationID = GBIS stationId (테스트로 동일 확인, 역조회 불필요)
   const busArrivalList = await getBusArrivalByStationId(gbisStationId);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const matched = busArrivalList.find((a: any) => String(a.routeId) === String(localBusId));
+  const matches = busArrivalList.filter((a: any) => String(a.routeId) === String(localBusId));
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let matched: any;
+  if (matches.length <= 1) {
+    matched = matches[0];
+  } else {
+    const staOrder = await resolveDirectionalStaOrder(localBusId, gbisStationId, destinationStation);
+    matched =
+      staOrder === null
+        ? undefined
+        : // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          matches.find((m: any) => readGbisNumber(m.staOrder) === staOrder);
+  }
 
   if (!matched) {
     return { gbisStationId, localBusId, arrivals: [] };

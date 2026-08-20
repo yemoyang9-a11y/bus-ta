@@ -2,12 +2,59 @@
 
 - 작업 식별자: `FIX-GBIS-ARRIVAL-DUPLICATE-ROUTEID`
 - 관련 명세: 「공통 API 및 Function Calling 명세서」 **5.2-A**(도착 차량 정보). 계약 변경은 없다 — 계약대로 채워지지 않는 결함을 고친다.
-- 현재 상태: **`READY`** (2026-08-12 선정, 착수 전). **1단계는 조사다** — 방향 판별 수단을 확정한 뒤 구현한다.
-- **⚠️ 이 결함은 이미 배포된 코드에 있다.** 방향이 틀린 도착정보를 낼 수 있어 우선순위가 높다.
-- 현재 재시도 횟수: `0`
-- 기준선: 서버 테스트 **128/128 pass**(2026-08-11 Task 23-A 시점 실측. 착수 시 재확인할 것)
-- 운영 DB 쓰기: **없음.** 마이그레이션도 만들지 않는다.
-- worktree: `C:/Users/yemoy/bta-gbis`(OneDrive 밖 짧은 경로, node_modules 설치됨). **`claude` 최신 SHA 기준으로 새 브랜치를 딴다.**
+- 현재 상태: **`COMPLETE`**(2026-08-20, 효린 로컬 세션/Claude Code). 커밋 전, `claude/nice-archimedes-iv7iu0` 워킹트리에 반영. **PR 생성·병합은 사용자 몫이다.**
+- **⚠️ 이 결함은 이미 배포된 코드에 있었다.** 방향이 틀린 도착정보를 낼 수 있어 우선순위가 높았다.
+- 현재 재시도 횟수: `0`(1회 구현으로 완료. 단, 구현 전 방향 판별 방식을 두 번 갈아엎었다 — 아래 "1단계 결과" 참고)
+- 기준선: 서버 테스트 **128/128 → 132/132 pass**(신규 4개 net. 기존 128개 전부 유지, `pnpm -r typecheck` 3/3, 서버 build 통과)
+- 운영 DB 쓰기: **없음.** 마이그레이션도 만들지 않았다. 공개 API 계약도 안 바뀌었다(`arrivals`/`occupancy` 응답 형태 그대로).
+- **⚠️ 독립 Reviewer 검증은 없었다.** 이번 세션은 구현자 본인이 테스트로만 검증했다 — Task 23/23-A처럼 별도 Director/Reviewer 재현 절차를 거치지 않았다. PR 리뷰 시 사람이 다시 확인할 것.
+- worktree: `C:/Users/yemoy/bta-gbis`(OneDrive 밖 짧은 경로, node_modules 설치됨)는 예모용으로 예약돼 있었으나, 이번 구현은 효린 로컬 저장소(`C:\Users\PC\Desktop\hanProject\한이음 프로젝트`)에서 진행했다. 브랜치를 새로 따지 않고 기존 워킹트리 변경사항으로 남겼다 — 커밋 여부는 사용자가 결정.
+
+## 1단계 결과 (실측, 2026-08-20)
+
+**최초 계획("다음 정류장 대조")은 실측으로 기각됐다.** 205(233000281)·200(233000268) 둘 다
+수원대학교(233000575) 회차 전/후 occurrence의 바로 다음 정류장이 **완전히 동일**했다
+(같은 도로 구간을 그대로 다시 지나는 노선 형태). `getBusRouteStationListv2`로 실제 노선
+전체 정류장 순서를 받아본 뒤에야 발견했다 — 애초에 이 사실 자체가 실측 전엔 몰랐던 것이다.
+
+**대신 채택한 기준: 목적지 위치 기반.** `destinationStation`이 노선 전체 정류장 순서(`stationSeq`)
+어디 있는지 찾아, 그보다 앞서면서 가장 가까운 보딩역 occurrence를 사용자 방향으로 확정한다.
+서로 다른 3개 노선(205·200·병점역후문의 55번)·왕복 6개 시나리오로 실측 검증했다 — 상세는
+`personal-notes/CODEX_HANDOFF.md` 최신 항목 참고.
+
+**추가로 확인된 사실**: `GBIS_SERVICE_KEY`는 이미 `busrouteservice`(노선정보 조회 서비스)에도
+접근 권한이 있었다. 최초 조사에서 `NO_OPENAPI_SERVICE_ERROR`가 난 것은 활용신청 문제가
+아니라 엔드포인트 이름을 잘못 짚은 것(`getStaionByRouteList` → 실제는 `getBusRouteStationListv2`)
+이었다. **별도 활용신청은 불필요했다.**
+
+## 2단계 구현 결과
+
+- `getArrivalInfo()`가 같은 routeId 매치가 2개 이상이면 방향 판별을 시도하고, 1개 이하면
+  기존 동작 그대로다(완료조건 #4: 중복 없는 노선 결과 불변, 실측 확인).
+- 방향을 확정 못하면(목적지 불일치, 노선 목록 조회 실패, 목적지가 여러 번 나와 모호함 등)
+  `arrivals: []`(완료조건 #3, 안전 기본값).
+- `apps/server/src/adapters/routes/hyorin-route-search.adapter.ts`에 `getBusRouteStations()`,
+  `resolveDirectionalStaOrder()`, `stationMatches()` 추가. `getArrivalInfo()` 시그니처에
+  `destinationStation?`를 추가했다 — `trips.ts` 호출부는 이미 `CreateTripRequest` 전체(즉
+  `destinationStation` 포함)를 넘기고 있어서 **호출부 변경 없이** 타입만 넓혔다.
+- 새 fixture 2개 추가(`gbis-bus-route-station-list-233000281.json`,
+  `-233000268.json`) — 2026-08-20 실제 GBIS 캡처.
+- 기존 "선재 이슈, 미수정" 고정 테스트를 삭제하고 방향 판별 테스트 5개로 교체
+  (`hyorin-route-search.adapter.test.ts`).
+- `docs/ARCHITECTURE.md`의 외부 API 연동 구조에 `getBusRouteStationListv2` 호출 경로를 追加했다.
+  `docs/API_SPEC.md`·`docs/DB_SCHEMA.md`는 공개 계약이 안 바뀌어 수정하지 않았다.
+
+## 남은 위험 / 확인 못한 것
+
+- **정류장 이름 표기가 시스템 간 다르면(오탈자·띄어쓰기) 좌표 폴백(100m 이내)으로 넘어가는데,
+  이 폴백 경로 자체는 실측 사례가 없다** — 지금까지 실측한 3개 노선은 전부 이름이 정확히
+  일치했다. 좌표만 맞고 이름이 다른 실제 사례를 아직 못 찾았다.
+- **목적지가 노선에서 3번 이상 나오는 경우는 실측하지 못했다.** 지금 로직(각 occurrence마다
+  방향을 계산해 하나로 안 모이면 포기)이 이론상으로는 맞지만, 그런 실제 사례가 없어 검증은
+  못 했다.
+- 회차 노선이 아닌(원형 순환, 자정노선 등) 다른 형태의 중복 routeId 케이스는 이번에 실측한
+  3개 사례(전부 "같은 길을 되짚어 오는" 형태) 밖의 것이라 검증되지 않았다.
+- PR 생성·병합, 운영 배포 후 실물 검증은 안 했다. 사용자 몫이다.
 
 ## 왜 이것을 다음 작업으로 골랐나
 
