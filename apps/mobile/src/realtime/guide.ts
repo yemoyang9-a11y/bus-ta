@@ -1,5 +1,8 @@
 export const HANEUM_REALTIME_MODEL = "gpt-realtime-mini";
 
+export const HANEUM_REALTIME_READY_INSTRUCTIONS =
+  '세션 시작 안내로 "버스 도우미를 시작합니다. 목적지를 말씀해주세요."라고 정확히 한 번만 말한다. 다른 문장은 덧붙이지 않는다.';
+
 export const HANEUM_REALTIME_INSTRUCTIONS = `
 당신은 시각장애인의 버스 탑승과 하차를 돕는 한이음 음성 안내 도우미다.
 
@@ -160,6 +163,29 @@ export function createRealtimeSessionUpdateEvent() {
       instructions: HANEUM_REALTIME_INSTRUCTIONS,
       tools: HANEUM_REALTIME_TOOLS,
       tool_choice: "auto",
+      audio: {
+        input: {
+          noise_reduction: {
+            type: "near_field",
+          },
+          turn_detection: {
+            type: "semantic_vad",
+            eagerness: "low",
+            create_response: true,
+            // 휴대폰 스피커·주변 소음의 오인식이 진행 중인 음성을 끊지 않게 한다.
+            interrupt_response: false,
+          },
+        },
+      },
+    },
+  } as const;
+}
+
+export function createRealtimeReadyResponseEvent() {
+  return {
+    type: "response.create",
+    response: {
+      instructions: HANEUM_REALTIME_READY_INSTRUCTIONS,
     },
   } as const;
 }

@@ -15,6 +15,8 @@ type RealtimeWebRTCTransportOptions = {
   onError?: (error: unknown) => void;
   // 예모님 코멘트 1번(2026-08-13): 데이터 채널이 열릴 때까지 기다리는 타임아웃(ms). 기본 10초.
   connectTimeoutMs?: number;
+  // 세션 키 요청부터 적용되는 전체 연결 제한 시간이 지나면 하위 연결도 중단한다.
+  signal?: AbortSignal;
 };
 
 type RealtimeDataChannel = {
@@ -44,7 +46,9 @@ export class RealtimeWebRTCTransport implements RealtimeTransport {
     let mediaStream: MediaStream | null = null;
 
     try {
+      this.throwIfAborted();
       mediaStream = await mediaDevices.getUserMedia({ audio: true, video: false });
+      this.throwIfAborted();
       const dataChannel = peerConnection.createDataChannel("oai-events") as unknown as RealtimeDataChannel;
 
       mediaStream.getTracks().forEach((track: MediaStreamTrack) => {
@@ -77,7 +81,9 @@ export class RealtimeWebRTCTransport implements RealtimeTransport {
       };
 
       const offer = await peerConnection.createOffer({});
+      this.throwIfAborted();
       await peerConnection.setLocalDescription(offer);
+      this.throwIfAborted();
 
       const response = await fetch("https://api.openai.com/v1/realtime/calls", {
         method: "POST",
@@ -87,6 +93,7 @@ export class RealtimeWebRTCTransport implements RealtimeTransport {
           "Content-Type": "application/sdp",
         },
         body: offer.sdp ?? "",
+        signal: this.options.signal,
       });
 
       if (!response.ok) {
@@ -94,6 +101,7 @@ export class RealtimeWebRTCTransport implements RealtimeTransport {
       }
 
       const answerSdp = await response.text();
+      this.throwIfAborted();
       await peerConnection.setRemoteDescription(
         new RTCSessionDescription({
           type: "answer",
@@ -104,6 +112,7 @@ export class RealtimeWebRTCTransport implements RealtimeTransport {
       // 예모님 코멘트 1번 핵심 수정: setRemoteDescription이 끝났다고 채널이 열린 게 아니다.
       // ICE/DTLS 협상이 끝나야 dataChannel.onopen이 호출되므로, 그때까지 기다린 뒤 반환한다.
       await this.waitForDataChannelOpen(dataChannel);
+      this.throwIfAborted();
 
       this.peerConnection = peerConnection;
       this.dataChannel = dataChannel;
@@ -123,6 +132,17 @@ export class RealtimeWebRTCTransport implements RealtimeTransport {
     const timeoutMs = this.options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
 
     return new Promise((resolve, reject) => {
+      const signal = this.options.signal;
+      const cleanup = () => {
+        clearTimeout(timeoutId);
+        signal?.removeEventListener("abort", handleAbort);
+      };
+      const handleAbort = () => {
+        dataChannel.onopen = null;
+        cleanup();
+        reject(new Error("Realtime 연결이 취소되었습니다."));
+      };
+
       if (dataChannel.readyState === "open") {
         resolve();
         return;
@@ -130,14 +150,27 @@ export class RealtimeWebRTCTransport implements RealtimeTransport {
 
       const timeoutId = setTimeout(() => {
         dataChannel.onopen = null;
+        signal?.removeEventListener("abort", handleAbort);
         reject(new Error(`Realtime data channel이 ${timeoutMs}ms 내에 열리지 않았습니다.`));
       }, timeoutMs);
 
       dataChannel.onopen = () => {
-        clearTimeout(timeoutId);
+        cleanup();
         resolve();
       };
+
+      if (signal?.aborted) {
+        handleAbort();
+        return;
+      }
+      signal?.addEventListener("abort", handleAbort, { once: true });
     });
+  }
+
+  private throwIfAborted() {
+    if (this.options.signal?.aborted) {
+      throw new Error("Realtime 연결이 취소되었습니다.");
+    }
   }
 
   send(event: unknown) {

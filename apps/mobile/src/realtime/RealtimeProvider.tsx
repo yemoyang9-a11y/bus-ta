@@ -3,10 +3,11 @@ import * as Location from 'expo-location';
 import { useTrip } from '../state/TripContext';
 import { HaneumRealtimeSession } from './session';
 import { createRealtimeGuideContext } from './context';
+import { connectWithBestEffortLocation, runSingleFlight } from './connect-best-effort';
+import { createLocationRefreshCoordinator } from './location-refresh';
 import type { RealtimeWebRTCTransport } from './webrtc-transport';
 import type { AppAction, AppTripState } from './types';
 
-// 예모님 지침(2026-08-15): MainScreen이 연결 상태를 텍스트로 보여줘야 하므로 세분화한다.
 export type RealtimeConnectionStatus = 'idle' | 'connecting' | 'connected' | 'error';
 
 // RealtimeProvider가 화면에 제공하는 것
@@ -46,31 +47,36 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
   dispatchRef.current = dispatch;
 
   const currentLocationRef = useRef<{ latitude: number; longitude: number } | undefined>(undefined);
+  const locationRefreshRef = useRef<ReturnType<typeof createLocationRefreshCoordinator> | null>(null);
+
+  if (!locationRefreshRef.current) {
+    locationRefreshRef.current = createLocationRefreshCoordinator({
+      setLocation: (location) => {
+        currentLocationRef.current = location;
+      },
+    });
+  }
 
   const refreshCurrentLocation = async () => {
-    const { status } = await Location.requestForegroundPermissionsAsync();
-    if (status !== 'granted') return;
-
-    const location = await Location.getCurrentPositionAsync({});
-    currentLocationRef.current = {
-      latitude: location.coords.latitude,
-      longitude: location.coords.longitude,
-    };
+    await locationRefreshRef.current!({
+      requestPermission: async () => {
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        return status;
+      },
+      getPosition: async () => {
+        const location = await Location.getCurrentPositionAsync({});
+        return {
+          latitude: location.coords.latitude,
+          longitude: location.coords.longitude,
+        };
+      },
+    });
   };
 
   // 위치 권한이 있으면 현재 위치를 주기적으로 갱신해 둔다.
   // search_routes 등에서 모델이 지어낼 수 없는 실제 좌표로만 쓰인다.
   useEffect(() => {
-    let isMounted = true;
-
-    (async () => {
-      await refreshCurrentLocation();
-      if (!isMounted) currentLocationRef.current = undefined;
-    })();
-
-    return () => {
-      isMounted = false;
-    };
+    void refreshCurrentLocation().catch(() => undefined);
   }, []);
 
   const sessionRef = useRef<HaneumRealtimeSession | null>(null);
@@ -83,18 +89,19 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
     sessionRef.current = new HaneumRealtimeSession(guideContext);
   }
 
-  const connect = async () => {
-    if (!sessionRef.current) return;
-    if (isConnected || transport) return;
-    if (connectPromiseRef.current) return connectPromiseRef.current;
+  const connect = () => {
+    if (!sessionRef.current) return Promise.resolve();
+    if (isConnected || transport) return Promise.resolve();
 
     setConnectionStatus('connecting');
     setConnectionError(null);
 
-    connectPromiseRef.current = (async () => {
+    return runSingleFlight(connectPromiseRef, async () => {
       try {
-        await refreshCurrentLocation();
-        const connectedTransport = await sessionRef.current!.connectWebRTC();
+        const connectedTransport = await connectWithBestEffortLocation({
+          refreshCurrentLocation,
+          connectWebRTC: () => sessionRef.current!.connectWebRTC(),
+        });
         setTransport(connectedTransport);
         setIsConnected(true);
         setConnectionStatus('connected');
@@ -105,16 +112,19 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
         );
         throw error;
       }
-    })().finally(() => {
-      connectPromiseRef.current = null;
     });
-
-    return connectPromiseRef.current;
   };
 
   return (
     <RealtimeContext.Provider
-      value={{ session: sessionRef.current, transport, isConnected, connectionStatus, connectionError, connect }}
+      value={{
+        session: sessionRef.current,
+        transport,
+        isConnected,
+        connectionStatus,
+        connectionError,
+        connect,
+      }}
     >
       {children}
     </RealtimeContext.Provider>
