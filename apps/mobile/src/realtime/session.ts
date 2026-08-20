@@ -1,7 +1,10 @@
 import { apiClient } from "../api/client";
 import { dispatchRealtimeFunctionCall, isRealtimeFunctionCallEvent } from "./function-dispatcher";
 import { checkAndDispatchStatusChange } from "./event-dispatcher";
-import { createRealtimeSessionUpdateEvent } from "./guide";
+import {
+  createRealtimeReadyResponseEvent,
+  createRealtimeSessionUpdateEvent,
+} from "./guide";
 import type {
   CreateRealtimeSessionResponse,
   RealtimeGuideContext,
@@ -13,6 +16,10 @@ import { getRealtimeSharedSecret } from "./runtime-config";
 import { RealtimeWebRTCTransport } from "./webrtc-transport";
 import { RealtimeResponseQueue, type PendingResponse } from "./response-queue";
 import { getRealtimeErrorDetails } from "./server-event";
+import {
+  DEFAULT_REALTIME_CONNECTION_TIMEOUT_MS,
+  runWithRealtimeConnectionTimeout,
+} from "./connection-timeout";
 
 // OpenAI Realtime은 동시에 하나의 active response만 허용한다.
 const RESPONSE_CREATE_EVENT_TYPE = "response.create";
@@ -24,6 +31,7 @@ export class HaneumRealtimeSession {
   readonly context: RealtimeGuideContext;
   private transport: RealtimeTransport | null = null;
   private isResponseActive = false;
+  private isOutputAudioActive = false;
   private responseQueue = new RealtimeResponseQueue();
   private activeResponse: PendingResponse | null = null;
   private awaitingRetry: PendingResponse | null = null;
@@ -35,28 +43,48 @@ export class HaneumRealtimeSession {
     this.context = context;
   }
 
-  async createClientSecret(sharedSecret?: string): Promise<CreateRealtimeSessionResponse> {
-    return apiClient.realtime.createSession(sharedSecret ?? getRealtimeSharedSecret());
+  async createClientSecret(
+    sharedSecret?: string,
+    signal?: AbortSignal,
+  ): Promise<CreateRealtimeSessionResponse> {
+    return apiClient.realtime.createSession(
+      sharedSecret ?? getRealtimeSharedSecret(),
+      signal,
+    );
   }
 
   sendSessionUpdate(transport: RealtimeTransport) {
     transport.send(createRealtimeSessionUpdateEvent());
   }
 
-  async connectWebRTC(sharedSecret?: string): Promise<RealtimeWebRTCTransport> {
-    const { clientSecret } = await this.createClientSecret(sharedSecret);
-    let transport: RealtimeWebRTCTransport;
-    transport = new RealtimeWebRTCTransport({
-      clientSecret,
-      onServerEvent: (event) => {
-        this.handleServerEvent(event, transport).catch(() => {});
-      },
-    });
+  async connectWebRTC(
+    sharedSecret?: string,
+    totalTimeoutMs = DEFAULT_REALTIME_CONNECTION_TIMEOUT_MS,
+  ): Promise<RealtimeWebRTCTransport> {
+    let pendingTransport: RealtimeWebRTCTransport | null = null;
 
-    await transport.connect();
-    this.transport = transport;
-    this.sendSessionUpdate(transport);
-    return transport;
+    try {
+      return await runWithRealtimeConnectionTimeout(async (signal) => {
+        const { clientSecret } = await this.createClientSecret(sharedSecret, signal);
+        const transport = new RealtimeWebRTCTransport({
+          clientSecret,
+          signal,
+          onServerEvent: (event) => {
+            this.handleServerEvent(event, transport).catch(() => {});
+          },
+        });
+        pendingTransport = transport;
+
+        await transport.connect();
+        this.transport = transport;
+        this.sendSessionUpdate(transport);
+        this.send(createRealtimeReadyResponseEvent(), transport);
+        return transport;
+      }, totalTimeoutMs);
+    } catch (error) {
+      pendingTransport?.close();
+      throw error;
+    }
   }
 
   async handleServerEvent(event: unknown, transport: RealtimeTransport) {
@@ -73,27 +101,70 @@ export class HaneumRealtimeSession {
 
   /**
    * 서버 이벤트를 보고 응답 진행 상태(isResponseActive)를 갱신한다.
-   * response.done이 확인된 뒤에만 다음 대기 응답을 전송한다.
+   * response.done 뒤 실제 출력 버퍼까지 비워진 후 다음 대기 응답을 전송한다.
    */
   private trackResponseLifecycle(event: unknown) {
     if (event == null || typeof event !== "object") return;
     const value = event as Record<string, unknown>;
+    const eventType = value.type;
 
-    if (value.type === "response.created") {
+    if (
+      eventType === "input_audio_buffer.speech_started" ||
+      eventType === "input_audio_buffer.speech_stopped"
+    ) {
+      console.log(
+        `[Realtime] ${eventType} responseActive=${this.isResponseActive}`,
+      );
+      return;
+    }
+
+    if (
+      eventType === "output_audio_buffer.started" ||
+      eventType === "output_audio_buffer.stopped"
+    ) {
+      this.isOutputAudioActive = eventType === "output_audio_buffer.started";
+      console.log(`[Realtime] ${eventType}`);
+      if (!this.isOutputAudioActive) {
+        this.flushPendingResponse();
+      }
+      return;
+    }
+
+    if (eventType === "session.updated") {
+      const session = value.session as Record<string, unknown> | undefined;
+      const audio = session?.audio as Record<string, unknown> | undefined;
+      const input = audio?.input as Record<string, unknown> | undefined;
+      console.log(
+        "[Realtime] session.updated turn_detection:",
+        JSON.stringify(input?.turn_detection ?? null),
+      );
+      return;
+    }
+
+    if (eventType === "response.created") {
       this.isResponseActive = true;
       return;
     }
 
-    if (value.type === "response.done") {
-      console.log("[Realtime] response.done:", JSON.stringify(value));
+    if (eventType === "response.done") {
+      const response = value.response as Record<string, unknown> | undefined;
+      const statusDetails = response?.status_details as
+        | Record<string, unknown>
+        | undefined;
+      console.log(
+        `[Realtime] response.done status=${String(response?.status ?? "unknown")} reason=${String(statusDetails?.reason ?? "none")}`,
+      );
       this.isResponseActive = false;
       this.activeResponse = null;
       this.flushPendingResponse();
       return;
     }
 
-    if (value.type === "error") {
-      console.log("[Realtime] error event:", JSON.stringify(value));
+    if (eventType === "error") {
+      const { code, clientEventId } = getRealtimeErrorDetails(value);
+      console.log(
+        `[Realtime] error code=${code ?? "unknown"} clientEventId=${clientEventId ?? "none"}`,
+      );
       this.handleErrorEvent(value);
     }
   }
@@ -129,7 +200,7 @@ export class HaneumRealtimeSession {
   }
 
   private flushPendingResponse() {
-    if (this.isResponseActive || !this.transport) return;
+    if (this.isResponseActive || this.isOutputAudioActive || !this.transport) return;
 
     const next = this.awaitingRetry ?? this.responseQueue.dequeue();
     if (!next) return;

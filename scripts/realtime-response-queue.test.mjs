@@ -2,6 +2,15 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { RealtimeResponseQueue } from '../apps/mobile/src/realtime/response-queue.ts';
 import { getRealtimeErrorDetails } from '../apps/mobile/src/realtime/server-event.ts';
+import {
+  HANEUM_REALTIME_READY_INSTRUCTIONS,
+  createRealtimeReadyResponseEvent,
+  createRealtimeSessionUpdateEvent,
+} from '../apps/mobile/src/realtime/guide.ts';
+import {
+  RealtimeConnectionTimeoutError,
+  runWithRealtimeConnectionTimeout,
+} from '../apps/mobile/src/realtime/connection-timeout.ts';
 
 let eventId = 0;
 
@@ -113,4 +122,55 @@ test('Realtime 오류에서 원인 클라이언트 event_id를 error 객체 안�
       clientEventId: 'resp_7',
     },
   );
+});
+
+test('Realtime 세션은 음성 오인식이 진행 중인 응답을 끊지 않도록 설정한다', () => {
+  const update = createRealtimeSessionUpdateEvent();
+
+  assert.deepEqual(update.session.audio.input, {
+    noise_reduction: {
+      type: 'near_field',
+    },
+    turn_detection: {
+      type: 'semantic_vad',
+      eagerness: 'low',
+      create_response: true,
+      interrupt_response: false,
+    },
+  });
+});
+
+test('연결 성공 안내는 Realtime 응답 한 건으로 생성한다', () => {
+  assert.deepEqual(createRealtimeReadyResponseEvent(), {
+    type: 'response.create',
+    response: {
+      instructions: HANEUM_REALTIME_READY_INSTRUCTIONS,
+    },
+  });
+  assert.match(HANEUM_REALTIME_READY_INSTRUCTIONS, /목적지를 말씀해주세요/);
+});
+
+test('전체 연결 제한 시간이 지나면 작업을 중단하고 재시도 가능한 오류를 반환한다', async () => {
+  let wasAborted = false;
+
+  await assert.rejects(
+    runWithRealtimeConnectionTimeout(
+      (signal) =>
+        new Promise((resolve) => {
+          signal.addEventListener('abort', () => {
+            wasAborted = true;
+          });
+          setTimeout(resolve, 100);
+        }),
+      5,
+    ),
+    RealtimeConnectionTimeoutError,
+  );
+
+  assert.equal(wasAborted, true);
+});
+
+test('전체 연결이 제한 시간 안에 끝나면 결과를 그대로 반환한다', async () => {
+  const result = await runWithRealtimeConnectionTimeout(async () => 'connected', 50);
+  assert.equal(result, 'connected');
 });
