@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import * as Speech from 'expo-speech';
 import { useRealtime } from '../realtime/RealtimeProvider';
@@ -8,15 +8,16 @@ import { useTrip } from '../state/TripContext';
 // 구식 STTScreen/ConfirmScreen 흐름은 삭제됨. 목적지 인식·확인은 Realtime 대화 안에서 처리한다.
 // 이 화면의 텍스트 표시는 음성 흐름을 막는 "필수 확인 단계"가 아니라,
 // 저시력 사용자·보호자·테스트 담당자를 위한 보조 정보다.
+//
+// 유나님 확인(2026-08-15): expo-speech(스피커)와 Realtime 마이크가 동시에 켜져 있으면,
+// 스피커 음성을 마이크가 사용자 발화로 재입력해서 AI 응답이 반복·끊기는 원인이 된다.
+// Realtime 연결 중에는 expo-speech를 전혀 사용하지 않고, "목적지를 말씀해주세요" 안내도
+// Realtime 모델이 세션 시작 시 한 번만 말하도록 session.ts/guide.ts 쪽에서 처리한다.
+// 이 화면은 연결 실패 시 안내(재시도 문구)에만 expo-speech를 사용한다 — 그때는 마이크가 꺼져 있어 안전하다.
 export default function MainScreen({ navigation }) {
   const { connect, connectionStatus, connectionError } = useRealtime();
   const { state } = useTrip();
   const { destination, routeCandidates, selectedRoute, tripId } = state;
-
-  // 채린님 확인(2026-08-15): 연결 시도와 "목적지를 말씀해주세요" 안내가 동시에 시작돼서,
-  // 실제로는 아직 연결이 안 된 상태에서 안내만 먼저 끝나버리는 문제 발견.
-  // connectionStatus가 'connected'로 바뀌는 순간에만 안내 음성이 나오도록 변경.
-  const hasAnnouncedReadyRef = useRef(false);
 
   useEffect(() => {
     connect().catch(() => {
@@ -24,31 +25,26 @@ export default function MainScreen({ navigation }) {
     });
   }, []);
 
-  useEffect(() => {
-    if (connectionStatus === 'connected' && !hasAnnouncedReadyRef.current) {
-      hasAnnouncedReadyRef.current = true;
-      Speech.speak('버스 도우미를 시작합니다. 목적지를 말씀해주세요.', { language: 'ko' });
-    }
-  }, [connectionStatus]);
-
   // function-dispatcher.ts는 React 컴포넌트가 아니라 navigation을 직접 호출할 수 없다.
   // 대신 TripContext(단일 원본)를 업데이트하고, MainScreen이 그 변화를 감지해서 화면을 전환한다.
   // (2026-08-15, 방법 1 채택)
+  // 채린님 확인(2026-08-15): 목적지가 채워지자마자 즉시 화면이 넘어가서, 사용자가 인식된
+  // 목적지 텍스트를 볼 시간이 없었다. 노선 목록으로 넘어가기 전 2초 정도 머무르게 지연을 준다.
   useEffect(() => {
-    console.log('[Debug] tripId:', tripId, '/ routeCandidates:', JSON.stringify(routeCandidates));
     if (tripId) {
-      console.log('[Debug] navigate to Riding');
       navigation.navigate('Riding', { tripId, selectedRoute });
       return;
     }
     if (routeCandidates && routeCandidates.length > 0) {
-      console.log('[Debug] navigate to RouteList');
-      navigation.navigate('RouteList');
+      const timer = setTimeout(() => {
+        navigation.navigate('RouteList');
+      }, 2000);
+      return () => clearTimeout(timer);
     }
   }, [tripId, routeCandidates]);
 
+  // 연결 실패 시에만 사용 — 이 시점엔 마이크가 열려 있지 않아 expo-speech가 안전하다.
   const handleRetry = () => {
-    hasAnnouncedReadyRef.current = false;
     Speech.speak('다시 연결을 시도합니다.', { language: 'ko' });
     connect().catch(() => {});
   };
@@ -73,8 +69,12 @@ export default function MainScreen({ navigation }) {
 
       {/* 보조 정보 — 필수 확인 단계 아님, 저시력 사용자·보호자·테스트 담당자용 */}
       <View style={styles.statusBox}>
-        <StatusRow label="연결 상태" value={connectionStatusLabel(connectionStatus)} />
-        <StatusRow label="목적지" value={destination ?? '아직 없음'} />
+        <StatusRow
+          label="연결 상태"
+          value={connectionStatusLabel(connectionStatus)}
+          isConnected={connectionStatus === 'connected'}
+        />
+        <StatusRow label="목적지" value={destination ?? '아직 없음'} highlight />
         <StatusRow label="현재 단계" value={getStatusText()} />
       </View>
 
@@ -104,11 +104,29 @@ function connectionStatusLabel(status) {
   }
 }
 
-function StatusRow({ label, value }) {
+function StatusRow({ label, value, isConnected, highlight }) {
+  const showDot = isConnected !== undefined;
+
   return (
-    <View style={styles.statusRow}>
-      <Text style={styles.statusLabel}>{label}</Text>
-      <Text style={styles.statusValue}>{value}</Text>
+    <View style={[styles.statusRow, highlight && styles.statusRowHighlight]}>
+      <View style={styles.statusLabelRow}>
+        <Text style={[styles.statusLabel, highlight && styles.statusLabelOnHighlight]}>
+          {label}
+        </Text>
+        {showDot && (
+          <View
+            style={[
+              styles.statusDot,
+              { backgroundColor: isConnected ? '#2ECC71' : '#E74C3C' },
+            ]}
+            accessibilityElementsHidden={true}
+            importantForAccessibility="no-hide-descendants"
+          />
+        )}
+      </View>
+      <Text style={[styles.statusValue, highlight && styles.statusValueOnHighlight]}>
+        {value}
+      </Text>
     </View>
   );
 }
@@ -117,115 +135,121 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     justifyContent: 'space-between',
-    backgroundColor: '#0B1B34',
-    paddingHorizontal: 24,
-    paddingTop: 48,
-    paddingBottom: 40,
+    backgroundColor: '#F5F7FA',
+    paddingHorizontal: 20,
+    paddingTop: 40,
+    paddingBottom: 32,
   },
 
-  topSection: {},
-
   title: {
-    fontSize: 26,
-    fontWeight: '700',
-    color: '#FFFFFF',
+    fontSize: 28,
+    fontWeight: '800',
+    color: '#111111',
+    textAlign: 'center',
+    marginBottom: 4,
+  },
+
+  subtitle: {
+    fontSize: 15,
+    fontWeight: '500',
+    color: '#6B7280',
     textAlign: 'center',
     marginBottom: 28,
   },
 
-  // 목적지 — 화면에서 가장 눈에 띄는 요소
-  destinationHero: {
-    alignItems: 'center',
-    marginBottom: 36,
-  },
-
-  destinationLabel: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: '#8FA3C4',
-    marginBottom: 10,
-  },
-
-  destinationValue: {
-    fontSize: 40, // 가장 큰 텍스트 — 목적지가 화면의 주인공
-    lineHeight: 48,
-    fontWeight: '800',
-    color: '#FFFFFF',
-    textAlign: 'center',
-  },
-
-  // 보조 정보 박스 — 상대적으로 작고 눈에 덜 띄게
   statusBox: {
     width: '100%',
-    backgroundColor: '#132743',
-    borderWidth: 2,
-    borderColor: '#2E4A73',
-    borderRadius: 16,
-    paddingVertical: 18,
-    paddingHorizontal: 20,
-    marginBottom: 12,
+    backgroundColor: 'transparent',
+    marginBottom: 28,
   },
 
   statusRow: {
     width: '100%',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 18,
+    borderWidth: 2.5,
+    borderColor: '#B8C2D0',
+    paddingVertical: 22,
+    paddingHorizontal: 22,
     marginBottom: 14,
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 2,
   },
 
-  statusLabelWithDot: {
+  statusRowHighlight: {
+    backgroundColor: '#1E4FD8',
+    borderColor: '#0F2E8C',
+    shadowOpacity: 0.15,
+  },
+
+  statusLabelRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 4,
-  },
-
-  statusDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    marginLeft: 8,
+    justifyContent: 'space-between',
+    marginBottom: 10,
   },
 
   statusLabel: {
-    fontSize: 14,
+    fontSize: 15,
     fontWeight: '600',
-    color: '#8FA3C4',
-    marginBottom: 4,
+    color: '#6B7280',
+  },
+
+  statusLabelOnHighlight: {
+    color: '#DCE6FF',
+  },
+
+  statusDot: {
+    width: 14,
+    height: 14,
+    borderRadius: 7,
+    borderWidth: 1.5,
+    borderColor: '#00000030',
   },
 
   statusValue: {
-    fontSize: 16, // 이전보다 작게 — 보조 정보로 위계 낮춤
-    lineHeight: 22,
-    color: '#D6DEEB',
-    fontWeight: '600',
+    fontSize: 28,
+    lineHeight: 36,
+    color: '#000000',
+    fontWeight: '800',
+  },
+
+  statusValueOnHighlight: {
+    color: '#FFFFFF',
   },
 
   retryButton: {
     width: '100%',
     minHeight: 76,
-    backgroundColor: '#2F6FED',
+    backgroundColor: '#1E4FD8',
     borderRadius: 18,
     justifyContent: 'center',
     alignItems: 'center',
-    paddingHorizontal: 24,
+    paddingHorizontal: 20,
+    marginTop: 4,
   },
 
   retryButtonText: {
     color: '#FFFFFF',
-    fontSize: 24,
+    fontSize: 22,
     fontWeight: '800',
     textAlign: 'center',
   },
 
   hint: {
     width: '100%',
-    minHeight: 84,
-    backgroundColor: '#2F6FED',
+    backgroundColor: '#1E4FD8',
     color: '#FFFFFF',
-    fontSize: 26,
-    lineHeight: 34,
+    fontSize: 24,
+    lineHeight: 32,
     fontWeight: '800',
     textAlign: 'center',
-    paddingHorizontal: 24,
+    paddingVertical: 24,
+    paddingHorizontal: 20,
     borderRadius: 18,
-    justifyContent: 'center',
-  },
+    marginTop: 4,
+  }
 });

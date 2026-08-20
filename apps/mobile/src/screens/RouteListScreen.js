@@ -9,15 +9,11 @@ export default function RouteListScreen({ navigation }) {
   // destination, routeCandidates는 function-dispatcher.ts의 search_routes 처리 결과로 채워진다.
   const { state, dispatch } = useTrip();
   const { destination, routeCandidates } = state;
-  // guideMessage는 별도 필드가 없어, 첫 번째 후보에 실려온 안내 문장을 그대로 사용한다
-  // (기존 ConfirmScreen이 data.routes[0]?.guideMessage로 쓰던 방식과 동일)
-  const guideMessage = routeCandidates?.[0]?.guideMessage || '';
 
   const [loading, setLoading] = useState(false);
 
-  // 채린님 확인(2026-08-15): Realtime 세션이 이미 같은 내용을 음성으로 안내하고 있어서,
-  // 화면 TTS(Speech.speak)와 겹쳐 들리는 문제 발견 — 이 화면의 TTS 호출을 제거한다.
-  // guideMessage는 텍스트로만 표시(보조 정보), 음성 안내는 Realtime 대화가 전담한다.
+  // 채린님 확인(2026-08-15): AI가 이미 노선 후보를 음성으로 안내하므로,
+  // 화면 상단의 guideMessage 텍스트(중복 안내)는 제거한다.
 
   // 정민님 확인(2026-08-12): 노선 선택 후(=여기) BLE 연결 시작, 배터리 절약을 위해
   // 앱 켤 때가 아니라 실제 필요 시점에 연결한다.
@@ -118,7 +114,7 @@ export default function RouteListScreen({ navigation }) {
   if (loading) {
     return (
       <View style={styles.container}>
-        <ActivityIndicator size="large" color="#2196F3" />
+        <ActivityIndicator size="large" color="#1E4FD8" />
         <Text style={{ marginTop: 20 }}>운행을 준비하는 중...</Text>
       </View>
     );
@@ -138,8 +134,6 @@ export default function RouteListScreen({ navigation }) {
 
   return (
     <View style={styles.container}>
-      {/* 보조 정보 표시용 — 음성 안내는 Realtime 대화가 전담 (Speech.speak 없음) */}
-      <Text style={styles.guideMessage}>{guideMessage}</Text>
       <FlatList
         data={routeCandidates}
         keyExtractor={(item) => String(item.candidateId)}
@@ -164,64 +158,74 @@ export default function RouteListScreen({ navigation }) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#fff',
+    backgroundColor: '#F5F7FA',
     padding: 20,
   },
-  guideMessage: {
-    fontSize: 16,
-    color: '#333',
-    marginBottom: 20,
-    padding: 15,
-    backgroundColor: '#E3F2FD',
-    borderRadius: 10,
-  },
+
+  // 노선 카드 — 큰 글씨, 두꺼운 테두리, 넓은 터치 영역
   routeCard: {
-    backgroundColor: '#f5f5f5',
-    padding: 20,
-    borderRadius: 10,
-    marginBottom: 15,
-    borderLeftWidth: 5,
-    borderLeftColor: '#2196F3',
+    backgroundColor: '#FFFFFF',
+    padding: 22,
+    borderRadius: 18,
+    marginBottom: 16,
+    borderWidth: 2.5,
+    borderColor: '#B8C2D0',
+    borderLeftWidth: 8,
+    borderLeftColor: '#1E4FD8',
   },
+
   routeNo: {
-    fontSize: 22,
-    fontWeight: 'bold',
-    marginBottom: 8,
+    fontSize: 26,
+    fontWeight: '800',
+    color: '#111111',
+    marginBottom: 10,
   },
+
   routeInfo: {
-    fontSize: 14,
-    color: '#555',
-    marginBottom: 4,
+    fontSize: 18,
+    lineHeight: 26,
+    color: '#333333',
+    fontWeight: '600',
+    marginBottom: 6,
   },
+
   routeReason: {
-    fontSize: 13,
-    color: '#2196F3',
-    marginTop: 8,
-    fontStyle: 'italic',
+    fontSize: 16,
+    lineHeight: 22,
+    color: '#1E4FD8',
+    marginTop: 10,
+    fontWeight: '700',
   },
+
   emptyContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#fff',
+    backgroundColor: '#F5F7FA',
     padding: 20,
   },
+
   emptyText: {
-    fontSize: 18,
-    color: '#555',
+    fontSize: 22,
+    fontWeight: '700',
+    color: '#333333',
     marginBottom: 30,
     textAlign: 'center',
   },
+
   backButton: {
-    backgroundColor: '#2196F3',
-    padding: 15,
-    borderRadius: 10,
+    backgroundColor: '#1E4FD8',
+    minHeight: 76,
+    borderRadius: 18,
+    justifyContent: 'center',
     alignItems: 'center',
-    width: 200,
+    width: '100%',
+    paddingHorizontal: 20,
   },
+
   backButtonText: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: 'bold',
+    color: '#FFFFFF',
+    fontSize: 22,
+    fontWeight: '800',
   },
 });

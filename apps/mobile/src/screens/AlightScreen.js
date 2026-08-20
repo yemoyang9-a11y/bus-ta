@@ -178,10 +178,19 @@ export default function AlightScreen({ route, navigation }) {
         하차벨을 요청했습니다. 안전하게 하차하세요.
       </Text>
 
-      <View style={styles.infoBox}>
+      <View
+        style={styles.infoBox}
+        accessible={true}
+        accessibilityLabel={
+          bellOutcome === 'waiting'
+            ? BELL_OUTCOME_TEXT.waiting
+            : `${BELL_OUTCOME_TEXT[bellOutcome]} 안전하게 하차 준비를 해주세요.`
+        }
+        accessibilityLiveRegion="polite"
+      >
         {bellOutcome === 'waiting' && (
           <>
-            <ActivityIndicator size="small" color="#fff" style={{ marginBottom: 8 }} />
+            <ActivityIndicator size="small" color="#FFFFFF" style={{ marginBottom: 10 }} />
             <Text style={styles.infoText}>{BELL_OUTCOME_TEXT.waiting}</Text>
           </>
         )}
@@ -194,6 +203,9 @@ export default function AlightScreen({ route, navigation }) {
       <TouchableOpacity
         style={styles.button}
         onPress={handleGoHome}
+        accessibilityRole="button"
+        accessibilityLabel="처음으로 돌아가기"
+        accessibilityHint="메인 화면으로 이동해서 다음 운행을 준비합니다"
       >
         <Text style={styles.buttonText}>처음으로 돌아가기</Text>
       </TouchableOpacity>
@@ -206,53 +218,73 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#FF5252',
-    padding: 20,
+    backgroundColor: '#B3261E', // 진한 레드 — 흰 글씨와의 대비를 강화한 경고색
+    padding: 24,
   },
+
   emoji: {
-    fontSize: 80,
+    fontSize: 72,
     marginBottom: 20,
   },
+
   title: {
     fontSize: 32,
-    fontWeight: 'bold',
-    color: '#fff',
-    marginBottom: 20,
+    fontWeight: '800',
+    color: '#FFFFFF',
+    marginBottom: 16,
   },
+
   message: {
     fontSize: 22,
-    color: '#fff',
-    marginBottom: 30,
+    lineHeight: 30,
+    fontWeight: '600',
+    color: '#FFFFFF',
+    marginBottom: 32,
     textAlign: 'center',
   },
+
+  // 결과 안내 박스 — 반투명 대신 불투명 흰 카드로, 진한 테두리로 경계 명확히
   infoBox: {
-    backgroundColor: 'rgba(255,255,255,0.2)',
-    padding: 20,
-    borderRadius: 12,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 2.5,
+    borderColor: '#7A1913',
+    padding: 22,
+    borderRadius: 18,
     alignItems: 'center',
-    marginBottom: 40,
+    marginBottom: 36,
     width: '100%',
   },
+
   infoText: {
-    fontSize: 16,
-    color: '#fff',
-    fontWeight: 'bold',
-    marginBottom: 8,
+    fontSize: 19,
+    lineHeight: 26,
+    color: '#111111',
+    fontWeight: '800',
+    marginBottom: 10,
+    textAlign: 'center',
   },
+
   infoSubText: {
-    fontSize: 14,
-    color: '#fff',
-  },
-  button: {
-    backgroundColor: '#fff',
-    padding: 15,
-    borderRadius: 10,
-    width: 200,
-    alignItems: 'center',
-  },
-  buttonText: {
-    color: '#FF5252',
     fontSize: 16,
-    fontWeight: 'bold',
+    color: '#333333',
+    fontWeight: '600',
+    textAlign: 'center',
+  },
+
+  // 처음으로 돌아가기 — 풀와이드, 큰 터치 영역
+  button: {
+    backgroundColor: '#FFFFFF',
+    minHeight: 76,
+    borderRadius: 18,
+    width: '100%',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+  },
+
+  buttonText: {
+    color: '#B3261E',
+    fontSize: 22,
+    fontWeight: '800',
   },
 });

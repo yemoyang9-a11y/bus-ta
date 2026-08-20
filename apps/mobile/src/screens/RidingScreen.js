@@ -240,7 +240,12 @@ export default function RidingScreen({ route, navigation }) {
     return (
       <View style={styles.container}>
         <Text style={styles.title}>탑승 중</Text>
-        <View style={styles.guideBox}>
+        <View
+          style={styles.guideBox}
+          accessible={true}
+          accessibilityLabel={status.guideMessage}
+          accessibilityLiveRegion="polite"
+        >
           <Text style={styles.guideText}>{status.guideMessage}</Text>
         </View>
       </View>
@@ -251,27 +256,51 @@ export default function RidingScreen({ route, navigation }) {
     <View style={styles.container}>
       <Text style={styles.title}>탑승 중</Text>
 
-      <View style={styles.infoBox}>
+      <View
+        style={styles.infoBox}
+        accessible={true}
+        accessibilityLabel={`현재 정류장: ${status.currentStation.stationName}`}
+      >
         <Text style={styles.label}>현재 정류장</Text>
         <Text style={styles.stationName}>{status.currentStation.stationName}</Text>
       </View>
 
-      <View style={styles.infoBox}>
+      <View
+        style={styles.infoBox}
+        accessible={true}
+        accessibilityLabel={`다음 정류장: ${status.nextStation.stationName}`}
+      >
         <Text style={styles.label}>다음 정류장</Text>
         <Text style={styles.stationName}>{status.nextStation.stationName}</Text>
       </View>
 
-      <View style={styles.remainBox}>
+      {/* 남은 정류장 — 이 화면의 히어로 정보, 파란 카드로 강조 */}
+      <View
+        style={styles.remainBox}
+        accessible={true}
+        accessibilityLabel={`남은 정류장 ${status.remainingStations}개`}
+        accessibilityLiveRegion="polite"
+      >
         <Text style={styles.remainText}>남은 정류장</Text>
         <Text style={styles.remainCount}>{status.remainingStations}</Text>
       </View>
 
-      <View style={styles.guideBox}>
+      <View
+        style={styles.guideBox}
+        accessible={true}
+        accessibilityLabel={status.guideMessage}
+        accessibilityLiveRegion="polite"
+      >
         <Text style={styles.guideText}>{status.guideMessage}</Text>
       </View>
 
       {status.remainingStations === 2 && (
-        <View style={styles.prepareBox}>
+        <View
+          style={styles.prepareBox}
+          accessible={true}
+          accessibilityLabel="곧 하차를 준비하세요"
+          accessibilityLiveRegion="polite"
+        >
           <Text style={styles.prepareText}>⚠️ 곧 하차 준비하세요</Text>
         </View>
       )}
@@ -282,66 +311,98 @@ export default function RidingScreen({ route, navigation }) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#fff',
+    backgroundColor: '#F5F7FA',
     padding: 20,
   },
+
   title: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    marginBottom: 30,
+    fontSize: 26,
+    fontWeight: '800',
+    color: '#111111',
+    marginBottom: 24,
     textAlign: 'center',
   },
+
+  // 현재/다음 정류장 — 흰 카드, 두꺼운 테두리
   infoBox: {
-    backgroundColor: '#f5f5f5',
-    padding: 15,
-    borderRadius: 10,
-    marginBottom: 15,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 2.5,
+    borderColor: '#B8C2D0',
+    padding: 20,
+    borderRadius: 18,
+    marginBottom: 14,
   },
+
   label: {
-    fontSize: 13,
-    color: '#888',
-    marginBottom: 5,
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#6B7280',
+    marginBottom: 8,
   },
+
   stationName: {
-    fontSize: 22,
-    fontWeight: 'bold',
+    fontSize: 24,
+    fontWeight: '800',
+    color: '#111111',
   },
+
+  // 남은 정류장 — 이 화면의 히어로 카드, 파란 배경으로 강조
   remainBox: {
-    backgroundColor: '#E3F2FD',
-    padding: 15,
-    borderRadius: 10,
-    marginBottom: 15,
+    backgroundColor: '#1E4FD8',
+    borderWidth: 2.5,
+    borderColor: '#0F2E8C',
+    padding: 20,
+    borderRadius: 18,
+    marginBottom: 14,
     alignItems: 'center',
   },
+
   remainText: {
-    fontSize: 14,
-    color: '#555',
-  },
-  remainCount: {
-    fontSize: 40,
-    fontWeight: 'bold',
-    color: '#2196F3',
-  },
-  guideBox: {
-    backgroundColor: '#FFF9C4',
-    padding: 15,
-    borderRadius: 10,
-    marginBottom: 15,
-  },
-  guideText: {
     fontSize: 16,
-    color: '#333',
+    fontWeight: '600',
+    color: '#DCE6FF',
+    marginBottom: 6,
   },
+
+  remainCount: {
+    fontSize: 48,
+    fontWeight: '800',
+    color: '#FFFFFF',
+  },
+
+  // 안내 메시지 — 노란 배경 대신, 팔레트 안의 밝은 회색 카드 + 진한 테두리로 대체
+  // (색상 종류를 늘리지 않기 위해 경고색은 prepareBox에만 사용)
+  guideBox: {
+    backgroundColor: '#FFFFFF',
+    borderWidth: 2.5,
+    borderColor: '#B8C2D0',
+    padding: 20,
+    borderRadius: 18,
+    marginBottom: 14,
+  },
+
+  guideText: {
+    fontSize: 18,
+    lineHeight: 26,
+    fontWeight: '600',
+    color: '#111111',
+  },
+
+  // 하차 준비 경고 — 이 화면에서 유일하게 허용하는 별도 경고색 (주황)
+  // 색맹 고려: 색만이 아니라 ⚠️ 아이콘 + 굵은 텍스트로 이중 신호
   prepareBox: {
-    backgroundColor: '#FFE0B2',
-    padding: 12,
-    borderRadius: 10,
-    marginBottom: 15,
+    backgroundColor: '#FFF4E5',
+    borderWidth: 2.5,
+    borderColor: '#E65100',
+    padding: 18,
+    borderRadius: 18,
+    marginBottom: 14,
     alignItems: 'center',
   },
+
   prepareText: {
-    fontSize: 16,
+    fontSize: 20,
     color: '#E65100',
-    fontWeight: 'bold',
+    fontWeight: '800',
   },
 });

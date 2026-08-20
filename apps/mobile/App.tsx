@@ -18,7 +18,15 @@ export default function App() {
     <TripProvider>
       <RealtimeProvider>
         <NavigationContainer>
-          <Stack.Navigator id={undefined} initialRouteName="Main">
+          <Stack.Navigator
+            id={undefined}
+            initialRouteName="Main"
+            screenOptions={{
+              headerStyle: { height: 52, backgroundColor: '#1E4FD8' },
+              headerTitleStyle: { fontSize: 16, color: '#fff' },
+              headerTintColor: '#fff',
+            }}
+          >
             <Stack.Screen name="Main" component={MainScreen} options={{ title: '버스 도우미' }} />
             <Stack.Screen name="RouteList" component={RouteListScreen} options={{ title: '노선 선택' }} />
             <Stack.Screen name="Riding" component={RidingScreen} options={{ title: '탑승 중' }} />
