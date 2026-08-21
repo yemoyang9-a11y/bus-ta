@@ -664,6 +664,93 @@ test("중복 routeId: 노선 정류장 목록 조회(GBIS busrouteservice)가 �
   assert.deepEqual(info.arrivals, []);
 });
 
+// PR #33 리뷰 지적: 이번 도착정보 응답에 routeId 레코드가 "몇 개 왔는지"만 보고
+// 방향 검증 여부를 정하면, 회차 노선인데 GBIS가 이번엔 반대 방향 레코드를 아예
+// 안 준 경우(레코드 1개) 그 1개를 검증 없이 그대로 써버려 반대 방향을 안내할 수
+// 있다. 지금은 노선 구조(정류장 목록에서 보딩역이 몇 번 나오는지)로 판단하므로
+// 레코드가 1개뿐이어도 방향을 확인한다.
+function stubGbisArrivalItemsAndRoute(t: import("node:test").TestContext, items: unknown[]) {
+  return t.mock.method(axios, "get", async (url: string, config?: { params?: { routeId?: string } }) => {
+    if (url.includes("busarrivalservice")) {
+      return { data: { response: { msgBody: { busArrivalList: items } } } };
+    }
+    if (url.includes("busrouteservice")) {
+      const routeId = config?.params?.routeId ?? "";
+      if (routeId === "233000281") return { data: gbisRouteStations205Fixture };
+      throw new Error(`이 테스트에서 예상하지 못한 routeId 의 busrouteservice 호출: ${routeId}`);
+    }
+    throw new Error(`이 테스트에서 예상하지 못한 axios.get 호출: ${url}`);
+  });
+}
+
+test("중복 routeId 회귀: 반대 방향 레코드 1개만 반환돼도 그대로 쓰지 않고 [] 를 반환한다", async (t) => {
+  // 233000281 은 노선 구조상 233000575 를 두 번 지난다(staOrder 11, 128). 이번엔
+  // GBIS 가 반대 방향(staOrder 11, 목적지가 있는 128 방향이 아님) 레코드 1개만
+  // 줬다고 가정한다 — predictTime 을 일부러 유효값(9분)으로 채워서, 검증 없이
+  // 그대로 썼다면 이 값이 새 나갔을 것임을 보인다.
+  stubGbisArrivalItemsAndRoute(t, [
+    syntheticArrivalItem({ routeId: 233000281, staOrder: 11, predictTime1: "9" }),
+  ]);
+
+  const info = await getArrivalInfo({
+    ...arrivalCandidate("233000281"),
+    destinationStation: DESTINATION_AFTER_TURN_POINT, // staOrder 128 방향으로 확정되는 목적지
+  });
+
+  assert.deepEqual(
+    info.arrivals,
+    [],
+    "반대 방향(staOrder 11)의 도착정보 9분이 검증 없이 새 나가면 안 된다",
+  );
+});
+
+test("중복 routeId 회귀: 정방향 레코드 1개만 와도 검증을 통과하면 정상 반환한다", async (t) => {
+  // 위 테스트와 대비되는 양성 케이스: 레코드가 1개뿐이어도 그 방향이 destinationStation
+  // 과 일치하면(staOrder 128) 정상적으로 도착정보를 반환해야 한다 — 방향 검증이
+  // "레코드 1개면 무조건 []" 로 과도하게 안전한 쪽으로 치우치지 않았는지 확인한다.
+  stubGbisArrivalItemsAndRoute(t, [
+    syntheticArrivalItem({ routeId: 233000281, staOrder: 128, predictTime1: "9" }),
+  ]);
+
+  const info = await getArrivalInfo({
+    ...arrivalCandidate("233000281"),
+    destinationStation: DESTINATION_AFTER_TURN_POINT,
+  });
+
+  assert.deepEqual(info.arrivals.map((a) => a.predictedArrivalMinutes), [9]);
+});
+
+test("PR #33 리뷰 지적: 도착정보 조회와 노선 정류장 조회는 병렬로 실행되어 순차 실행보다 오래 걸리지 않는다", async (t) => {
+  const DELAY_MS = 200;
+  const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  t.mock.method(axios, "get", async (url: string) => {
+    if (url.includes("busarrivalservice")) {
+      await delay(DELAY_MS);
+      return { data: gbisArrivalFixture };
+    }
+    if (url.includes("busrouteservice")) {
+      await delay(DELAY_MS);
+      return { data: gbisRouteStations205Fixture };
+    }
+    throw new Error(`이 테스트에서 예상하지 못한 axios.get 호출: ${url}`);
+  });
+
+  const startedAt = Date.now();
+  await getArrivalInfo({
+    ...arrivalCandidate("233000281"),
+    destinationStation: DESTINATION_AFTER_TURN_POINT,
+  });
+  const elapsedMs = Date.now() - startedAt;
+
+  // 순차 실행이면 최소 2*DELAY_MS(400ms)가 걸린다. 병렬이면 DELAY_MS(200ms) 근처다.
+  // 테스트 환경 오버헤드를 감안해 두 값의 중간(1.5*DELAY_MS)을 기준으로 삼는다.
+  assert.ok(
+    elapsedMs < DELAY_MS * 1.5,
+    `병렬 실행이면 ${DELAY_MS}ms 근처여야 하는데 ${elapsedMs}ms 걸렸다 — 순차 실행으로 되돌아간 것으로 보인다`,
+  );
+});
+
 test("GBIS 도착정보 호출에는 5초 timeout 을 지정한다", async (t) => {
   const seenConfigs: Array<{ timeout?: number } | undefined> = [];
   t.mock.method(axios, "get", async (url: string, config?: { timeout?: number }) => {

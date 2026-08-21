@@ -1,13 +1,21 @@
-# 백엔드 인수인계 — Codex/Claude Code — 2026-08-20 (Task 24 중복 `routeId` 방향 오안내 수정 완료, 커밋·PR 전)
+# 백엔드 인수인계 — Codex/Claude Code — 2026-08-20 (Task 24 PR #33 오픈, 리뷰 반영 완료·재검토 대기)
 
 > **통합 브랜치 head는 PR #21 병합 시점(`5f13b27`) 이후 로컬에서 더 진행됐다.** 이 세션(효린 로컬, 2026-08-20)
 > 시작 시점 HEAD는 `9ff7e61`(PR #32 병합 후)이었다 — **PR #21 이후 원격에 반영된 추가 병합이 있었다는 뜻이다.**
-> 이번 세션은 이 워킹트리에 코드 변경만 남겼고 **커밋·push는 하지 않았다.**
+> Task 24는 브랜치 `hyorin/fix-gbis-duplicate-routeid`(커밋 `bcf6dac`)로 push·**PR #33**(base
+> `claude/nice-archimedes-iv7iu0`) 오픈까지 완료했다. `yemoyang9-a11y`가 Requested changes를 남겼고,
+> 이번 세션에서 전부 반영해 135/135 pass로 만들었다 — **아직 재검토·머지는 안 됐다.**
 >
 > **다음 세션이 지금 바로 할 수 있는 일**
-> - **완료됨(0-B절)**: **Task 24 — 중복 `routeId` 방향 오안내 결함 수정.** 구현·테스트 132/132 pass·typecheck 3/3·build 통과. 커밋·PR 생성은 사용자 몫.
-> - **사용자·팀원 몫**: Realtime smoke 2단계(시크릿), GBIS 재캡처 요청(효린), outbound IP 관측(Render 로그), Task 24 변경분 커밋 여부 결정.
-> - **문서는 저장소와 동기화된 상태가 아닐 수 있다** — PR #21 이후 원격에 추가 병합(PR #32 등)이 있었고, 이번 세션의 0-B절 편집분은 아직 로컬에만 있다.
+> - **PR #33 재검토 대기 중**: 0-B절에 리뷰 지적 3건과 반영 내용 정리. 사람이 다시 승인해야 머지 가능.
+> - **⚠️ 별개로 발견한 운영 이슈(코드 문제 아님)**: Render 배포 서버의 `POST /api/routes/search`가
+>   지금 전부 502 `ROUTE_SEARCH_FAILED`다(`/api/health`는 정상). 효린이 **ODsay API 일일 호출 쿼터
+>   초과**로 확인함 — outbound IP 문제가 아니었다. 쿼터 리셋 후 재확인 필요. `POST /api/trips`는
+>   ODsay를 다시 안 부르므로 영향 없다.
+> - **사용자·팀원 몫**: Realtime smoke 2단계(시크릿), GBIS 재캡처 요청(효린), PR #33 재검토·머지,
+>   ODsay 쿼터 리셋 후 Render `routes/search` 재확인.
+> - **문서는 저장소와 동기화된 상태가 아닐 수 있다** — PR #21 이후 원격에 추가 병합(PR #32 등)이 있었고,
+>   이번 세션의 0-B절 편집분은 PR #33에 포함돼 있으나 아직 머지 전이라 원격 통합 브랜치엔 없다.
 
 > 다음 로컬 에이전트가 현재 백엔드 상태를 사실대로 이어받기 위한 source of truth다.
 > 실제 비밀값, API 키, 토큰, Supabase 키, Realtime `clientSecret`, 응답 원문은 포함하지 않는다.
@@ -106,14 +114,15 @@ routeId=233000268 (200), 같은 정류장
 이름을 잘못 짚은 것(`getStaionByRouteList` → 실제로는 `getBusRouteStationListv2`)이었다.
 **효린이 별도로 활용신청할 필요는 없었다.**
 
-**구현**: `getArrivalInfo()`가 같은 routeId 매치 2개 이상일 때만 방향 판별을 시도하고
-(1개 이하는 기존 동작 그대로), 방향을 확정 못하면(목적지 불일치·노선 조회 실패·모호함)
-`arrivals: []`로 안전하게 접는다. 공개 API 계약(`arrivals`/`occupancy` 응답 형태)은
-바뀌지 않았다 — `getArrivalInfo()` 시그니처에 `destinationStation?`를 추가했을 뿐이고,
-`trips.ts` 호출부는 이미 `CreateTripRequest` 전체를 넘기고 있어 호출부 변경은 없었다.
+**구현(최초 버전, 0-C절에서 리뷰로 재작업됨)**: `getArrivalInfo()`가 같은 routeId 매치
+2개 이상일 때만 방향 판별을 시도하고(1개 이하는 기존 동작 그대로), 방향을 확정 못하면
+(목적지 불일치·노선 조회 실패·모호함) `arrivals: []`로 안전하게 접는다. 공개 API 계약
+(`arrivals`/`occupancy` 응답 형태)은 바뀌지 않았다 — `getArrivalInfo()` 시그니처에
+`destinationStation?`를 추가했을 뿐이고, `trips.ts` 호출부는 이미 `CreateTripRequest`
+전체를 넘기고 있어 호출부 변경은 없었다.
 
-**결과**: 서버 테스트 **128/128 → 132/132 pass**, `pnpm -r typecheck` 3/3, 서버 build
-통과. 마이그레이션 0건, 공개 API 신설 0건. `docs/ARCHITECTURE.md`의 외부 API 연동
+**결과(최초 버전)**: 서버 테스트 **128/128 → 132/132 pass**, `pnpm -r typecheck` 3/3, 서버
+build 통과. 마이그레이션 0건, 공개 API 신설 0건. `docs/ARCHITECTURE.md`의 외부 API 연동
 구조에 `getBusRouteStationListv2` 호출 경로를 추가했다. **독립 Reviewer 검증은 없었다**
 (구현자 본인이 테스트로만 검증) — PR 리뷰 시 사람이 다시 확인해야 한다.
 
@@ -121,8 +130,42 @@ routeId=233000268 (200), 같은 정류장
 실측 사례가 없다(3개 노선 전부 이름이 정확히 일치했다). 목적지가 노선에 3번 이상
 나오는 경우도 실측 못 했다. 상세는 `.agent-loop/CURRENT_TASK.md` Task 24 항목.
 
-이 워킹트리(`C:\Users\PC\Desktop\hanProject\한이음 프로젝트`)에 코드·문서 변경이 남아
-있고, **커밋·push는 하지 않았다** — 사용자가 검토 후 커밋 여부를 결정한다.
+이 절 작성 직후 브랜치 `hyorin/fix-gbis-duplicate-routeid`(커밋 `bcf6dac`)로 커밋·push하고
+**PR #33**을 열었다 — 그 뒤 진행 상황은 0-C절 참고.
+
+---
+
+## 0-C. Task 24 — PR #33 리뷰 반영 (2026-08-20, 같은 세션 후속)
+
+**독립 Reviewer 검증이 실제로 있었다.** `yemoyang9-a11y`가 PR #33에 Requested changes를
+남겼다 — 0-B절이 "독립 Reviewer 검증은 없었다"고 적었던 우려가 정확히 맞아떨어진 사례다.
+
+**리뷰가 찾은 핵심 결함**: 0-B절 구현은 `matches.length <= 1`이면 방향 검증을 건너뛰고
+그대로 썼다. 하지만 GBIS가 회차 노선의 한 방향 레코드만 반환하는 순간(반대 방향이 이번
+응답엔 아예 없음) 그 1개가 반대 방향이어도 검증 없이 안내될 수 있어, **PR이 해결하려던
+핵심 안전 문제가 응답 형태에 따라 다시 발생할 수 있었다.**
+
+**수정**: 판단 기준을 "이번 응답 레코드 개수"에서 **"노선이 이 정류장을 구조적으로 두 번
+이상 지나는가"**(`getBusRouteStationListv2` 결과에서 보딩역 occurrence 수)로 바꿨다.
+레코드가 1개뿐이어도 노선이 구조적으로 회차형이면 destinationStation 기준으로 검증하고,
+그 1개가 잘못된 방향이면 `arrivals: []`로 접는다.
+
+**리뷰가 함께 찾은 성능 문제**: 도착정보 조회와 노선 정류장 조회가 순차 실행돼 각각 최대
+5초, 최악 약 10초까지 `create_trip` 응답이 지연될 수 있었다. `Promise.all`로 병렬화해
+최악 지연을 약 5초로 줄였다. 병렬 실행을 못 박는 회귀 테스트(200ms 지연 mock)를 추가했다.
+
+**결과**: 서버 테스트 **132/132 → 135/135 pass**(반대 방향 1개 레코드 회귀 테스트, 정방향
+1개 레코드 양성 대조 테스트, 병렬 실행 검증 테스트 3개 추가). `pnpm -r typecheck` 3/3, 서버
+build 통과. `.agent-loop/CURRENT_TASK.md`도 PR #33 상태에 맞게 갱신했다.
+
+**CI 관련 리뷰 지적은 부분 반영**: 리뷰가 "CI에서 테스트를 돌리거나 최소한 재현 명령을
+남기라"고 했는데, `.github/workflows/ci.yml`에 테스트 스텝을 추가하는 건 CI/CD 파이프라인
+수정이라 **사용자 확인 없이 하지 않았다.** 대신 재현 명령(`node --import tsx --test
+$(find src -name '*.test.ts')`, `pnpm -r typecheck`)을 이 문서와 `.agent-loop/CURRENT_TASK.md`,
+PR 설명에 남겼다. CI에 테스트 스텝을 추가할지는 사용자가 판단해야 한다.
+
+**PR #33은 아직 재검토·머지 전이다.** 반영한 커밋을 같은 브랜치에 push하고 리뷰어에게
+알려야 다음 단계로 넘어간다.
 
 ---
 

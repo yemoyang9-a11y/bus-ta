@@ -366,25 +366,21 @@ function stationMatches(
  * 있는지"를 찾아, 그보다 앞서면서 가장 가까운 보딩역 occurrence를 사용자가
  * 탈 방향으로 확정한다. 같은 실측 데이터로 왕복 방향 모두 검증했다.
  *
- * 방향을 하나로 확정하지 못하면(목적지 불일치, 노선 조회 실패, 목적지
- * occurrence마다 다른 방향을 가리키는 모호한 경우 등) null을 반환하고,
- * 호출부는 arrivals: [] 로 안전하게 접는다 — 접근성 앱에서 틀린 방향 안내는
- * 정보 누락보다 나쁘다.
+ * 방향을 하나로 확정하지 못하면(목적지 불일치, 목적지 occurrence마다 다른
+ * 방향을 가리키는 모호한 경우 등) null을 반환하고, 호출부는 arrivals: [] 로
+ * 안전하게 접는다 — 접근성 앱에서 틀린 방향 안내는 정보 누락보다 나쁘다.
+ *
+ * routeStations 는 호출부가 이미 조회해 둔 노선 전체 정류장 목록을 그대로
+ * 받는다(순수 함수) — getArrivalInfo() 가 도착정보 조회와 병렬로 미리
+ * 가져오기 때문이다(PR #33 리뷰: 순차 조회 시 최악 10초 지연).
  */
-async function resolveDirectionalStaOrder(
-  routeId: string,
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function resolveDirectionalStaOrder(
+  routeStations: any[],
   gbisStationId: string,
   destinationStation: { stationName: string; latitude: number; longitude: number } | undefined,
-): Promise<number | null> {
+): number | null {
   if (!destinationStation) return null;
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let routeStations: any[];
-  try {
-    routeStations = await getBusRouteStations(routeId);
-  } catch {
-    return null;
-  }
   if (routeStations.length === 0) return null;
 
   const boardingIndexes: number[] = [];
@@ -425,17 +421,37 @@ export async function getArrivalInfo(
 ): Promise<{ gbisStationId: string; localBusId: string; arrivals: ArrivalInfo[] }> {
   const { gbisStationId, localBusId, destinationStation } = selectedCandidate;
 
+  // 도착정보 조회와 노선 정류장 목록 조회를 병렬로 시작한다(PR #33 리뷰). 순차
+  // 실행하면 각각 최대 GBIS_REQUEST_TIMEOUT_MS(5초)라 최악 10초까지 create_trip
+  // 응답이 지연된다. 노선 정류장 목록은 destinationStation 이 있을 때만 방향
+  // 판별에 쓰이므로 그때만 함께 조회한다. 실패해도 방향을 못 정할 뿐이지
+  // 도착정보 조회 자체를 막으면 안 되므로 여기서 흡수한다.
   // ODsay startLocalStationID = GBIS stationId (테스트로 동일 확인, 역조회 불필요)
-  const busArrivalList = await getBusArrivalByStationId(gbisStationId);
+  const [busArrivalList, routeStations] = await Promise.all([
+    getBusArrivalByStationId(gbisStationId),
+    destinationStation ? getBusRouteStations(localBusId).catch(() => []) : Promise.resolve([]),
+  ]);
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const matches = busArrivalList.filter((a: any) => String(a.routeId) === String(localBusId));
+  if (matches.length === 0) {
+    return { gbisStationId, localBusId, arrivals: [] };
+  }
+
+  // 이번 응답에 레코드가 몇 개 왔는지가 아니라, 노선이 이 정류장을 구조적으로
+  // 두 번 이상 지나는지로 방향 검증 여부를 정한다(PR #33 리뷰 핵심 지적). GBIS가
+  // 특정 시점엔 반대 방향 레코드를 아예 안 줄 수 있어서, 레코드가 1개뿐이라고
+  // 곧장 신뢰하면 그 1개가 반대 방향이어도 그대로 안내해버릴 수 있다.
+  const boardingOccursMultipleTimes =
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    routeStations.filter((s: any) => String(s.stationId ?? "") === gbisStationId).length > 1;
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let matched: any;
-  if (matches.length <= 1) {
+  if (matches.length === 1 && !boardingOccursMultipleTimes) {
     matched = matches[0];
   } else {
-    const staOrder = await resolveDirectionalStaOrder(localBusId, gbisStationId, destinationStation);
+    const staOrder = resolveDirectionalStaOrder(routeStations, gbisStationId, destinationStation);
     matched =
       staOrder === null
         ? undefined
