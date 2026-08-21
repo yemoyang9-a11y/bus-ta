@@ -95,17 +95,24 @@ function uniqueRoutesByRouteNo(candidates: Route[]): Route[] {
   });
 }
 
+/**
+ * 이동시간과 배차간격을 순차 비교하면, 배차간격이 아무리 길어도 이동시간이
+ * 조금이라도 짧은 경로가 항상 이겨버린다. 버스가 균등한 간격으로 온다고 가정하면
+ * 평균 대기시간은 배차간격의 절반이므로, "이동시간 + 배차간격/2"를 하나의 예상
+ * 총 소요시간으로 합쳐서 비교한다.
+ */
+function expectedTotalMinutes(route: Route): number {
+  if (route.totalTime == null) return Number.MAX_SAFE_INTEGER;
+  return route.totalTime + (route.intervalTime ?? 0) / 2;
+}
+
 function buildRouteGuideFallback(candidates: Route[]): RouteGuideResult {
   return {
     selectedCandidates: uniqueRoutesByRouteNo(candidates)
       .slice()
       .sort((a, b) => {
-        const timeDiff = (a.totalTime ?? Number.MAX_SAFE_INTEGER) - (b.totalTime ?? Number.MAX_SAFE_INTEGER);
-        if (timeDiff !== 0) return timeDiff;
-
-        const intervalDiff =
-          (a.intervalTime ?? Number.MAX_SAFE_INTEGER) - (b.intervalTime ?? Number.MAX_SAFE_INTEGER);
-        if (intervalDiff !== 0) return intervalDiff;
+        const expectedDiff = expectedTotalMinutes(a) - expectedTotalMinutes(b);
+        if (expectedDiff !== 0) return expectedDiff;
 
         return (a.totalWalk ?? Number.MAX_SAFE_INTEGER) - (b.totalWalk ?? Number.MAX_SAFE_INTEGER);
       })
@@ -201,9 +208,8 @@ candidateId: ${candidate.candidateId}
 후보 목록:
 ${candidateInfos}
 선택 기준:
-1. 총 소요시간이 짧은 경로
-2. 배차 간격이 짧은 경로
-3. 도보 이동 거리가 짧은 경로
+1. "예상 총 소요시간(이동시간 + 배차간격의 절반)"이 짧은 경로를 최우선으로 골라. 이동시간과 배차간격을 따로따로 비교하지 말고, 반드시 더한 값 하나로만 비교해. 배차간격이 길면 이동시간이 조금 짧아도 불리해질 수 있어.
+2. 예상 총 소요시간이 같다면 도보 이동 거리가 짧은 경로를 선택해.
 조건:
 - 반드시 후보 목록에 있는 candidateId만 사용해.
 - selectedCandidates는 최대 2개만 반환해.
