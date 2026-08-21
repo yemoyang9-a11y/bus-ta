@@ -11,10 +11,26 @@
 
 | 함수명 | 역할 | OpenAI 사용 |
 |---|---|---|
-| generateRouteGuide | 노선 후보 안내 문장 생성 + 최대 2개 선택 | O, 키 없으면 fallback |
+| selectRouteCandidates | 노선 후보 최대 2개 선택 | X |
+| generateRouteGuide | 선택된 후보의 안내 문장 생성 | O, 키 없으면 fallback |
 | generateTripStartGuide | 탑승 대기 안내 문장 생성 | O, 키 없으면 fallback |
 | generateMovingGuide | 이동 중 안내 문장 생성 | O, 키 없으면 fallback |
 | generateErrorGuide | 오류 fallback 문장 반환 | X |
+
+## 노선 후보 선택 기준
+
+후보 선택은 `selectRouteCandidates`가 서버에서 결정한다. OpenAI는 선택에 관여하지 않고
+선택된 후보의 안내 문장만 생성하므로, 같은 입력이면 항상 같은 후보가 나온다.
+
+정렬 기준은 다음 순서다.
+
+1. 예상 총 소요시간 = `totalTime + intervalTime / 2` 가 짧은 순
+   - 버스가 균등한 간격으로 온다고 가정하면 평균 대기시간이 배차간격의 절반이므로,
+     이동시간과 배차간격을 따로 비교하지 않고 하나의 값으로 합쳐서 비교한다.
+   - `totalTime` 또는 `intervalTime` 이 없는 후보는 후순위로 보낸다.
+     누락 값을 0분으로 보면 정보가 없다는 이유로 오히려 유리해지기 때문이다.
+2. 예상 총 소요시간이 같으면 `totalWalk` 가 짧은 순
+3. 같은 `routeNo` 는 하나만 남기고, 위 순서대로 최대 2개까지 선택
 
 ## 호출 위치
 
