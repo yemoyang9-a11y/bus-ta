@@ -70,6 +70,7 @@ export type AppAction =
 export type RealtimeGuideContext = {
   getAppState(): AppTripState;
   getCurrentLocation(): { latitude: number; longitude: number } | undefined;
+  refreshCurrentLocation(): Promise<void>;
   dispatchAppAction(action: AppAction): void;
   lastFunctionResult?: unknown;
 };

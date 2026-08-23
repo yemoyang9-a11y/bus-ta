@@ -27,12 +27,15 @@ export default function RidingScreen({ route, navigation }) {
   const requestCounterRef = useRef(0);
   const stoppedRef = useRef(false);
   const stoppingBeaconScanRef = useRef(false); // 예모님 P0-2: 중복 재시도 방지용 진행중 플래그
+  const patchInFlightRef = useRef(false);
   const { state, dispatch } = useTrip();
-  const { session } = useRealtime();
+  const { session, isConnected } = useRealtime();
 
   // 최초 진입 안내
   useFocusEffect(
     React.useCallback(() => {
+      if (isConnected) return;
+
       const timer = setTimeout(() => {
         Speech.speak('버스 위치를 확인하는 중입니다.', { language: 'ko' });
       }, 500);
@@ -41,18 +44,19 @@ export default function RidingScreen({ route, navigation }) {
         clearTimeout(timer);
         Speech.stop();
       };
-    }, [])
+    }, [isConnected])
   );
 
   // 정류장·상태 바뀔 때마다 TTS (1정거장 남은 경우는 아래 하차 안내 useEffect가 별도 처리)
   useEffect(() => {
+    if (isConnected) return;
     if (status.guideMessage && status.remainingStations !== 1) {
       const timer = setTimeout(() => {
         Speech.speak(status.guideMessage, { language: 'ko' });
       }, 500);
       return () => clearTimeout(timer);
     }
-  }, [status.guideMessage, status.remainingStations]);
+  }, [status.guideMessage, status.remainingStations, isConnected]);
 
   // 정민님 확인(2026-08-12): 탑승 완료(WAITING_BUS → ON_BUS 전환) 시 비콘 스캔 중지
   // "탑승하면 버스 찾는 진동이 필요 없으니까" — 하차벨 STOP_REQUEST와는 별개
@@ -95,6 +99,11 @@ export default function RidingScreen({ route, navigation }) {
       status.command === 'STOP_REQUEST' &&
       !bellHandledRef.current
     ) {
+      if (isConnected) {
+        handleAlightNavigation();
+        return;
+      }
+
       const timer = setTimeout(() => {
         Speech.speak(status.guideMessage, {
           language: 'ko',
@@ -105,7 +114,7 @@ export default function RidingScreen({ route, navigation }) {
       }, 500);
       return () => clearTimeout(timer);
     }
-  }, [status]);
+  }, [status, isConnected]);
 
   // 실제 GPS로 3초 간격 PATCH /status 전송
   useEffect(() => {
@@ -122,6 +131,7 @@ export default function RidingScreen({ route, navigation }) {
 
       interval = setInterval(async () => {
         if (!isMounted || stoppedRef.current) return;
+        if (patchInFlightRef.current) return;
         await patchStatus();
       }, 3000);
     })();
@@ -135,6 +145,7 @@ export default function RidingScreen({ route, navigation }) {
   // PATCH /api/trips/{tripId}/status 호출
   // requestId는 앱이 생성하는 멱등 키 — 같은 좌표 재전송 시에는 재사용하지 않고 매 전송마다 새로 발급한다
   const patchStatus = async () => {
+    patchInFlightRef.current = true;
     try {
       const location = await Location.getCurrentPositionAsync({});
       requestCounterRef.current += 1;
@@ -194,6 +205,8 @@ export default function RidingScreen({ route, navigation }) {
       }
       // 네트워크 실패 등은 다음 주기에 재시도 (requestId는 다음 좌표에 새로 발급되므로 중복 걱정 없음)
       console.log('위치 업데이트 실패:', error);
+    } finally {
+      patchInFlightRef.current = false;
     }
   };
 

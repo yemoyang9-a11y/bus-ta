@@ -25,7 +25,7 @@ import {
 const RESPONSE_CREATE_EVENT_TYPE = "response.create";
 const ACTIVE_RESPONSE_ERROR_CODE = "conversation_already_has_active_response";
 const STATUS_RESPONSE_INSTRUCTIONS =
-  "방금 전달된 운행 상태 변화만 근거로 사용자에게 짧고 명확한 한국어 음성 안내를 생성한다. 내부 식별자와 오류 코드는 그대로 읽지 않는다.";
+  "방금 전달된 운행 상태 변화만 근거로 사용자에게 짧고 명확한 한국어 음성 안내를 생성한다. tripStatus가 WAITING_BUS이면 탑승 정류장에서 버스를 기다리는 상태이며, 절대 '탑승했습니다', '탑승 중입니다', '운행을 시작합니다'라고 말하지 않는다. tripStatus가 ON_BUS으로 실제 확인되고 아직 탑승 확인 안내를 하지 않은 경우에만 선택된 실제 routeNo를 사용해 'OO번 버스 탑승이 확인되었습니다.'라고 안내한다. routeNo의 숫자 부분이 네 자리 이상이면 각 숫자를 한 자리씩 읽고, 세 자리 이하면 일반적인 한국어 수 읽기 방식으로 읽는다. 알파벳, 하이픈 뒤 숫자, 괄호 안 표시는 생략하지 않으며, 하이픈(-)은 반드시 '다시'라고 읽는다. routeNo를 확인할 수 없으면 번호를 만들지 말고 '버스 탑승이 확인되었습니다.'라고 안내한다. 내부 식별자와 오류 코드는 그대로 읽지 않는다.";
 
 export class HaneumRealtimeSession {
   readonly context: RealtimeGuideContext;
@@ -36,6 +36,7 @@ export class HaneumRealtimeSession {
   private activeResponse: PendingResponse | null = null;
   private awaitingRetry: PendingResponse | null = null;
   private eventIdCounter = 0;
+  private hasSentReadyResponse = false;
 
   // context는 RealtimeProvider가 TripContext와 연결해서 만든 것을 그대로 받는다.
   // (2026-08-12, 예모님 확정: TripContext를 운행 상태의 유일한 원본으로 사용)
@@ -77,8 +78,8 @@ export class HaneumRealtimeSession {
 
         await transport.connect();
         this.transport = transport;
+        this.hasSentReadyResponse = false;
         this.sendSessionUpdate(transport);
-        this.send(createRealtimeReadyResponseEvent(), transport);
         return transport;
       }, totalTimeoutMs);
     } catch (error) {
@@ -89,6 +90,17 @@ export class HaneumRealtimeSession {
 
   async handleServerEvent(event: unknown, transport: RealtimeTransport) {
     this.trackResponseLifecycle(event);
+
+    if (
+      event != null &&
+      typeof event === "object" &&
+      (event as Record<string, unknown>).type === "session.updated" &&
+      !this.hasSentReadyResponse
+    ) {
+      // 세션 instructions와 tools가 적용된 것을 확인한 뒤 시작 안내를 한 번만 생성한다.
+      this.hasSentReadyResponse = true;
+      this.send(createRealtimeReadyResponseEvent(), transport);
+    }
 
     if (isRealtimeFunctionCallEvent(event)) {
       const clientEvents = await dispatchRealtimeFunctionCall(event, this.context);

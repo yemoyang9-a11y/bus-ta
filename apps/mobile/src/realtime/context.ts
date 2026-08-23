@@ -3,6 +3,7 @@ import type { AppAction, AppTripState, RealtimeGuideContext } from "./types";
 type CreateRealtimeGuideContextParams = {
   getAppState(): AppTripState;
   getCurrentLocation(): { latitude: number; longitude: number } | undefined;
+  refreshCurrentLocation(): Promise<void>;
   dispatchAppAction(action: AppAction): void;
 };
 
@@ -17,6 +18,7 @@ export function createRealtimeGuideContext(
   return {
     getAppState: params.getAppState,
     getCurrentLocation: params.getCurrentLocation,
+    refreshCurrentLocation: params.refreshCurrentLocation,
     dispatchAppAction: params.dispatchAppAction,
   };
 }

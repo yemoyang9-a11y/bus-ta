@@ -29,7 +29,18 @@ type RealtimeDataChannel = {
   close(): void;
 };
 
+type RealtimeTrackEvent = {
+  track: MediaStreamTrack | null;
+};
+
+type RealtimePeerConnectionWithTrackHandler = RTCPeerConnection & {
+  ontrack: ((event: RealtimeTrackEvent) => void) | null;
+};
+
 const DEFAULT_CONNECT_TIMEOUT_MS = 10000;
+// react-native-webrtc의 원격 오디오 gain 기본값은 1이다.
+// 기기 스피커에서 Realtime 안내가 너무 작게 들리지 않도록 AI 음성만 완만하게 증폭한다.
+const REMOTE_AUDIO_VOLUME = 2;
 
 export class RealtimeWebRTCTransport implements RealtimeTransport {
   private readonly options: RealtimeWebRTCTransportOptions;
@@ -47,6 +58,20 @@ export class RealtimeWebRTCTransport implements RealtimeTransport {
 
     try {
       this.throwIfAborted();
+
+      // OpenAI의 WebRTC 연결 예시처럼 원격 오디오 track을 명시적으로 처리한다.
+      // 시스템 전체 음량이 아니라 모델이 보내는 원격 음성 track에만 gain을 적용한다.
+      (peerConnection as RealtimePeerConnectionWithTrackHandler).ontrack = (event) => {
+        const track = event.track;
+
+        if (track?.kind !== "audio") {
+          return;
+        }
+
+        track.enabled = true;
+        track._setVolume(REMOTE_AUDIO_VOLUME);
+      };
+
       mediaStream = await mediaDevices.getUserMedia({ audio: true, video: false });
       this.throwIfAborted();
       const dataChannel = peerConnection.createDataChannel("oai-events") as unknown as RealtimeDataChannel;
