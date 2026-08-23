@@ -8,7 +8,7 @@ Realtime 모델은 음성 대화로 목적지·요청 의도를 파악하고, �
 
 ## 세션과 Function
 
-백엔드가 발급한 단기 키로 앱이 WebRTC 연결을 열고, 앱이 Function 도구와 instructions를 등록한다. 모델 Function은 `search_routes`, `create_trip`, `get_trip_status`, `end_trip` 네 개이며 정확한 입출력과 REST 매핑은 [API_SPEC.md](API_SPEC.md)를 따른다.
+백엔드가 발급한 단기 키로 앱이 WebRTC 연결을 열고, 앱이 Function 도구와 instructions를 등록한다. 모델 Function은 `search_routes`, `create_trip`, `confirm_boarding`, `get_trip_status`, `end_trip` 다섯 개이며 정확한 입출력과 REST 매핑은 [API_SPEC.md](API_SPEC.md)를 따른다.
 
 모델이 요청에 필요한 정보가 부족하면 질문한다. `tripId`, 선택 후보, 현재 위치, `requestId`는 앱·백엔드 결과에서 받아 사용하며 모델이 만들어 내지 않는다.
 
@@ -26,7 +26,9 @@ WebRTC 연결은 ephemeral key 흐름을 따른다. 앱은 SDP offer 원문을 `
 - 경로 선택: 사용자가 명시적으로 선택한 뒤 `create_trip`을 호출한다.
 - 노선 번호 발음: 숫자 부분이 네 자리 이상이면 각 숫자를 한 자리씩 읽고(`1551` → "일 오 오 일"), 세 자리 이하면 일반적인 한국어 수 읽기 방식으로 읽는다(`205` → "이백오"). `700-2`, `720-1` 같은 숫자-숫자 형태의 `routeNo`에서 하이픈은 반드시 "다시"라고 읽으며, 알파벳·하이픈 뒤 숫자·괄호 안 표시를 생략하지 않는다(`1551B` → "일 오 오 일 비", `35-2(A)` → "삼십오 다시 이 에이"). 실제 `routeNo` 데이터는 변경하지 않는다.
 - 탑승 대기: `create_trip` 성공은 `WAITING_BUS` 운행 생성이며 실제 탑승 완료가 아니다. 선택 노선·탑승 정류장·첫 도착 예정 시간을 안내하고, `WAITING_BUS`에서는 탑승 완료·탑승 중·운행 시작으로 표현하지 않는다.
-- 탑승 확인: 백엔드 조회 또는 앱 상태 이벤트가 `ON_BUS`를 반환한 이후에만 실제 탑승이 확인됐다고 안내한다.
+- 탑승 확인: 사용자가 “버스 탔어요”, “버스 탔어”, “지금 탔습니다”처럼 실제 탑승을 명시하면 `confirm_boarding`을 즉시 호출한다. 이 발화는 충분한 `USER_CONFIRMED` 근거이므로 BLE·GPS 재확인이나 반복 질문을 하지 않는다. Function 성공 전에는 “탑승이 확인되었습니다”라고 말하지 않는다. 응답을 기다리는 동안 활성 운행이 바뀌면 이전 `tripId`의 성공 응답을 현재 앱 상태에 반영하거나 성공으로 안내하지 않는다.
+- Function 인자와 역할 경계: 모델은 `confirm_boarding`에 빈 객체만 전달한다. 활성 `tripId`, 탑승확정 전용 `requestId`, `USER_CONFIRMED`는 앱 Dispatcher가 주입한다. BLE 기반 `AUTO_DETECTED` 판정은 프론트엔드·BLE 로직의 책임이며 Realtime Function으로 처리하지 않는다.
+- 탑승 상태 반영: 서버 성공 응답의 `boardingConfirmedAt`이 확인된 뒤에만 앱과 AI가 탑승 완료를 표시·안내한다. 최신 운행 상태가 `WAITING_BUS`이면 GPS 진행 정보가 있더라도 탑승으로 해석하지 않는다.
 - 상태 안내: 저장된 상태 조회 또는 앱 Event Dispatcher가 전달한 실제 변화만 안내한다.
 - 종료: 사용자의 명시적 요청에만 `end_trip`을 호출한다.
 - 오류: 성공을 추정하지 않고 재시도·정보 수정·연결 복구를 안내한다. 서버 내부 오류를 그대로 읽지 않는다.

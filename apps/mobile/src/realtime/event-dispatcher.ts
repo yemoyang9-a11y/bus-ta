@@ -8,6 +8,8 @@ import type { RealtimeGuideContext, TripStatusChangedEvent, TripStatusSnapshot }
  *
  * 감지 대상 (프론트엔드 지침서 기준):
  * - tripStatus
+ * - boardingMethod
+ * - boardingConfirmedAt
  * - remainingStations
  * - currentStation.stationName
  * - bellStatus
@@ -19,6 +21,8 @@ function hasRelevantChange(
   if (!prevStatus) return true; // 이전 상태가 없으면(최초 1회) 무조건 변화로 취급
 
   if (prevStatus.tripStatus !== nextStatus.tripStatus) return true;
+  if (prevStatus.boardingMethod !== nextStatus.boardingMethod) return true;
+  if (prevStatus.boardingConfirmedAt !== nextStatus.boardingConfirmedAt) return true;
   if (prevStatus.remainingStations !== nextStatus.remainingStations) return true;
   if (prevStatus.bellStatus !== nextStatus.bellStatus) return true;
 
@@ -40,6 +44,8 @@ function buildStatusChangeEvent(
   return {
     type: "trip_status_changed",
     tripStatus: nextStatus.tripStatus,
+    boardingMethod: nextStatus.boardingMethod,
+    boardingConfirmedAt: nextStatus.boardingConfirmedAt,
     remainingStations: nextStatus.remainingStations,
     currentStationName: nextStatus.currentStation?.stationName ?? null,
     bellStatus: nextStatus.bellStatus,

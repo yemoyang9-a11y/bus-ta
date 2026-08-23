@@ -9,6 +9,7 @@
     "build": "tsc",
     "start": "tsx src/index.ts",
     "demo:bell": "tsx src/demo/bell-demo.ts",
+    "test:boarding": "tsx --test src/integration/mobile-function-dispatcher.test.ts src/integration/mobile-event-dispatcher.test.ts src/services/trip/confirm-boarding.service.test.ts src/services/trip/update-trip-status.service.test.ts src/services/trip/get-trip-status.service.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

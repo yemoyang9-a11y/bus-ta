@@ -15,6 +15,7 @@
 | --- | --- | --- |
 | `search_routes` | `POST /api/routes/search` | 목적지와 위치로 후보 경로 조회 |
 | `create_trip` | `POST /api/trips` | 사용자가 선택한 후보로 운행 생성 |
+| `confirm_boarding` | `POST /api/trips/{tripId}/boarding/confirm` | 사용자의 명시적 탑승 발화를 `USER_CONFIRMED`로 저장 |
 | `get_trip_status` | `GET /api/trips/{tripId}/status` | 저장된 운행 상태 조회 |
 | `end_trip` | `PATCH /api/trips/{tripId}` | 명시적 사용자 취소·종료 처리 |
 
@@ -26,6 +27,7 @@ Function은 사용자 의도를 처리하는 경로다. 자동 GPS·하차벨 �
 | --- | --- | --- |
 | `POST` | `/api/routes/search` | 없음 |
 | `POST` | `/api/trips` | 운행과 초기 상태 생성 |
+| `POST` | `/api/trips/{tripId}/boarding/confirm` | 탑승 근거 원자 저장 및 현재 탑승 상태(`ON_BUS | NEAR_DESTINATION`) 반환 |
 | `GET` | `/api/trips/{tripId}/status` | 없음 |
 | `PATCH` | `/api/trips/{tripId}` | 사용자 취소 또는 종료 |
 | `PATCH` | `/api/trips/{tripId}/status` | 위치 반영, 운행 상태·하차벨 판단 |
@@ -151,9 +153,41 @@ Function은 사용자 의도를 처리하는 경로다. 자동 GPS·하차벨 �
 
 ## 상태·하차벨 계약
 
-- `PATCH /status`만 위치를 반영하고 상태를 계산한다. `GET /status`는 조회 전용이며 항상 `shouldTriggerBell: false`, `command: null`을 반환한다.
+### `POST /api/trips/{tripId}/boarding/confirm`
+
+명시적 사용자 발화와 프론트 BLE 자동 판정이 공유하는 단일 탑승확정 API다. 두 경로 모두 서버 저장 성공 응답을 받은 뒤에만 앱 상태를 바꾼다.
+
+```json
+{ "requestId": "boarding-voice-001", "boardingMethod": "USER_CONFIRMED" }
+```
+
+```json
+{
+  "requestId": "boarding-ble-001",
+  "boardingMethod": "AUTO_DETECTED",
+  "detectedAt": "2026-08-22T01:00:00.000Z"
+}
+```
+
+- `USER_CONFIRMED`: 사용자가 “버스 탔어요”, “버스 탔어”, “지금 탔습니다”처럼 실제 탑승을 명시하면 충분한 근거다. BLE·GPS 재확인이나 중복 질문 없이 즉시 호출하며 `detectedAt`을 보내지 않는다.
+- `AUTO_DETECTED`: BLE 원시 신호 수집과 최종 자동 판정 알고리즘은 프론트 BLE 모듈 책임이다. 판정이 완료되면 같은 API를 호출하며 `detectedAt`은 선택 ISO 8601 값이다. 서버 확정 시각보다 미래인 값은 `400 INVALID_REQUEST`다.
+- `requestId`는 탑승확정 전용 멱등 키다. 위치 업데이트의 `location_logs.request_id`와 공유하지 않는다.
+- `boardingConfirmedAt`은 클라이언트가 보내지 않으며 서버가 생성한다. 동시 호출은 DB 최초 기록자가 승리하고 이후 요청은 저장된 최초 `boardingMethod`와 시각을 반환한다.
+
+성공 응답은 `tripId`, 현재 `tripStatus`(`ON_BUS | NEAR_DESTINATION`), `boardingMethod`, `boardingConfirmedAt`, `message`, `timestamp`를 반환한다.
+
+| HTTP | `errorCode` | 조건 |
+| ---: | --- | --- |
+| 400 | `INVALID_REQUEST` | body 형식 오류, 허용되지 않은 조합, 미래 `detectedAt` |
+| 404 | `TRIP_NOT_FOUND` | 운행 없음 |
+| 409 | `INVALID_TRIP_STATUS` | 완료·취소 등 확정 불가 상태 |
+| 409 | `BOARDING_STATE_INCONSISTENT` | 상태와 탑승 메타데이터가 서로 모순됨 |
+| 500 | `DB_ERROR` | 원자 저장 또는 저장 결과 조회 실패 |
+
+- `PATCH /status`는 위치를 반영한다. 탑승확정 전에는 정류장 진행과 위치 로그만 저장하고 `tripStatus: WAITING_BUS`, `shouldTriggerBell: false`를 유지한다. 첫 GPS만으로 `ON_BUS`가 되지 않는다. 탑승확정과 경쟁한 stale `WAITING_BUS` 위치 요청은 DB가 저장하거나 `requestId`를 소비하지 않고 내부 재시도 결과를 반환한다. 서버는 최신 확정 상태를 다시 읽어 같은 위치를 한 번만 재계산하므로 `remainingStations = 1`의 하차벨과 `0`의 운행 완료를 놓치지 않는다.
+- 탑승확정 뒤의 `PATCH /status`만 `ON_BUS`, `NEAR_DESTINATION`, `TRIP_DONE`과 하차벨 여부를 계산한다. `GET /status`는 조회 전용이며 항상 `shouldTriggerBell: false`, `command: null`을 반환한다.
 - `remainingStations = 2`는 사전 안내만 하며 하차벨을 만들지 않는다.
-- `remainingStations = 1`과 `bellStatus = NOT_REQUESTED`에서만 백엔드가 `bellRequestId`, `command: "STOP_REQUEST"`, `shouldTriggerBell: true`를 반환하고 `bellStatus`를 `PENDING`으로 바꾼다.
+- `boardingConfirmedAt`이 존재하고 `remainingStations = 1`, `bellStatus = NOT_REQUESTED`일 때만 DB 원자 전이의 승자가 `bellRequestId`, `command: "STOP_REQUEST"`, `shouldTriggerBell: true`를 반환하고 `bellStatus`를 `PENDING`으로 바꾼다. 같은 스냅샷에서 계산된 동시 GPS 요청의 패자는 최신 `PENDING` 상태와 `shouldTriggerBell: false`를 반환한다.
 - `POST /bell/result`는 `PENDING`인 동일 `bellRequestId` 결과만 기록한다. 다른 상태는 `409 INVALID_BELL_STATE`다.
 - 종료 운행(`CANCELLED`, `TRIP_DONE`)은 새 `requestId`의 `PATCH /status`를 `409 INVALID_TRIP_STATUS`로 거부한다. 이미 처리한 동일 `requestId` 재전송은 종료 상태보다 먼저 멱등 처리해 `200`을 반환한다.
 

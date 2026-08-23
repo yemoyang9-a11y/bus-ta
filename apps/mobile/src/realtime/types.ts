@@ -1,4 +1,5 @@
 import type {
+  BoardingMethod,
   CreateTripRequest,
   RealtimeSessionResponse,
   Route,
@@ -7,6 +8,7 @@ import type {
 export type RealtimeFunctionName =
   | "search_routes"
   | "create_trip"
+  | "confirm_boarding"
   | "get_trip_status"
   | "end_trip";
 
@@ -24,6 +26,8 @@ export type RealtimeTransport = {
 // 상태 변화 감지의 대상이 되는 필드만 담은 축소본 (event-dispatcher.ts에서 사용)
 export type TripStatusSnapshot = {
   tripStatus: string | null;
+  boardingMethod: BoardingMethod | null;
+  boardingConfirmedAt: string | null;
   remainingStations: number | null;
   currentStation: { stationName: string } | null;
   bellStatus: string;
@@ -34,6 +38,8 @@ export type TripStatusSnapshot = {
 export type TripStatusChangedEvent = {
   type: "trip_status_changed";
   tripStatus: string | null;
+  boardingMethod: BoardingMethod | null;
+  boardingConfirmedAt: string | null;
   remainingStations: number | null;
   currentStationName: string | null;
   bellStatus: string;
@@ -47,6 +53,8 @@ export type AppTripState = {
   selectedRoute: Route | null;
   tripId: string | null;
   tripStatus: string | null;
+  boardingMethod: BoardingMethod | null;
+  boardingConfirmedAt: string | null;
   currentStation: { stationName: string } | null;
   nextStation: unknown;
   remainingStations: number | null;
@@ -62,6 +70,12 @@ export type AppAction =
   | { type: "SET_DESTINATION_AND_ROUTES"; destination: string; routes: Route[] }
   | { type: "SELECT_ROUTE"; route: Route }
   | { type: "START_TRIP"; tripId: string }
+  | {
+      type: "CONFIRM_BOARDING";
+      tripStatus: "ON_BUS" | "NEAR_DESTINATION";
+      boardingMethod: BoardingMethod;
+      boardingConfirmedAt: string;
+    }
   | { type: "UPDATE_TRIP_STATUS"; status: unknown }
   | { type: "RESET_TRIP" }
   | { type: "SET_LAST_INJECTED_STATUS"; status: TripStatusSnapshot };

@@ -19,6 +19,9 @@ export const API_PATHS = {
     create: `${BASE}/trips`,
     byId: (tripId: string) => `${BASE}/trips/${tripId}`,
     status: (tripId: string) => `${BASE}/trips/${tripId}/status`,
+    boarding: {
+      confirm: (tripId: string) => `${BASE}/trips/${tripId}/boarding/confirm`,
+    },
     bell: {
       result: (tripId: string) => `${BASE}/trips/${tripId}/bell/result`,
     },

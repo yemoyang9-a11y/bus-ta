@@ -24,6 +24,8 @@ export interface TripProgressData {
     nextStation: Station | null;
     remainingStations: number;
     tripStatus: string;
+    boardingMethod: "USER_CONFIRMED" | "AUTO_DETECTED" | null;
+    boardingConfirmedAt: string | null;
     bellStatus: string;
     bellRequestId: string | null;
     command: "STOP_REQUEST" | null;
@@ -82,10 +84,17 @@ export interface SaveStatusAndLocationInput {
   bellRequest?: BellRequestCreateRecord | null;
 }
 
+export interface SaveStatusAndLocationResult {
+  bellCreated: boolean;
+  retryAfterBoardingConfirmation?: boolean;
+}
+
 export interface UpdateTripStatusRepository {
   findTripProgressData(tripId: string): Promise<TripProgressData | null>;
   findLocationLogByRequestId(tripId: string, requestId: string): Promise<LocationLogLookup | null>;
-  saveStatusAndLocation(data: SaveStatusAndLocationInput): Promise<void>;
+  saveStatusAndLocation(
+    data: SaveStatusAndLocationInput,
+  ): Promise<SaveStatusAndLocationResult | void>;
 }
 
 export interface UpdateTripStatusDependencies extends UpdateTripStatusRepository {
@@ -132,6 +141,8 @@ type UpdateTripStatusSuccessBody = {
   nextStation: Station | null;
   remainingStations: number;
   tripStatus: string;
+  boardingMethod: "USER_CONFIRMED" | "AUTO_DETECTED" | null;
+  boardingConfirmedAt: string | null;
   bellStatus: string;
   shouldTriggerBell: boolean;
   bellRequestId?: string;
@@ -144,7 +155,12 @@ type UpdateTripStatusSuccessBody = {
 
 type UpdateTripStatusErrorBody = {
   success: false;
-  errorCode: "INVALID_REQUEST" | "TRIP_NOT_FOUND" | "INVALID_TRIP_STATUS" | "DB_ERROR";
+  errorCode:
+    | "INVALID_REQUEST"
+    | "TRIP_NOT_FOUND"
+    | "INVALID_TRIP_STATUS"
+    | "BOARDING_STATE_INCONSISTENT"
+    | "DB_ERROR";
   message: string;
   timestamp: string;
 };
@@ -163,6 +179,7 @@ export async function updateTripStatus(
   tripId: string,
   input: unknown,
   dependencies: UpdateTripStatusDependencies,
+  canRetryAfterBoardingConfirmation = true,
 ): Promise<UpdateTripStatusResult> {
   const now = dependencies.now ?? defaultNow;
   const timestamp = now();
@@ -202,6 +219,18 @@ export async function updateTripStatus(
         success: false,
         errorCode: "TRIP_NOT_FOUND",
         message: "운행 정보를 찾을 수 없습니다.",
+        timestamp,
+      },
+    };
+  }
+
+  if (hasInconsistentBoardingState(progressData)) {
+    return {
+      httpStatus: 409,
+      body: {
+        success: false,
+        errorCode: "BOARDING_STATE_INCONSISTENT",
+        message: "운행 상태와 탑승 근거가 일치하지 않습니다.",
         timestamp,
       },
     };
@@ -247,12 +276,20 @@ export async function updateTripStatus(
     };
   }
 
-  const progress = calculateProgress(progressData, parsed.data);
+  const boardingConfirmed = hasConfirmedBoarding(progressData);
+  const calculatedProgress = calculateProgress(progressData, parsed.data);
+  const progress = {
+    ...calculatedProgress,
+    tripStatus: boardingConfirmed
+      ? calculatedProgress.tripStatus
+      : TRIP_STATUS.WAITING_BUS,
+  };
 
   // 5단계: 하차 1정거장 전 하차벨 자동 요청 생성.
   // remainingStations=1 & bellStatus=NOT_REQUESTED 일 때만 STOP_REQUEST 를 생성하고 PENDING 으로 전환한다.
   // PENDING/SUCCESS/FAIL 이면 중복 생성하지 않는다.
   const shouldTriggerBell =
+    boardingConfirmed &&
     progress.remainingStations === 1 &&
     progressData.status.bellStatus === BELL_STATUS.NOT_REQUESTED;
 
@@ -288,8 +325,9 @@ export async function updateTripStatus(
     updatedAt: timestamp,
   };
 
+  let saveResult: SaveStatusAndLocationResult | void;
   try {
-    await dependencies.saveStatusAndLocation({
+    saveResult = await dependencies.saveStatusAndLocation({
       status,
       locationLog: {
         tripId,
@@ -350,6 +388,71 @@ export async function updateTripStatus(
         message: "이동 상태를 저장하지 못했습니다.",
         timestamp,
       },
+    };
+  }
+
+  if (saveResult?.retryAfterBoardingConfirmation) {
+    if (!canRetryAfterBoardingConfirmation) {
+      return {
+        httpStatus: 500,
+        body: {
+          success: false,
+          errorCode: "DB_ERROR",
+          message: "탑승확정 이후 위치를 재계산하지 못했습니다.",
+          timestamp,
+        },
+      };
+    }
+
+    return updateTripStatus(tripId, input, dependencies, false);
+  }
+
+  // Supabase returns whether this transaction won the bell compare-and-set.
+  // Re-read after that atomic write so a confirmation that committed while a
+  // stale GPS request was in flight cannot be hidden by the optimistic local
+  // snapshot. Repositories that return void retain the local/test fallback.
+  if (saveResult) {
+    let authoritativeProgress: TripProgressData | null;
+    try {
+      authoritativeProgress = await dependencies.findTripProgressData(tripId);
+    } catch {
+      authoritativeProgress = null;
+    }
+
+    if (!authoritativeProgress) {
+      return {
+        httpStatus: 500,
+        body: {
+          success: false,
+          errorCode: "DB_ERROR",
+          message: "저장된 이동 상태를 확인하지 못했습니다.",
+          timestamp,
+        },
+      };
+    }
+
+    const responseProgress = saveResult.bellCreated
+      ? {
+          ...authoritativeProgress,
+          status: {
+            ...authoritativeProgress.status,
+            bellRequestId:
+              authoritativeProgress.status.bellRequestId ?? bellRequest?.bellRequestId ?? null,
+            command: BELL_COMMAND.STOP_REQUEST,
+          },
+        }
+      : authoritativeProgress;
+
+    return {
+      httpStatus: 200,
+      body: toResponseBody(responseProgress, {
+        message: saveResult.bellCreated
+          ? "이동 상태를 갱신하고 하차벨 요청을 생성했습니다."
+          : "이동 상태를 갱신했습니다.",
+        source: parsed.data.source,
+        timestamp,
+        shouldTriggerBell: saveResult.bellCreated,
+      }),
     };
   }
 
@@ -427,14 +530,19 @@ function toResponseBody(
     nextStation: progressData.status.nextStation,
     remainingStations: progressData.status.remainingStations,
     tripStatus: progressData.status.tripStatus,
+    boardingMethod: progressData.status.boardingMethod,
+    boardingConfirmedAt: progressData.status.boardingConfirmedAt,
     bellStatus: progressData.status.bellStatus,
     shouldTriggerBell,
     command: progressData.status.command,
-    guideMessage: buildGuideMessage(
-      progressData.status.remainingStations,
-      progressData.status.bellStatus,
-      shouldTriggerBell,
-    ),
+    guideMessage:
+      progressData.status.tripStatus === TRIP_STATUS.WAITING_BUS
+        ? "버스 탑승을 기다리고 있습니다."
+        : buildGuideMessage(
+            progressData.status.remainingStations,
+            progressData.status.bellStatus,
+            shouldTriggerBell,
+          ),
     message: options.message,
     timestamp: options.timestamp,
   };
@@ -447,6 +555,27 @@ function toResponseBody(
   }
 
   return body;
+}
+
+function hasConfirmedBoarding(progressData: TripProgressData) {
+  return Boolean(
+    progressData.status.boardingMethod && progressData.status.boardingConfirmedAt,
+  );
+}
+
+function hasInconsistentBoardingState(progressData: TripProgressData) {
+  const confirmed = hasConfirmedBoarding(progressData);
+  const hasAnyBoardingMetadata = Boolean(
+    progressData.status.boardingMethod || progressData.status.boardingConfirmedAt,
+  );
+  const status = progressData.status.tripStatus;
+
+  return (
+    (status === TRIP_STATUS.WAITING_BUS && hasAnyBoardingMetadata) ||
+    ([TRIP_STATUS.ON_BUS, TRIP_STATUS.NEAR_DESTINATION, TRIP_STATUS.TRIP_DONE].includes(
+      status as typeof TRIP_STATUS.ON_BUS,
+    ) && !confirmed)
+  );
 }
 
 function findNearestStationIndex(stationList: Station[], latitude: number, longitude: number) {

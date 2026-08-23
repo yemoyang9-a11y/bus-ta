@@ -25,7 +25,7 @@ import {
 const RESPONSE_CREATE_EVENT_TYPE = "response.create";
 const ACTIVE_RESPONSE_ERROR_CODE = "conversation_already_has_active_response";
 const STATUS_RESPONSE_INSTRUCTIONS =
-  "방금 전달된 운행 상태 변화만 근거로 사용자에게 짧고 명확한 한국어 음성 안내를 생성한다. tripStatus가 WAITING_BUS이면 탑승 정류장에서 버스를 기다리는 상태이며, 절대 '탑승했습니다', '탑승 중입니다', '운행을 시작합니다'라고 말하지 않는다. tripStatus가 ON_BUS으로 실제 확인되고 아직 탑승 확인 안내를 하지 않은 경우에만 선택된 실제 routeNo를 사용해 'OO번 버스 탑승이 확인되었습니다.'라고 안내한다. routeNo의 숫자 부분이 네 자리 이상이면 각 숫자를 한 자리씩 읽고, 세 자리 이하면 일반적인 한국어 수 읽기 방식으로 읽는다. 알파벳, 하이픈 뒤 숫자, 괄호 안 표시는 생략하지 않으며, 하이픈(-)은 반드시 '다시'라고 읽는다. routeNo를 확인할 수 없으면 번호를 만들지 말고 '버스 탑승이 확인되었습니다.'라고 안내한다. 내부 식별자와 오류 코드는 그대로 읽지 않는다.";
+  "방금 전달된 운행 상태 변화만 근거로 사용자에게 짧고 명확한 한국어 음성 안내를 생성한다. tripStatus가 WAITING_BUS이거나 boardingConfirmedAt이 없으면 탑승 정류장에서 버스를 기다리는 상태이며, 절대 '탑승했습니다', '탑승 중입니다', '운행을 시작합니다'라고 말하지 않는다. boardingConfirmedAt이 있고 tripStatus가 ON_BUS 또는 NEAR_DESTINATION이며 아직 같은 탑승 확인 안내를 하지 않은 경우에만 탑승을 안내한다. boardingMethod가 AUTO_DETECTED이면 '버스 탑승이 감지되었습니다. 하차 안내를 시작합니다.'라고 말하고, USER_CONFIRMED이면 '탑승이 확인되었습니다. 하차까지 남은 정류장을 안내하겠습니다.'라고 말한다. 선택된 실제 routeNo를 확인할 수 있으면 문장 앞에 노선 번호를 붙이고, 확인할 수 없으면 번호를 만들지 않는다. routeNo의 숫자 부분이 네 자리 이상이면 각 숫자를 한 자리씩 읽고, 세 자리 이하면 일반적인 한국어 수 읽기 방식으로 읽는다. 알파벳, 하이픈 뒤 숫자, 괄호 안 표시는 생략하지 않으며, 하이픈(-)은 반드시 '다시'라고 읽는다. boardingMethod, boardingConfirmedAt, tripStatus 같은 내부 필드명과 오류 코드는 그대로 읽지 않는다.";
 
 export class HaneumRealtimeSession {
   readonly context: RealtimeGuideContext;
