@@ -1,4 +1,7 @@
-import type {
+import {
+  API_PATHS,
+  type BoardingConfirmationRequest,
+  type BoardingConfirmationResponse,
   BeaconsListResponse,
   BellResultInput,
   CreateTripRequest,
@@ -10,7 +13,7 @@ import type {
   Station,
   StationListItem,
   TripStatusResponse,
-  UpdateTripStatusRequest,
+  type UpdateTripStatusRequest,
 } from "../index.js";
 
 const boardingStation: Station = {
@@ -129,6 +132,27 @@ const updateTripStatusRequest: UpdateTripStatusRequest = {
   source: "MOCK",
 };
 
+const userConfirmedBoardingRequest: BoardingConfirmationRequest = {
+  requestId: "boarding-voice-001",
+  boardingMethod: "USER_CONFIRMED",
+};
+
+const autoDetectedBoardingRequest: BoardingConfirmationRequest = {
+  requestId: "boarding-ble-001",
+  boardingMethod: "AUTO_DETECTED",
+  detectedAt: "2026-07-01T14:34:58+09:00",
+};
+
+const boardingConfirmationResponse: BoardingConfirmationResponse = {
+  success: true,
+  tripId: "trip-001",
+  tripStatus: "ON_BUS",
+  boardingMethod: "USER_CONFIRMED",
+  boardingConfirmedAt: "2026-07-01T14:35:00+09:00",
+  message: "버스 탑승을 확인했습니다.",
+  timestamp: "2026-07-01T14:35:00+09:00",
+};
+
 const tripStatusResponse: TripStatusResponse = {
   success: true,
   tripId: "trip-001",
@@ -136,6 +160,8 @@ const tripStatusResponse: TripStatusResponse = {
   nextStation: stationList[1]!,
   remainingStations: 1,
   tripStatus: "NEAR_DESTINATION",
+  boardingMethod: "USER_CONFIRMED",
+  boardingConfirmedAt: "2026-07-01T14:34:30+09:00",
   bellStatus: "PENDING",
   shouldTriggerBell: true,
   bellRequestId: "bell-request-001",
@@ -178,6 +204,10 @@ void createTripRequest;
 void createTripResponse;
 void endTripResponse;
 void updateTripStatusRequest;
+void userConfirmedBoardingRequest;
+void autoDetectedBoardingRequest;
+void boardingConfirmationResponse;
+void API_PATHS.trips.boarding.confirm("trip-001");
 void tripStatusResponse;
 void bellResultInput;
 void beaconsListResponse;

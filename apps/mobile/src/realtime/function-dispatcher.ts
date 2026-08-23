@@ -1,5 +1,6 @@
 import { apiClient, ApiError } from "../api/client";
 import type {
+  BoardingConfirmationResponse,
   CreateTripResponse,
   CreateTripRequest,
   EndTripResponse,
@@ -21,15 +22,23 @@ import type {
 
 type FunctionResult =
   | RoutesSearchResponse
+  | BoardingConfirmationResponse
   | TripStatusResponse
   | CreateTripResponse
   | EndTripResponse
   | ApiErrorResult;
 
 // 동일 함수+인자 조합의 병렬 재호출 방지 (create_trip은 선택당 1회만 등)
-const inFlightCalls = new Map<string, Promise<RealtimeClientEvent[]>>();
+const inFlightCalls = new Map<string, Promise<FunctionResult>>();
+let boardingRequestSequence = 0;
 
-function buildCallKey(event: RealtimeFunctionCallEvent): string {
+function buildCallKey(
+  event: RealtimeFunctionCallEvent,
+  context: RealtimeGuideContext,
+): string {
+  if (event.name === "confirm_boarding") {
+    return `${event.name}:${context.getAppState().tripId ?? "NO_ACTIVE_TRIP"}`;
+  }
   return `${event.name}:${event.arguments}`;
 }
 
@@ -37,27 +46,26 @@ export async function dispatchRealtimeFunctionCall(
   event: RealtimeFunctionCallEvent,
   context: RealtimeGuideContext,
 ): Promise<RealtimeClientEvent[]> {
-  const callKey = buildCallKey(event);
-
-  const existing = inFlightCalls.get(callKey);
-  if (existing) return existing;
-
-  const callPromise = executeFunctionCall(event, context).finally(() => {
-    inFlightCalls.delete(callKey);
-  });
-
-  inFlightCalls.set(callKey, callPromise);
-  return callPromise;
-}
-
-async function executeFunctionCall(
-  event: RealtimeFunctionCallEvent,
-  context: RealtimeGuideContext,
-): Promise<RealtimeClientEvent[]> {
   const args = parseFunctionArguments(event.arguments);
-  const result = isApiErrorResult(args)
-    ? args
-    : await callBackendFunction(event.name, args, context).catch(toApiErrorResult);
+  let result: FunctionResult;
+
+  if (isApiErrorResult(args)) {
+    result = args;
+  } else {
+    const callKey = buildCallKey(event, context);
+    let callPromise = inFlightCalls.get(callKey);
+
+    if (!callPromise) {
+      callPromise = callBackendFunction(event.name, args, context)
+        .catch(toApiErrorResult)
+        .finally(() => {
+          inFlightCalls.delete(callKey);
+        });
+      inFlightCalls.set(callKey, callPromise);
+    }
+
+    result = await callPromise;
+  }
 
   updateContext(event.name, args, result, context);
 
@@ -89,7 +97,7 @@ export function isRealtimeFunctionCallEvent(event: unknown): event is RealtimeFu
     typeof value.call_id === "string" &&
     typeof value.name === "string" &&
     typeof value.arguments === "string" &&
-    ["search_routes", "create_trip", "get_trip_status", "end_trip"].includes(value.name)
+    ["search_routes", "create_trip", "confirm_boarding", "get_trip_status", "end_trip"].includes(value.name)
   );
 }
 
@@ -103,6 +111,13 @@ async function callBackendFunction(
       return apiClient.routes.search(assertRoutesSearchRequest(args, context));
     case "create_trip":
       return apiClient.trips.create(assertCreateTripRequest(args, context));
+    case "confirm_boarding": {
+      const tripId = assertCurrentTripId(context);
+      return apiClient.trips.confirmBoarding(tripId, {
+        requestId: createBoardingRequestId(tripId),
+        boardingMethod: "USER_CONFIRMED",
+      });
+    }
     case "get_trip_status":
       return apiClient.trips.getStatus(assertTripId(args, context));
     case "end_trip": {
@@ -151,6 +166,17 @@ function updateContext(
     if (statusResult.tripStatus === "CANCELLED" || statusResult.tripStatus === "TRIP_DONE") {
       clearActiveTripContext(context);
     }
+    return;
+  }
+
+  if (name === "confirm_boarding") {
+    const boardingResult = result as BoardingConfirmationResponse;
+    context.dispatchAppAction({
+      type: "CONFIRM_BOARDING",
+      tripStatus: boardingResult.tripStatus,
+      boardingMethod: boardingResult.boardingMethod,
+      boardingConfirmedAt: boardingResult.boardingConfirmedAt,
+    });
     return;
   }
 
@@ -235,6 +261,16 @@ function toCreateTripRequest(selectedRoute: Route, destination: string): CreateT
 function assertTripId(args: unknown, context: RealtimeGuideContext): string {
   const value = assertRecord(args);
   return assertActiveTripId(value.tripId, context.getAppState().tripId);
+}
+
+function assertCurrentTripId(context: RealtimeGuideContext): string {
+  const activeTripId = context.getAppState().tripId;
+  return assertActiveTripId(activeTripId, activeTripId);
+}
+
+function createBoardingRequestId(tripId: string): string {
+  boardingRequestSequence += 1;
+  return `boarding-${tripId}-${Date.now()}-${boardingRequestSequence}`;
 }
 
 function assertEndTripRequest(

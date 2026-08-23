@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { BELL_COMMAND, BELL_STATUS, TRIP_STATUS } from "@bus-ta/shared";
+import { BELL_COMMAND, BELL_STATUS, BOARDING_METHOD, TRIP_STATUS } from "@bus-ta/shared";
 import {
   DuplicateLocationRequestError,
   TripCancelledDuringUpdateError,
@@ -161,3 +161,88 @@ test("cancels through the atomic RPC and returns its terminal-state result", asy
     },
   });
 });
+
+test("reports whether this location update atomically created the bell request", async () => {
+  const repository = new SupabaseTripRepository(
+    { url: "https://supabase.example", apiKey: "service-key" },
+    async () =>
+      new Response('"SAVED_BELL_CREATED"', {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+  );
+
+  const result = await repository.saveStatusAndLocation(input);
+
+  assert.deepEqual(result, { bellCreated: true });
+});
+
+test("confirms boarding through the dedicated atomic RPC", async () => {
+  let request: { url: string; init: RequestInit | undefined } | null = null;
+  const repository = new SupabaseTripRepository(
+    { url: "https://supabase.example", apiKey: "service-key" },
+    async (url, init) => {
+      request = { url: String(url), init };
+      return new Response('"CONFIRMED"', {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    },
+  );
+
+  const result = await repository.confirmBoarding({
+    tripId: "trip-test-001",
+    requestId: "boarding-voice-001",
+    boardingMethod: BOARDING_METHOD.USER_CONFIRMED,
+    detectedAt: null,
+    confirmedAt: "2026-08-22T01:00:00.000Z",
+  });
+
+  assert.equal(result, "CONFIRMED");
+  assert.deepEqual(request, {
+    url: "https://supabase.example/rest/v1/rpc/confirm_trip_boarding",
+    init: {
+      method: "POST",
+      headers: {
+        apikey: "service-key",
+        Authorization: "Bearer service-key",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        p_trip_id: "trip-test-001",
+        p_request_id: "boarding-voice-001",
+        p_boarding_method: BOARDING_METHOD.USER_CONFIRMED,
+        p_detected_at: null,
+        p_confirmed_at: "2026-08-22T01:00:00.000Z",
+      }),
+    },
+  });
+});
+
+for (const outcome of [
+  "ALREADY_CONFIRMED",
+  "TRIP_NOT_FOUND",
+  "INVALID_STATUS",
+  "INCONSISTENT",
+] as const) {
+  test(`returns ${outcome} from the boarding RPC`, async () => {
+    const repository = new SupabaseTripRepository(
+      { url: "https://supabase.example", apiKey: "service-key" },
+      async () =>
+        new Response(JSON.stringify(outcome), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+
+    const result = await repository.confirmBoarding({
+      tripId: "trip-test-001",
+      requestId: "boarding-ble-001",
+      boardingMethod: BOARDING_METHOD.AUTO_DETECTED,
+      detectedAt: "2026-08-22T00:59:58.000Z",
+      confirmedAt: "2026-08-22T01:00:00.000Z",
+    });
+
+    assert.equal(result, outcome);
+  });
+}

@@ -13,6 +13,8 @@ const INITIAL_STATUS = {
   nextStation: null,
   remainingStations: null,
   tripStatus: 'WAITING_BUS',
+  boardingMethod: null,
+  boardingConfirmedAt: null,
   shouldTriggerBell: false,
   bellStatus: 'NOT_REQUESTED',
   bellRequestId: null,
@@ -29,6 +31,8 @@ export default function RidingScreen({ route, navigation }) {
   const stoppingBeaconScanRef = useRef(false); // 예모님 P0-2: 중복 재시도 방지용 진행중 플래그
   const { state, dispatch } = useTrip();
   const { session } = useRealtime();
+  const currentTripStatus = state.tripStatus ?? status.tripStatus;
+  const boardingConfirmedAt = state.boardingConfirmedAt ?? status.boardingConfirmedAt;
 
   // 최초 진입 안내
   useFocusEffect(
@@ -64,7 +68,7 @@ export default function RidingScreen({ route, navigation }) {
   // 실패하면 beaconScanActive가 true로 남아있어 다음 GPS 주기(3초 후)에 다시 시도된다.
   useEffect(() => {
     if (
-      status.tripStatus === 'ON_BUS' &&
+      boardingConfirmedAt &&
       state.beaconScanActive &&
       !stoppingBeaconScanRef.current
     ) {
@@ -80,7 +84,7 @@ export default function RidingScreen({ route, navigation }) {
           stoppingBeaconScanRef.current = false;
         });
     }
-  }, [status.tripStatus, state.beaconScanActive]);
+  }, [boardingConfirmedAt, state.beaconScanActive]);
 
   // 1정거장 남았을 때 TTS 출력 후 하차 안내 화면 전환
   // API_SPEC.md 기준:
@@ -217,7 +221,9 @@ export default function RidingScreen({ route, navigation }) {
   if (!status.currentStation || !status.nextStation) {
     return (
       <View style={styles.container}>
-        <Text style={styles.title}>탑승 중</Text>
+        <Text style={styles.title}>
+          {currentTripStatus === 'WAITING_BUS' ? '버스 탑승 대기' : '탑승 중'}
+        </Text>
         <View style={styles.guideBox}>
           <Text style={styles.guideText}>{status.guideMessage}</Text>
         </View>
@@ -227,7 +233,9 @@ export default function RidingScreen({ route, navigation }) {
 
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>탑승 중</Text>
+      <Text style={styles.title}>
+        {currentTripStatus === 'WAITING_BUS' ? '버스 탑승 대기' : '탑승 중'}
+      </Text>
 
       <View style={styles.infoBox}>
         <Text style={styles.label}>현재 정류장</Text>

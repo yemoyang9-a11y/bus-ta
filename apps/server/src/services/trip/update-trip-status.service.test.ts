@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { BELL_COMMAND, BELL_STATUS, TRIP_STATUS } from "@bus-ta/shared";
+import { BELL_COMMAND, BELL_STATUS, BOARDING_METHOD, TRIP_STATUS } from "@bus-ta/shared";
 import {
   DuplicateLocationRequestError,
   TripCancelledDuringUpdateError,
@@ -33,6 +33,8 @@ const baseStatus: TripProgressData["status"] = {
   nextStation: TEST_ROUTE.stationList[0]!,
   remainingStations: TEST_ROUTE.stationList.length - 1,
   tripStatus: TRIP_STATUS.WAITING_BUS,
+  boardingMethod: null,
+  boardingConfirmedAt: null,
   bellStatus: BELL_STATUS.NOT_REQUESTED,
   bellRequestId: null,
   command: null,
@@ -41,6 +43,11 @@ const baseStatus: TripProgressData["status"] = {
   recordedAt: null,
   updatedAt: "2026-07-01T14:31:00+09:00",
 };
+
+const confirmedBoarding = {
+  boardingMethod: BOARDING_METHOD.USER_CONFIRMED,
+  boardingConfirmedAt: "2026-07-01T14:34:00+09:00",
+} as const;
 
 test("updates current station, next station, remainingStations, and tripStatus from a new location", async () => {
   const saved: unknown[] = [];
@@ -73,11 +80,13 @@ test("updates current station, next station, remainingStations, and tripStatus f
     currentStation: TEST_ROUTE.stationList[1],
     nextStation: TEST_ROUTE.stationList[2],
     remainingStations: 2,
-    tripStatus: TRIP_STATUS.ON_BUS,
+    tripStatus: TRIP_STATUS.WAITING_BUS,
+    boardingMethod: null,
+    boardingConfirmedAt: null,
     bellStatus: BELL_STATUS.NOT_REQUESTED,
     shouldTriggerBell: false,
     command: null,
-    guideMessage: "하차까지 두 정류장 남았습니다. 하차 준비를 시작하세요.",
+    guideMessage: "버스 탑승을 기다리고 있습니다.",
     source: "MOCK",
     message: "이동 상태를 갱신했습니다.",
     timestamp: "2026-07-01T14:35:01+09:00",
@@ -89,7 +98,7 @@ test("updates current station, next station, remainingStations, and tripStatus f
       currentStation: TEST_ROUTE.stationList[1],
       nextStation: TEST_ROUTE.stationList[2],
       remainingStations: 2,
-      tripStatus: TRIP_STATUS.ON_BUS,
+      tripStatus: TRIP_STATUS.WAITING_BUS,
       bellStatus: BELL_STATUS.NOT_REQUESTED,
       lastRequestId: "loc-001",
       locationSource: "MOCK",
@@ -131,6 +140,7 @@ test("marks the trip TRIP_DONE when the destination station is reached", async (
           currentStation: TEST_ROUTE.stationList[2]!,
           nextStation: TEST_ROUTE.stationList[3]!,
           remainingStations: 1,
+          ...confirmedBoarding,
           tripStatus: TRIP_STATUS.NEAR_DESTINATION,
         },
       }),
@@ -162,6 +172,92 @@ test("marks the trip TRIP_DONE when the destination station is reached", async (
   assert.equal(savedInput.locationLog.reason, null);
 });
 
+test("keeps WAITING_BUS and never creates a bell before boarding confirmation", async () => {
+  const saved: unknown[] = [];
+  let generatedBellRequest = false;
+
+  const result = await updateTripStatus(
+    "trip-test-001",
+    {
+      requestId: "loc-waiting-near",
+      latitude: TEST_ROUTE.stationList[2]!.latitude,
+      longitude: TEST_ROUTE.stationList[2]!.longitude,
+      recordedAt: "2026-08-22T01:00:00.000Z",
+      source: "GPS",
+    },
+    {
+      findTripProgressData: async () => ({ trip: baseTrip, status: baseStatus }),
+      findLocationLogByRequestId: async () => null,
+      saveStatusAndLocation: async (data) => {
+        saved.push(data);
+      },
+      generateBellRequestId: () => {
+        generatedBellRequest = true;
+        return "bell-must-not-exist";
+      },
+      now: () => "2026-08-22T01:00:01.000Z",
+    },
+  );
+
+  assert.equal(result.httpStatus, 200);
+  assert.equal(result.body.success, true);
+  assert.equal(result.body.tripStatus, TRIP_STATUS.WAITING_BUS);
+  assert.equal(result.body.remainingStations, 1);
+  assert.equal(result.body.shouldTriggerBell, false);
+  assert.equal(result.body.boardingConfirmedAt, null);
+  assert.equal(generatedBellRequest, false);
+  assert.equal(saved.length, 1);
+  assert.equal("bellRequest" in (saved[0] as Record<string, unknown>), false);
+});
+
+test("returns the authoritative ON_BUS state when confirmation wins during a stale GPS save", async () => {
+  let findCalls = 0;
+  let saved = false;
+
+  const result = await updateTripStatus(
+    "trip-test-001",
+    {
+      requestId: "loc-stale-after-confirmation",
+      latitude: TEST_ROUTE.stationList[1]!.latitude,
+      longitude: TEST_ROUTE.stationList[1]!.longitude,
+      recordedAt: "2026-08-22T01:00:01.000Z",
+      source: "GPS",
+    },
+    {
+      findTripProgressData: async () => {
+        findCalls += 1;
+        if (!saved) return { trip: baseTrip, status: baseStatus };
+        return {
+          trip: baseTrip,
+          status: {
+            ...baseStatus,
+            currentStation: TEST_ROUTE.stationList[1]!,
+            nextStation: TEST_ROUTE.stationList[2]!,
+            remainingStations: 2,
+            tripStatus: TRIP_STATUS.ON_BUS,
+            boardingMethod: BOARDING_METHOD.USER_CONFIRMED,
+            boardingConfirmedAt: "2026-08-22T01:00:00.000Z",
+            lastRequestId: "loc-stale-after-confirmation",
+          },
+        };
+      },
+      findLocationLogByRequestId: async () => null,
+      saveStatusAndLocation: async () => {
+        saved = true;
+        return { bellCreated: false };
+      },
+      now: () => "2026-08-22T01:00:02.000Z",
+    },
+  );
+
+  assert.equal(result.httpStatus, 200);
+  if (result.httpStatus !== 200) throw new Error("expected successful status update");
+  assert.equal(findCalls, 2);
+  assert.equal(result.body.tripStatus, TRIP_STATUS.ON_BUS);
+  assert.equal(result.body.boardingMethod, BOARDING_METHOD.USER_CONFIRMED);
+  assert.equal(result.body.boardingConfirmedAt, "2026-08-22T01:00:00.000Z");
+});
+
 test("ignores a backward station update and records BACKWARD_STATION_IGNORED", async () => {
   const saved: unknown[] = [];
 
@@ -182,6 +278,7 @@ test("ignores a backward station update and records BACKWARD_STATION_IGNORED", a
           currentStation: TEST_ROUTE.stationList[1]!,
           nextStation: TEST_ROUTE.stationList[2]!,
           remainingStations: 2,
+          ...confirmedBoarding,
           tripStatus: TRIP_STATUS.ON_BUS,
         },
       }),
@@ -295,6 +392,7 @@ test("returns current status without saving a new location when requestId is dup
           currentStation: TEST_ROUTE.stationList[1]!,
           nextStation: TEST_ROUTE.stationList[2]!,
           remainingStations: 2,
+          ...confirmedBoarding,
           tripStatus: TRIP_STATUS.ON_BUS,
           lastRequestId: "loc-001",
         },
@@ -372,6 +470,7 @@ test("auto-generates a bell request when remainingStations becomes 1 and bell is
           currentStation: TEST_ROUTE.stationList[1]!,
           nextStation: TEST_ROUTE.stationList[2]!,
           remainingStations: 2,
+          ...confirmedBoarding,
           tripStatus: TRIP_STATUS.ON_BUS,
         },
       }),
@@ -407,6 +506,132 @@ test("auto-generates a bell request when remainingStations becomes 1 and bell is
   });
 });
 
+test("returns STOP_REQUEST when the database confirms this GPS request won the bell transition", async () => {
+  let saved = false;
+
+  const result = await updateTripStatus(
+    "trip-test-001",
+    {
+      requestId: "loc-bell-winner",
+      latitude: TEST_ROUTE.stationList[2]!.latitude,
+      longitude: TEST_ROUTE.stationList[2]!.longitude,
+      recordedAt: "2026-08-22T01:00:30.000Z",
+      source: "GPS",
+    },
+    {
+      findTripProgressData: async () => {
+        if (!saved) {
+          return {
+            trip: baseTrip,
+            status: {
+              ...baseStatus,
+              currentStation: TEST_ROUTE.stationList[1]!,
+              nextStation: TEST_ROUTE.stationList[2]!,
+              remainingStations: 2,
+              ...confirmedBoarding,
+              tripStatus: TRIP_STATUS.ON_BUS,
+            },
+          };
+        }
+
+        // Supabase status reads intentionally return command:null because GET
+        // must never replay an executable command.
+        return {
+          trip: baseTrip,
+          status: {
+            ...baseStatus,
+            currentStation: TEST_ROUTE.stationList[2]!,
+            nextStation: TEST_ROUTE.stationList[3]!,
+            remainingStations: 1,
+            ...confirmedBoarding,
+            tripStatus: TRIP_STATUS.NEAR_DESTINATION,
+            bellStatus: BELL_STATUS.PENDING,
+            bellRequestId: "bell-db-winner",
+            command: null,
+            lastRequestId: "loc-bell-winner",
+          },
+        };
+      },
+      findLocationLogByRequestId: async () => null,
+      saveStatusAndLocation: async () => {
+        saved = true;
+        return { bellCreated: true };
+      },
+      generateBellRequestId: () => "bell-db-winner",
+      now: () => "2026-08-22T01:00:31.000Z",
+    },
+  );
+
+  assert.equal(result.httpStatus, 200);
+  if (result.httpStatus !== 200) throw new Error("expected successful status update");
+  assert.equal(result.body.shouldTriggerBell, true);
+  assert.equal(result.body.bellStatus, BELL_STATUS.PENDING);
+  assert.equal(result.body.bellRequestId, "bell-db-winner");
+  assert.equal(result.body.command, BELL_COMMAND.STOP_REQUEST);
+});
+
+test("returns shouldTriggerBell false when another GPS request wins the bell transition", async () => {
+  let saved = false;
+
+  const result = await updateTripStatus(
+    "trip-test-001",
+    {
+      requestId: "loc-bell-loser",
+      latitude: TEST_ROUTE.stationList[2]!.latitude,
+      longitude: TEST_ROUTE.stationList[2]!.longitude,
+      recordedAt: "2026-08-22T01:01:00.000Z",
+      source: "GPS",
+    },
+    {
+      findTripProgressData: async () => {
+        if (!saved) {
+          return {
+            trip: baseTrip,
+            status: {
+              ...baseStatus,
+              currentStation: TEST_ROUTE.stationList[1]!,
+              nextStation: TEST_ROUTE.stationList[2]!,
+              remainingStations: 2,
+              ...confirmedBoarding,
+              tripStatus: TRIP_STATUS.ON_BUS,
+            },
+          };
+        }
+
+        return {
+          trip: baseTrip,
+          status: {
+            ...baseStatus,
+            currentStation: TEST_ROUTE.stationList[2]!,
+            nextStation: TEST_ROUTE.stationList[3]!,
+            remainingStations: 1,
+            ...confirmedBoarding,
+            tripStatus: TRIP_STATUS.NEAR_DESTINATION,
+            bellStatus: BELL_STATUS.PENDING,
+            bellRequestId: "bell-winner",
+            command: null,
+            lastRequestId: "loc-bell-winner",
+          },
+        };
+      },
+      findLocationLogByRequestId: async () => null,
+      saveStatusAndLocation: async () => {
+        saved = true;
+        return { bellCreated: false };
+      },
+      generateBellRequestId: () => "bell-local-loser",
+      now: () => "2026-08-22T01:01:01.000Z",
+    },
+  );
+
+  assert.equal(result.httpStatus, 200);
+  if (result.httpStatus !== 200) throw new Error("expected successful status update");
+  assert.equal(result.body.shouldTriggerBell, false);
+  assert.equal(result.body.bellStatus, BELL_STATUS.PENDING);
+  assert.equal(result.body.bellRequestId, "bell-winner");
+  assert.equal(result.body.command, null);
+});
+
 test("does not generate a second bell request when bell is already PENDING", async () => {
   const saved: unknown[] = [];
 
@@ -427,6 +652,7 @@ test("does not generate a second bell request when bell is already PENDING", asy
           currentStation: TEST_ROUTE.stationList[1]!,
           nextStation: TEST_ROUTE.stationList[2]!,
           remainingStations: 1,
+          ...confirmedBoarding,
           tripStatus: TRIP_STATUS.NEAR_DESTINATION,
           bellStatus: BELL_STATUS.PENDING,
         },
@@ -471,6 +697,7 @@ test("keeps SUCCESS bell status at one remaining station without generating anot
           currentStation: TEST_ROUTE.stationList[2]!,
           nextStation: TEST_ROUTE.stationList[3]!,
           remainingStations: 1,
+          ...confirmedBoarding,
           tripStatus: TRIP_STATUS.NEAR_DESTINATION,
           bellStatus: BELL_STATUS.SUCCESS,
           bellRequestId: "bell-success-1",
@@ -521,6 +748,7 @@ test("keeps FAIL bell status at one remaining station without generating another
           currentStation: TEST_ROUTE.stationList[2]!,
           nextStation: TEST_ROUTE.stationList[3]!,
           remainingStations: 1,
+          ...confirmedBoarding,
           tripStatus: TRIP_STATUS.NEAR_DESTINATION,
           bellStatus: BELL_STATUS.FAIL,
           bellRequestId: "bell-fail-1",
@@ -776,6 +1004,7 @@ test("returns cached success when a concurrent request wins the race for the sam
             currentStation: TEST_ROUTE.stationList[1]!,
             nextStation: TEST_ROUTE.stationList[2]!,
             remainingStations: 2,
+            ...confirmedBoarding,
             tripStatus: TRIP_STATUS.ON_BUS,
             lastRequestId: "loc-race-1",
           },

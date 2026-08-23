@@ -12,6 +12,7 @@ import {
   type
   LocationLogLookup,
   SaveStatusAndLocationInput,
+  SaveStatusAndLocationResult,
   TripProgressData,
   UpdateTripStatusRepository,
 } from "../../services/trip/update-trip-status.service.js";
@@ -25,6 +26,11 @@ import type {
   SaveEndTripStatusInput,
   SaveEndTripStatusResult,
 } from "../../services/trip/end-trip.service.js";
+import type {
+  ConfirmBoardingDependencies,
+  ConfirmBoardingPersistenceInput,
+  ConfirmBoardingPersistenceResult,
+} from "../../services/trip/confirm-boarding.service.js";
 
 type Env = Partial<Record<string, string | undefined>>;
 type FetchLike = (input: string | URL, init?: RequestInit) => Promise<Response>;
@@ -38,7 +44,12 @@ export function createSupabaseTripRepositoryFromEnv(
 }
 
 export class SupabaseTripRepository
-  implements TripCreationRepository, UpdateTripStatusRepository, BellResultRepository, EndTripRepository
+  implements
+    TripCreationRepository,
+    UpdateTripStatusRepository,
+    BellResultRepository,
+    EndTripRepository,
+    Pick<ConfirmBoardingDependencies, "confirmBoarding" | "findTripProgressData">
 {
   constructor(
     private readonly config: SupabaseConfig,
@@ -86,6 +97,8 @@ export class SupabaseTripRepository
         nextStation: readNullableObject(status, "next_station"),
         remainingStations: readNumber(status, "remaining_stations"),
         tripStatus: readString(status, "trip_status"),
+        boardingMethod: readNullableBoardingMethod(status, "boarding_method"),
+        boardingConfirmedAt: readNullableString(status, "boarding_confirmed_at"),
         bellStatus: readString(status, "bell_status"),
         bellRequestId: bell ? readString(bell, "bell_request_id") : null,
         // command 는 "지금 실행할 명령" 이므로 PATCH 자동 생성 순간에만 채운다.
@@ -116,7 +129,9 @@ export class SupabaseTripRepository
     };
   }
 
-  async saveStatusAndLocation(data: SaveStatusAndLocationInput): Promise<void> {
+  async saveStatusAndLocation(
+    data: SaveStatusAndLocationInput,
+  ): Promise<SaveStatusAndLocationResult> {
     // 상태, 위치 로그, 하차벨 로그를 한 DB 트랜잭션으로 저장한다.
     // 조건부 상태 갱신이 CANCELLED 를 감지하면 로그도 함께 롤백된다.
     const body: Record<string, unknown> = {
@@ -151,9 +166,47 @@ export class SupabaseTripRepository
     if (saved === "DUPLICATE") {
       throw new DuplicateLocationRequestError();
     }
-    if (saved !== "SAVED") {
-      throw new Error("Supabase status-and-location transaction returned an invalid result");
+    if (saved === "SAVED") {
+      return { bellCreated: false };
     }
+    if (saved === "SAVED_BELL_CREATED") {
+      return { bellCreated: true };
+    }
+
+    throw new Error("Supabase status-and-location transaction returned an invalid result");
+  }
+
+  async confirmBoarding(
+    data: ConfirmBoardingPersistenceInput,
+  ): Promise<ConfirmBoardingPersistenceResult> {
+    const response = await this.fetchImpl(`${this.config.url}/rest/v1/rpc/confirm_trip_boarding`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify({
+        p_trip_id: data.tripId,
+        p_request_id: data.requestId,
+        p_boarding_method: data.boardingMethod,
+        p_detected_at: data.detectedAt,
+        p_confirmed_at: data.confirmedAt,
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Supabase boarding transaction failed: ${response.status}`);
+    }
+
+    const result = (await response.json()) as unknown;
+    if (
+      result === "CONFIRMED" ||
+      result === "ALREADY_CONFIRMED" ||
+      result === "TRIP_NOT_FOUND" ||
+      result === "INVALID_STATUS" ||
+      result === "INCONSISTENT"
+    ) {
+      return result;
+    }
+
+    throw new Error("Supabase boarding transaction returned an invalid result");
   }
 
   async findBellRequest(tripId: string, bellRequestId: string): Promise<BellRequestLookup | null> {
@@ -393,6 +446,13 @@ function readNullableString(row: Record<string, unknown>, key: string) {
     throw new Error(`Expected ${key} to be a nullable string`);
   }
   return value;
+}
+
+function readNullableBoardingMethod(row: Record<string, unknown>, key: string) {
+  const value = row[key];
+  if (value === null || value === undefined) return null;
+  if (value === "USER_CONFIRMED" || value === "AUTO_DETECTED") return value;
+  throw new Error(`Expected ${key} to be a boarding method or null`);
 }
 
 function readBellResult(row: Record<string, unknown>, key: string) {
