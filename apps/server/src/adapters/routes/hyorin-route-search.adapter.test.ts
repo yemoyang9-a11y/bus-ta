@@ -720,34 +720,118 @@ test("중복 routeId 회귀: 정방향 레코드 1개만 와도 검증을 통과
   assert.deepEqual(info.arrivals.map((a) => a.predictedArrivalMinutes), [9]);
 });
 
-test("PR #33 리뷰 지적: 도착정보 조회와 노선 정류장 조회는 병렬로 실행되어 순차 실행보다 오래 걸리지 않는다", async (t) => {
-  const DELAY_MS = 200;
-  const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+// PR #33 리뷰 P1: 노선 경유정류소 조회가 실패하거나 빈 응답이면 방향을 검증할 수
+// 없다. 이때 실패를 빈 배열로 접으면 "이 노선은 정류장을 한 번만 지난다"로 오해해
+// 레코드 1개를 검증 없이 통과시킨다(fail open). 검증 불가는 fail closed 여야 한다.
+test("PR #33 리뷰 P1: 경유정류소 조회가 실패하면 레코드가 1개여도 fail closed 로 [] 를 반환한다", async (t) => {
+  t.mock.method(axios, "get", async (url: string) => {
+    if (url.includes("busarrivalservice")) {
+      return {
+        data: {
+          response: {
+            msgBody: {
+              busArrivalList: [
+                syntheticArrivalItem({ routeId: 233000281, staOrder: 11, predictTime1: "9" }),
+              ],
+            },
+          },
+        },
+      };
+    }
+    if (url.includes("busrouteservice")) throw new Error("network error");
+    throw new Error(`이 테스트에서 예상하지 못한 axios.get 호출: ${url}`);
+  });
+
+  const info = await getArrivalInfo({
+    ...arrivalCandidate("233000281"),
+    destinationStation: DESTINATION_AFTER_TURN_POINT,
+  });
+
+  assert.deepEqual(
+    info.arrivals,
+    [],
+    "방향을 확인하지 못한 상태에서 도착정보 9분이 검증 없이 새 나가면 안 된다",
+  );
+});
+
+test("PR #33 리뷰 P1: 경유정류소 응답이 비어 있으면 레코드가 1개여도 fail closed 로 [] 를 반환한다", async (t) => {
+  t.mock.method(axios, "get", async (url: string) => {
+    if (url.includes("busarrivalservice")) {
+      return {
+        data: {
+          response: {
+            msgBody: {
+              busArrivalList: [
+                syntheticArrivalItem({ routeId: 233000281, staOrder: 11, predictTime1: "9" }),
+              ],
+            },
+          },
+        },
+      };
+    }
+    // resultCode 는 정상인데 목록만 비어 오는 경우 — 조회 실패와 똑같이 "확인 못 함"이다.
+    if (url.includes("busrouteservice")) return { data: { response: { msgBody: {} } } };
+    throw new Error(`이 테스트에서 예상하지 못한 axios.get 호출: ${url}`);
+  });
+
+  const info = await getArrivalInfo({
+    ...arrivalCandidate("233000281"),
+    destinationStation: DESTINATION_AFTER_TURN_POINT,
+  });
+
+  assert.deepEqual(info.arrivals, [], "빈 응답을 '한 번만 지나는 노선'으로 오해하면 안 된다");
+});
+
+// 벽시계 시간(elapsedMs)으로 병렬성을 판정하면 CI 러너가 느릴 때 병렬인데도
+// 임계값을 넘겨 임의로 실패한다(PR #33 리뷰). 시간 대신 호출 순서를 본다 —
+// 두 번째 요청이 첫 번째 요청이 끝나기 전에 시작됐으면 병렬이고, 첫 번째가
+// 끝난 뒤에야 시작됐으면 순차다. 이 판정은 실행 속도와 무관하게 결정적이다.
+test("PR #33 리뷰 지적: 도착정보 조회와 노선 정류장 조회는 병렬로 실행된다", async (t) => {
+  const events: string[] = [];
+  let releaseArrival: (() => void) | undefined;
+  const arrivalGate = new Promise<void>((resolve) => {
+    releaseArrival = resolve;
+  });
 
   t.mock.method(axios, "get", async (url: string) => {
     if (url.includes("busarrivalservice")) {
-      await delay(DELAY_MS);
+      events.push("arrival:start");
+      // 순차 실행이라면 이 요청이 끝나야 다음 요청이 시작된다. 아래에서 두 번째
+      // 요청 시작이 관측될 때까지 붙잡아 두므로, 순차라면 여기서 교착되지 않고
+      // events 에 route:start 가 없는 채로 끝난다.
+      await arrivalGate;
+      events.push("arrival:end");
       return { data: gbisArrivalFixture };
     }
     if (url.includes("busrouteservice")) {
-      await delay(DELAY_MS);
+      events.push("route:start");
+      // 첫 요청이 아직 진행 중인 상태에서 두 번째가 시작됐음을 확인했으니 풀어준다.
+      releaseArrival?.();
       return { data: gbisRouteStations205Fixture };
     }
     throw new Error(`이 테스트에서 예상하지 못한 axios.get 호출: ${url}`);
   });
 
-  const startedAt = Date.now();
-  await getArrivalInfo({
-    ...arrivalCandidate("233000281"),
-    destinationStation: DESTINATION_AFTER_TURN_POINT,
-  });
-  const elapsedMs = Date.now() - startedAt;
+  // 순차 실행으로 되돌아가면 arrivalGate 가 영원히 풀리지 않아 이 await 가 멈춘다.
+  // 테스트 러너 타임아웃으로 실패하게 두지 않고, 명시적으로 판정한다.
+  const timedOut = Symbol("timedOut");
+  const result = await Promise.race([
+    getArrivalInfo({
+      ...arrivalCandidate("233000281"),
+      destinationStation: DESTINATION_AFTER_TURN_POINT,
+    }),
+    new Promise((resolve) => setTimeout(() => resolve(timedOut), 2000)),
+  ]);
 
-  // 순차 실행이면 최소 2*DELAY_MS(400ms)가 걸린다. 병렬이면 DELAY_MS(200ms) 근처다.
-  // 테스트 환경 오버헤드를 감안해 두 값의 중간(1.5*DELAY_MS)을 기준으로 삼는다.
-  assert.ok(
-    elapsedMs < DELAY_MS * 1.5,
-    `병렬 실행이면 ${DELAY_MS}ms 근처여야 하는데 ${elapsedMs}ms 걸렸다 — 순차 실행으로 되돌아간 것으로 보인다`,
+  assert.notEqual(
+    result,
+    timedOut,
+    "두 요청이 순차로 실행되어 두 번째 요청이 시작되지 못했다 — 병렬 실행이 깨졌다",
+  );
+  assert.deepEqual(
+    events,
+    ["arrival:start", "route:start", "arrival:end"],
+    "두 번째 요청은 첫 번째 요청이 끝나기 전에 시작되어야 한다",
   );
 });
 

@@ -337,6 +337,35 @@ async function getBusRouteStations(routeId: string) {
   return Array.isArray(items) ? items : [items];
 }
 
+/**
+ * 노선 경유정류소 조회를 "확인함 / 확인 못 함"으로 구분해서 돌려준다.
+ *
+ * 실패와 빈 응답을 모두 빈 배열로 접으면, 호출부에서 "이 노선은 정류장을 한 번만
+ * 지난다"로 오해해 방향 검증 없이 도착정보를 통과시킨다. 확인하지 못한 상태는
+ * 빈 배열이 아니라 verified=false 로 구분한다.
+ */
+type RouteStationsLookup =
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  { verified: true; stations: any[] } | { verified: false };
+
+async function lookupRouteStations(routeId: string): Promise<RouteStationsLookup> {
+  try {
+    const stations = await getBusRouteStations(routeId);
+    if (stations.length === 0) {
+      console.error("[trips/arrival] GBIS 노선 경유정류소 응답이 비어 방향을 확인할 수 없다", `routeId=${routeId}`);
+      return { verified: false };
+    }
+    return { verified: true, stations };
+  } catch (error) {
+    console.error(
+      "[trips/arrival] GBIS 노선 경유정류소 조회 실패로 방향을 확인할 수 없다",
+      `routeId=${routeId}`,
+      `message=${error instanceof Error ? error.message : "unknown"}`,
+    );
+    return { verified: false };
+  }
+}
+
 // 인접 정류장 좌표는 시스템 간 소수점 오차가 있을 수 있어 이름 불일치 시의
 // 폴백 판정에만 쓰는 허용 거리다. 서로 다른 정류장을 같은 정류장으로 착각하지
 // 않도록 일반적인 정류장 간 간격보다 훨씬 좁게 잡는다.
@@ -424,12 +453,13 @@ export async function getArrivalInfo(
   // 도착정보 조회와 노선 정류장 목록 조회를 병렬로 시작한다(PR #33 리뷰). 순차
   // 실행하면 각각 최대 GBIS_REQUEST_TIMEOUT_MS(5초)라 최악 10초까지 create_trip
   // 응답이 지연된다. 노선 정류장 목록은 destinationStation 이 있을 때만 방향
-  // 판별에 쓰이므로 그때만 함께 조회한다. 실패해도 방향을 못 정할 뿐이지
-  // 도착정보 조회 자체를 막으면 안 되므로 여기서 흡수한다.
+  // 판별에 쓰이므로 그때만 함께 조회한다.
   // ODsay startLocalStationID = GBIS stationId (테스트로 동일 확인, 역조회 불필요)
-  const [busArrivalList, routeStations] = await Promise.all([
+  const [busArrivalList, routeStationsLookup] = await Promise.all([
     getBusArrivalByStationId(gbisStationId),
-    destinationStation ? getBusRouteStations(localBusId).catch(() => []) : Promise.resolve([]),
+    destinationStation
+      ? lookupRouteStations(localBusId)
+      : Promise.resolve<RouteStationsLookup>({ verified: false }),
   ]);
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -438,25 +468,38 @@ export async function getArrivalInfo(
     return { gbisStationId, localBusId, arrivals: [] };
   }
 
-  // 이번 응답에 레코드가 몇 개 왔는지가 아니라, 노선이 이 정류장을 구조적으로
-  // 두 번 이상 지나는지로 방향 검증 여부를 정한다(PR #33 리뷰 핵심 지적). GBIS가
-  // 특정 시점엔 반대 방향 레코드를 아예 안 줄 수 있어서, 레코드가 1개뿐이라고
-  // 곧장 신뢰하면 그 1개가 반대 방향이어도 그대로 안내해버릴 수 있다.
-  const boardingOccursMultipleTimes =
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    routeStations.filter((s: any) => String(s.stationId ?? "") === gbisStationId).length > 1;
-
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let matched: any;
-  if (matches.length === 1 && !boardingOccursMultipleTimes) {
+
+  if (!destinationStation) {
+    // 목적지가 없으면 방향을 판별할 기준 자체가 없다. 이 경로는 검증 대상이 아니다.
     matched = matches[0];
+  } else if (!routeStationsLookup.verified) {
+    // 목적지가 있는데 경유정류소를 확인하지 못했다면 방향을 검증할 수 없다.
+    // 반대 방향 도착정보를 그대로 안내하면 사용자가 반대편에서 버스를 기다리게
+    // 되므로, 검증 불가 상태는 fail closed 로 처리한다(PR #33 리뷰 P1).
+    return { gbisStationId, localBusId, arrivals: [] };
   } else {
-    const staOrder = resolveDirectionalStaOrder(routeStations, gbisStationId, destinationStation);
-    matched =
-      staOrder === null
-        ? undefined
-        : // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          matches.find((m: any) => readGbisNumber(m.staOrder) === staOrder);
+    const routeStations = routeStationsLookup.stations;
+
+    // 이번 응답에 레코드가 몇 개 왔는지가 아니라, 노선이 이 정류장을 구조적으로
+    // 두 번 이상 지나는지로 방향 검증 여부를 정한다(PR #33 리뷰 핵심 지적). GBIS가
+    // 특정 시점엔 반대 방향 레코드를 아예 안 줄 수 있어서, 레코드가 1개뿐이라고
+    // 곧장 신뢰하면 그 1개가 반대 방향이어도 그대로 안내해버릴 수 있다.
+    const boardingOccursMultipleTimes =
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      routeStations.filter((s: any) => String(s.stationId ?? "") === gbisStationId).length > 1;
+
+    if (matches.length === 1 && !boardingOccursMultipleTimes) {
+      matched = matches[0];
+    } else {
+      const staOrder = resolveDirectionalStaOrder(routeStations, gbisStationId, destinationStation);
+      matched =
+        staOrder === null
+          ? undefined
+          : // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            matches.find((m: any) => readGbisNumber(m.staOrder) === staOrder);
+    }
   }
 
   if (!matched) {
