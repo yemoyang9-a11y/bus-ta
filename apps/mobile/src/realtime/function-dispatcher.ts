@@ -65,6 +65,7 @@ export async function dispatchRealtimeFunctionCall(
     }
 
     result = await callPromise;
+    result = rejectStaleTripResult(event.name, result, context);
   }
 
   updateContext(event.name, args, result, context);
@@ -86,6 +87,28 @@ export async function dispatchRealtimeFunctionCall(
       },
     },
   ];
+}
+
+function rejectStaleTripResult(
+  name: RealtimeFunctionName,
+  result: FunctionResult,
+  context: RealtimeGuideContext,
+): FunctionResult {
+  if (name !== "confirm_boarding" || result.success !== true) {
+    return result;
+  }
+
+  const boardingResult = result as BoardingConfirmationResponse;
+  if (boardingResult.tripId === context.getAppState().tripId) {
+    return result;
+  }
+
+  return {
+    success: false,
+    errorCode: "STALE_TRIP_CONTEXT",
+    message: "활성 운행이 변경되어 이전 탑승확정 응답을 적용하지 않았습니다.",
+    timestamp: new Date().toISOString(),
+  };
 }
 
 export function isRealtimeFunctionCallEvent(event: unknown): event is RealtimeFunctionCallEvent {

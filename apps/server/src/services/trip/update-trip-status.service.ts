@@ -86,6 +86,7 @@ export interface SaveStatusAndLocationInput {
 
 export interface SaveStatusAndLocationResult {
   bellCreated: boolean;
+  retryAfterBoardingConfirmation?: boolean;
 }
 
 export interface UpdateTripStatusRepository {
@@ -178,6 +179,7 @@ export async function updateTripStatus(
   tripId: string,
   input: unknown,
   dependencies: UpdateTripStatusDependencies,
+  canRetryAfterBoardingConfirmation = true,
 ): Promise<UpdateTripStatusResult> {
   const now = dependencies.now ?? defaultNow;
   const timestamp = now();
@@ -387,6 +389,22 @@ export async function updateTripStatus(
         timestamp,
       },
     };
+  }
+
+  if (saveResult?.retryAfterBoardingConfirmation) {
+    if (!canRetryAfterBoardingConfirmation) {
+      return {
+        httpStatus: 500,
+        body: {
+          success: false,
+          errorCode: "DB_ERROR",
+          message: "탑승확정 이후 위치를 재계산하지 못했습니다.",
+          timestamp,
+        },
+      };
+    }
+
+    return updateTripStatus(tripId, input, dependencies, false);
   }
 
   // Supabase returns whether this transaction won the bell compare-and-set.

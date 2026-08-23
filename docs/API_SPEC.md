@@ -184,7 +184,7 @@ Function은 사용자 의도를 처리하는 경로다. 자동 GPS·하차벨 �
 | 409 | `BOARDING_STATE_INCONSISTENT` | 상태와 탑승 메타데이터가 서로 모순됨 |
 | 500 | `DB_ERROR` | 원자 저장 또는 저장 결과 조회 실패 |
 
-- `PATCH /status`는 위치를 반영한다. 탑승확정 전에는 정류장 진행과 위치 로그만 저장하고 `tripStatus: WAITING_BUS`, `shouldTriggerBell: false`를 유지한다. 첫 GPS만으로 `ON_BUS`가 되지 않는다. 저장 직후 DB 권위 상태를 다시 조회하므로, 동시에 완료된 탑승확정을 늦은 GPS 응답이 앱에서 되돌리지 않는다.
+- `PATCH /status`는 위치를 반영한다. 탑승확정 전에는 정류장 진행과 위치 로그만 저장하고 `tripStatus: WAITING_BUS`, `shouldTriggerBell: false`를 유지한다. 첫 GPS만으로 `ON_BUS`가 되지 않는다. 탑승확정과 경쟁한 stale `WAITING_BUS` 위치 요청은 DB가 저장하거나 `requestId`를 소비하지 않고 내부 재시도 결과를 반환한다. 서버는 최신 확정 상태를 다시 읽어 같은 위치를 한 번만 재계산하므로 `remainingStations = 1`의 하차벨과 `0`의 운행 완료를 놓치지 않는다.
 - 탑승확정 뒤의 `PATCH /status`만 `ON_BUS`, `NEAR_DESTINATION`, `TRIP_DONE`과 하차벨 여부를 계산한다. `GET /status`는 조회 전용이며 항상 `shouldTriggerBell: false`, `command: null`을 반환한다.
 - `remainingStations = 2`는 사전 안내만 하며 하차벨을 만들지 않는다.
 - `boardingConfirmedAt`이 존재하고 `remainingStations = 1`, `bellStatus = NOT_REQUESTED`일 때만 DB 원자 전이의 승자가 `bellRequestId`, `command: "STOP_REQUEST"`, `shouldTriggerBell: true`를 반환하고 `bellStatus`를 `PENDING`으로 바꾼다. 같은 스냅샷에서 계산된 동시 GPS 요청의 패자는 최신 `PENDING` 상태와 `shouldTriggerBell: false`를 반환한다.

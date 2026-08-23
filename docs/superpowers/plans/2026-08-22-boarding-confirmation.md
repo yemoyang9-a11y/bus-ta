@@ -63,6 +63,7 @@
 2. Preserve location logging and progress fields while waiting, but keep `trip_status=WAITING_BUS` and `shouldTriggerBell=false`.
 3. Require boarding metadata for ON_BUS/NEAR/TRIP_DONE transitions and bell generation in both service logic and the atomic location RPC.
 4. Return boarding metadata in status responses and run focused tests.
+5. If the database observes confirmed boarding while an in-flight GPS payload still says `WAITING_BUS`, do not consume the location `requestId`; return an internal retry result so the server can re-read and recalculate once.
 
 ## Task 5: Realtime function and app state
 
@@ -76,9 +77,10 @@
 - Test: add focused Node tests where modules are platform-independent
 
 1. Add `confirm_boarding` with an empty model argument schema; the dispatcher supplies active `tripId`, a generated `requestId`, and `USER_CONFIRMED`.
-2. Ensure concurrent identical confirmations share backend work while each Realtime call receives its own `call_id` response.
-3. Update app state only from a successful server response; expose the same API method for frontend BLE to call with `AUTO_DETECTED`.
-4. Display `버스 탑승 대기` for `WAITING_BUS`; stop BLE scanning only after confirmed boarding metadata is present.
+2. Reject a delayed confirmation response if its `tripId` no longer matches the active app trip.
+3. Ensure concurrent identical confirmations share backend work while each Realtime call receives its own `call_id` response.
+4. Update app state only from a successful server response; expose the same API method for frontend BLE to call with `AUTO_DETECTED`.
+5. Display `버스 탑승 대기` for `WAITING_BUS`; stop BLE scanning only after confirmed boarding metadata is present.
 5. Run mobile and workspace typechecks.
 
 ## Task 6: Contract documentation sync

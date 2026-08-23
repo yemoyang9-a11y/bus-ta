@@ -71,7 +71,7 @@ PENDING --(POST /bell/result)--> SUCCESS | FAIL
 | `trips`, `trip_status`, `location_logs`, `bell_logs`, `bus_beacons` | 테이블 권한 없음 | `SELECT`, `INSERT`, `UPDATE`, `DELETE` | RLS 활성화, 클라이언트 policy 없음 |
 | `save_trip_status_and_location`, `confirm_trip_boarding`, `cancel_trip` RPC | `EXECUTE` 없음 | `EXECUTE` | `SECURITY INVOKER`, 빈 `search_path`, 스키마 한정 참조 |
 
-`trip_status`의 탑승 컬럼은 `boarding_method`, `boarding_confirmed_at`, `boarding_request_id`, `boarding_detected_at`이다. `confirm_trip_boarding`이 이 값들과 상태를 한 트랜잭션에서 기록한다. `save_trip_status_and_location`은 `boarding_confirmed_at`이 없으면 요청 body가 `ON_BUS`나 하차벨을 요구해도 DB에서 `WAITING_BUS`로 고정하고 하차벨 로그를 만들지 않는다.
+`trip_status`의 탑승 컬럼은 `boarding_method`, `boarding_confirmed_at`, `boarding_request_id`, `boarding_detected_at`이다. `confirm_trip_boarding`이 이 값들과 상태를 한 트랜잭션에서 기록한다. `save_trip_status_and_location`은 `boarding_confirmed_at`이 없으면 요청 body가 `ON_BUS`나 하차벨을 요구해도 DB에서 `WAITING_BUS`로 고정하고 하차벨 로그를 만들지 않는다. 반대로 DB에는 탑승확정이 있지만 요청 body가 stale `WAITING_BUS`이면 위치 로그를 저장하지 않고 내부 결과 `BOARDING_CONFIRMED_RETRY`를 반환한다. 서버는 최신 행을 다시 읽어 동일 위치 요청을 최대 한 번 재계산한다.
 
 탑승확정과 GPS 저장이 겹쳐 확정 전 스냅샷에서 계산된 `WAITING_BUS` payload가 늦게 도착하면, 위치·정류장 진행 정보는 저장하되 DB의 확정된 탑승 상태는 되돌리지 않는다. 백엔드는 저장 직후 이 권위 상태를 재조회해 같은 값을 앱에 반환한다.
 
@@ -82,4 +82,4 @@ PENDING --(POST /bell/result)--> SUCCESS | FAIL
 
 ## 검증 기준
 
-상태 변경은 정상·잘못된 입력·없는 운행·종료 운행·동일 `requestId` 재전송·하차벨 중복·결과 재전송을 검증한다. CI의 `Supabase Boarding SQL` 작업은 전체 migration, 늦은 GPS 상태 보존, 하차벨 단일 생성, 기존 활성 운행 preflight 차단을 실제 PostgreSQL에서 실행한다. 원격 migration 적용, RPC 존재, API-DB 통합 검증은 별도 상태로 기록한다.
+상태 변경은 정상·잘못된 입력·없는 운행·종료 운행·동일 `requestId` 재전송·하차벨 중복·결과 재전송을 검증한다. CI의 `Supabase Boarding SQL` 작업은 전체 migration, 늦은 GPS의 미저장·1회 재처리, 하차벨 단일 생성, 기존 활성 운행 preflight 차단을 실제 PostgreSQL에서 실행한다. 원격 migration 적용, RPC 존재, API-DB 통합 검증은 별도 상태로 기록한다.

@@ -13,7 +13,7 @@
 3. Function 호출은 앱 내부 Dispatcher가 REST API로 변환한다.
 4. REST 결과를 세션에 되돌리고, 오류는 `errorCode`와 사용자용 안내로 처리한다.
 
-Function 매핑은 `search_routes → POST /api/routes/search`, `create_trip → POST /api/trips`, `confirm_boarding → POST /api/trips/{tripId}/boarding/confirm`, `get_trip_status → GET /api/trips/{tripId}/status`, `end_trip → PATCH /api/trips/{tripId}`이다. `confirm_boarding`은 모델이 빈 객체만 보내고 Dispatcher가 활성 `tripId`, 전용 `requestId`, `USER_CONFIRMED`를 채운다. 모델이 식별자·좌표·판정값을 만들도록 두지 않는다.
+Function 매핑은 `search_routes → POST /api/routes/search`, `create_trip → POST /api/trips`, `confirm_boarding → POST /api/trips/{tripId}/boarding/confirm`, `get_trip_status → GET /api/trips/{tripId}/status`, `end_trip → PATCH /api/trips/{tripId}`이다. `confirm_boarding`은 모델이 빈 객체만 보내고 Dispatcher가 활성 `tripId`, 전용 `requestId`, `USER_CONFIRMED`를 채운다. 모델이 식별자·좌표·판정값을 만들도록 두지 않는다. 응답의 `tripId`가 현재 활성 운행과 다르면 `STALE_TRIP_CONTEXT`로 처리하고 TripContext를 변경하지 않는다.
 
 ## 앱 상태와 자동 이벤트
 

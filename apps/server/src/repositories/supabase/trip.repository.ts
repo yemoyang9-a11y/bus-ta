@@ -172,6 +172,12 @@ export class SupabaseTripRepository
     if (saved === "SAVED_BELL_CREATED") {
       return { bellCreated: true };
     }
+    if (saved === "BOARDING_CONFIRMED_RETRY") {
+      return {
+        bellCreated: false,
+        retryAfterBoardingConfirmation: true,
+      };
+    }
 
     throw new Error("Supabase status-and-location transaction returned an invalid result");
   }

@@ -180,6 +180,15 @@ begin
     return 'CANCELLED';
   end if;
 
+  -- The application may have calculated WAITING_BUS before a concurrent
+  -- boarding confirmation committed. Do not persist that stale snapshot or
+  -- consume its request_id. The server will re-read the confirmed row and
+  -- calculate ON_BUS / NEAR_DESTINATION / TRIP_DONE plus any bell request once.
+  if current_boarding_confirmed_at is not null
+     and p_status ->> 'trip_status' = 'WAITING_BUS' then
+    return 'BOARDING_CONFIRMED_RETRY';
+  end if;
+
   insert into public.location_logs (
     trip_id,
     request_id,

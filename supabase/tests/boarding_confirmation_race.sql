@@ -55,14 +55,17 @@ end;
 $$;
 
 -- This location payload was calculated from a WAITING_BUS snapshot before the
--- confirmation transaction committed. Saving it afterwards must not regress
--- the authoritative confirmed state or fail the request.
+-- confirmation transaction committed. The database must not persist it or
+-- consume its request_id. The server re-reads the confirmed row and retries
+-- the same location once with an ON_BUS-derived status.
 do $$
 declare
-  save_result text;
+  stale_save_result text;
+  retry_save_result text;
   saved_trip_status text;
+  stale_location_count integer;
 begin
-  save_result := public.save_trip_status_and_location(
+  stale_save_result := public.save_trip_status_and_location(
     'trip-boarding-race-test',
     jsonb_build_object(
       'current_station', jsonb_build_object('stationName', '중간 정류장'),
@@ -89,13 +92,54 @@ begin
     null
   );
 
+  select count(*)
+  into stale_location_count
+  from public.location_logs
+  where trip_id = 'trip-boarding-race-test'
+    and request_id = 'location-race-stale';
+
+  if stale_save_result <> 'BOARDING_CONFIRMED_RETRY' then
+    raise exception 'expected BOARDING_CONFIRMED_RETRY, got %', stale_save_result;
+  end if;
+
+  if stale_location_count <> 0 then
+    raise exception 'stale location request must not be persisted';
+  end if;
+
+  retry_save_result := public.save_trip_status_and_location(
+    'trip-boarding-race-test',
+    jsonb_build_object(
+      'current_station', jsonb_build_object('stationName', '중간 정류장'),
+      'next_station', jsonb_build_object('stationName', '하차 정류장'),
+      'remaining_stations', 2,
+      'trip_status', 'ON_BUS',
+      'bell_status', 'NOT_REQUESTED',
+      'last_request_id', 'location-race-stale',
+      'location_source', 'GPS',
+      'recorded_at', '2026-08-22T01:00:01.000Z',
+      'updated_at', '2026-08-22T01:00:01.000Z'
+    ),
+    jsonb_build_object(
+      'request_id', 'location-race-stale',
+      'latitude', 37.0,
+      'longitude', 127.0,
+      'source', 'GPS',
+      'recorded_at', '2026-08-22T01:00:01.000Z',
+      'current_station', jsonb_build_object('stationName', '중간 정류장'),
+      'remaining_stations', 2,
+      'location_accepted', true,
+      'reason', null
+    ),
+    null
+  );
+
   select trip_status
   into saved_trip_status
   from public.trip_status
   where trip_id = 'trip-boarding-race-test';
 
-  if save_result <> 'SAVED' then
-    raise exception 'expected SAVED, got %', save_result;
+  if retry_save_result <> 'SAVED' then
+    raise exception 'expected retry SAVED, got %', retry_save_result;
   end if;
 
   if saved_trip_status <> 'ON_BUS' then

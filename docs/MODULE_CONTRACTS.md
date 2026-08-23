@@ -26,6 +26,7 @@
 5. Realtime 세션의 대화 기억은 저장소가 아니다. `tripId`, 선택 후보 및 실제 운행 상태의 기준은 앱 상태와 백엔드 데이터다.
 6. 사용자가 버스에 탔다고 명시하면 모델은 `confirm_boarding`을 호출한다. Dispatcher가 활성 `tripId`, 전용 `requestId`, `USER_CONFIRMED`를 채우며 BLE·GPS 재확인은 하지 않는다.
 7. 서버 성공 전에는 AI와 앱 모두 탑승 완료로 안내·표시하지 않는다.
+8. 탑승확정 응답의 `tripId`가 현재 활성 운행과 다르면 Dispatcher는 앱 상태에 반영하지 않고 stale 응답 오류로 처리한다.
 
 ## 하드웨어 연동
 

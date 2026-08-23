@@ -177,6 +177,24 @@ test("reports whether this location update atomically created the bell request",
   assert.deepEqual(result, { bellCreated: true });
 });
 
+test("requests one server retry when boarding confirmation wins a stale GPS race", async () => {
+  const repository = new SupabaseTripRepository(
+    { url: "https://supabase.example", apiKey: "service-key" },
+    async () =>
+      new Response('"BOARDING_CONFIRMED_RETRY"', {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+  );
+
+  const result = await repository.saveStatusAndLocation(input);
+
+  assert.deepEqual(result, {
+    bellCreated: false,
+    retryAfterBoardingConfirmation: true,
+  });
+});
+
 test("confirms boarding through the dedicated atomic RPC", async () => {
   let request: { url: string; init: RequestInit | undefined } | null = null;
   const repository = new SupabaseTripRepository(

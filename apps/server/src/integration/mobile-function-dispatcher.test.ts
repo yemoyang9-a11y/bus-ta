@@ -164,3 +164,59 @@ test("concurrent confirm calls share one API request but preserve each Realtime 
     globalThis.fetch = originalFetch;
   }
 });
+
+test("does not apply a delayed confirmation response to a different active trip", async () => {
+  const actions: AppAction[] = [];
+  let currentState: AppTripState = { ...baseState, tripId: "trip-A" };
+  let releaseFetch: ((response: Response) => void) | undefined;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    new Promise<Response>((resolve) => {
+      releaseFetch = resolve;
+    });
+
+  const context: RealtimeGuideContext = {
+    getAppState: () => currentState,
+    getCurrentLocation: () => undefined,
+    dispatchAppAction: (action) => actions.push(action),
+  };
+
+  try {
+    const pending = dispatchRealtimeFunctionCall(
+      {
+        type: "response.function_call_arguments.done",
+        call_id: "call-trip-A",
+        name: "confirm_boarding",
+        arguments: "{}",
+      },
+      context,
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    currentState = { ...currentState, tripId: "trip-B", tripStatus: TRIP_STATUS.WAITING_BUS };
+    releaseFetch?.(
+      Response.json({
+        success: true,
+        tripId: "trip-A",
+        tripStatus: TRIP_STATUS.ON_BUS,
+        boardingMethod: BOARDING_METHOD.USER_CONFIRMED,
+        boardingConfirmedAt: "2026-08-22T01:00:00.000Z",
+        message: "버스 탑승을 확인했습니다.",
+        timestamp: "2026-08-22T01:00:00.000Z",
+      }),
+    );
+
+    const events = await pending;
+
+    assert.deepEqual(actions, []);
+    assert.equal(events[0]?.type, "conversation.item.create");
+    if (events[0]?.type !== "conversation.item.create") {
+      assert.fail("expected function_call_output event");
+    }
+    const output = JSON.parse(events[0].item.output) as Record<string, unknown>;
+    assert.equal(output.success, false);
+    assert.equal(output.errorCode, "STALE_TRIP_CONTEXT");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

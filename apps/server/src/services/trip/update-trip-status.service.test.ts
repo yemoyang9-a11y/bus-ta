@@ -258,6 +258,90 @@ test("returns the authoritative ON_BUS state when confirmation wins during a sta
   assert.equal(result.body.boardingConfirmedAt, "2026-08-22T01:00:00.000Z");
 });
 
+test("retries a stale pre-confirmation GPS snapshot so one remaining station creates the bell", async () => {
+  let phase: "WAITING" | "CONFIRMED" | "SAVED" = "WAITING";
+  const savedInputs: unknown[] = [];
+
+  const result = await updateTripStatus(
+    "trip-test-001",
+    {
+      requestId: "loc-stale-near-after-confirmation",
+      latitude: TEST_ROUTE.stationList[2]!.latitude,
+      longitude: TEST_ROUTE.stationList[2]!.longitude,
+      recordedAt: "2026-08-22T01:00:01.000Z",
+      source: "GPS",
+    },
+    {
+      findTripProgressData: async () => {
+        if (phase === "WAITING") {
+          return { trip: baseTrip, status: baseStatus };
+        }
+
+        if (phase === "CONFIRMED") {
+          return {
+            trip: baseTrip,
+            status: {
+              ...baseStatus,
+              currentStation: TEST_ROUTE.stationList[1]!,
+              nextStation: TEST_ROUTE.stationList[2]!,
+              remainingStations: 2,
+              tripStatus: TRIP_STATUS.ON_BUS,
+              ...confirmedBoarding,
+            },
+          };
+        }
+
+        return {
+          trip: baseTrip,
+          status: {
+            ...baseStatus,
+            currentStation: TEST_ROUTE.stationList[2]!,
+            nextStation: TEST_ROUTE.stationList[3]!,
+            remainingStations: 1,
+            tripStatus: TRIP_STATUS.NEAR_DESTINATION,
+            ...confirmedBoarding,
+            bellStatus: BELL_STATUS.PENDING,
+            bellRequestId: "bell-after-confirmation-race",
+          },
+        };
+      },
+      findLocationLogByRequestId: async () => null,
+      saveStatusAndLocation: async (data) => {
+        savedInputs.push(data);
+        if (phase === "WAITING") {
+          phase = "CONFIRMED";
+          return {
+            bellCreated: false,
+            retryAfterBoardingConfirmation: true,
+          };
+        }
+
+        phase = "SAVED";
+        return { bellCreated: true };
+      },
+      generateBellRequestId: () => "bell-after-confirmation-race",
+      now: () => "2026-08-22T01:00:02.000Z",
+    },
+  );
+
+  assert.equal(savedInputs.length, 2);
+  const retryInput = savedInputs[1] as {
+    status: { tripStatus: string; remainingStations: number; bellStatus: string };
+    bellRequest?: { bellRequestId: string };
+  };
+  assert.equal(retryInput.status.tripStatus, TRIP_STATUS.NEAR_DESTINATION);
+  assert.equal(retryInput.status.remainingStations, 1);
+  assert.equal(retryInput.status.bellStatus, BELL_STATUS.PENDING);
+  assert.equal(retryInput.bellRequest?.bellRequestId, "bell-after-confirmation-race");
+
+  assert.equal(result.httpStatus, 200);
+  if (result.httpStatus !== 200) throw new Error("expected successful retry");
+  assert.equal(result.body.tripStatus, TRIP_STATUS.NEAR_DESTINATION);
+  assert.equal(result.body.shouldTriggerBell, true);
+  assert.equal(result.body.bellStatus, BELL_STATUS.PENDING);
+  assert.equal(result.body.bellRequestId, "bell-after-confirmation-race");
+});
+
 test("ignores a backward station update and records BACKWARD_STATION_IGNORED", async () => {
   const saved: unknown[] = [];
 
