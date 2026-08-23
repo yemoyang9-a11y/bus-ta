@@ -1,4 +1,5 @@
 import type {
+  BoardingMethod,
   CreateTripRequest,
   RealtimeSessionResponse,
   Route,
@@ -7,6 +8,7 @@ import type {
 export type RealtimeFunctionName =
   | "search_routes"
   | "create_trip"
+  | "confirm_boarding"
   | "get_trip_status"
   | "end_trip";
 
@@ -47,6 +49,8 @@ export type AppTripState = {
   selectedRoute: Route | null;
   tripId: string | null;
   tripStatus: string | null;
+  boardingMethod: BoardingMethod | null;
+  boardingConfirmedAt: string | null;
   currentStation: { stationName: string } | null;
   nextStation: unknown;
   remainingStations: number | null;
@@ -62,6 +66,12 @@ export type AppAction =
   | { type: "SET_DESTINATION_AND_ROUTES"; destination: string; routes: Route[] }
   | { type: "SELECT_ROUTE"; route: Route }
   | { type: "START_TRIP"; tripId: string }
+  | {
+      type: "CONFIRM_BOARDING";
+      tripStatus: "ON_BUS" | "NEAR_DESTINATION";
+      boardingMethod: BoardingMethod;
+      boardingConfirmedAt: string;
+    }
   | { type: "UPDATE_TRIP_STATUS"; status: unknown }
   | { type: "RESET_TRIP" }
   | { type: "SET_LAST_INJECTED_STATUS"; status: TripStatusSnapshot };

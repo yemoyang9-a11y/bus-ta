@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { BELL_STATUS, DEMO_ROUTE, TRIP_STATUS } from "@bus-ta/shared";
+import { BELL_STATUS, BOARDING_METHOD, DEMO_ROUTE, TRIP_STATUS } from "@bus-ta/shared";
 import { endTrip } from "./end-trip.service.js";
 import type { TripProgressData } from "./update-trip-status.service.js";
 
@@ -17,6 +17,8 @@ const activeTrip: TripProgressData = {
     nextStation: DEMO_ROUTE.stationList[2]!,
     remainingStations: 2,
     tripStatus: TRIP_STATUS.ON_BUS,
+    boardingMethod: BOARDING_METHOD.USER_CONFIRMED,
+    boardingConfirmedAt: "2026-07-25T11:59:00.000Z",
     bellStatus: BELL_STATUS.NOT_REQUESTED,
     bellRequestId: null,
     command: null,
