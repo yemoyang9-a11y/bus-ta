@@ -10,6 +10,7 @@ import RouteListScreen from './src/screens/RouteListScreen';
 import RidingScreen from './src/screens/RidingScreen';
 import AlightScreen from './src/screens/AlightScreen';
 import ErrorScreen from './src/screens/ErrorScreen';
+import BleTestScreen from './src/screens/BleTestScreen';
 
 const Stack = createStackNavigator();
 
@@ -32,6 +33,7 @@ export default function App() {
             <Stack.Screen name="Riding" component={RidingScreen} options={{ title: '탑승 중' }} />
             <Stack.Screen name="Alight" component={AlightScreen} options={{ title: '하차 안내' }} />
             <Stack.Screen name="Error" component={ErrorScreen} options={{ title: '오류' }} />
+            <Stack.Screen name="BleTest" component={BleTestScreen} options={{ title: 'BLE 테스트' }} />
           </Stack.Navigator>
         </NavigationContainer>
       </RealtimeProvider>
