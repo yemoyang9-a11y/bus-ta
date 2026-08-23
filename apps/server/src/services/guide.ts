@@ -85,6 +85,10 @@ async function createGuideMessage(prompt: string, fallbackMessage: string): Prom
   }
 }
 
+/**
+ * 같은 노선 번호를 하나만 남긴다. 앞에 오는 후보를 남기므로, 점수순으로 정렬한
+ * 뒤에 호출해야 노선별로 가장 좋은 후보가 살아남는다.
+ */
 function uniqueRoutesByRouteNo(candidates: Route[]): Route[] {
   const seen = new Set<string>();
   return candidates.filter((candidate) => {
@@ -114,17 +118,20 @@ function expectedTotalMinutes(route: Route): number {
 /**
  * 안내할 후보 선택은 서버가 끝낸다. OpenAI 경로에서도 모델이 다시 고르지 않게
  * 해서, 모델의 계산 편차와 무관하게 같은 입력이면 항상 같은 후보가 나오게 한다.
+ *
+ * 중복 제거보다 정렬을 먼저 한다. 같은 노선 번호가 여러 번 올라오는 경우
+ * (ODsay 가 같은 노선을 서로 다른 경로로 돌려주는 경우) 순서를 뒤집으면
+ * 점수 비교도 받지 못한 채 느린 후보가 남을 수 있다.
  */
 export function selectRouteCandidates(candidates: Route[]): Route[] {
-  return uniqueRoutesByRouteNo(candidates)
-    .slice()
-    .sort((a, b) => {
-      const expectedDiff = expectedTotalMinutes(a) - expectedTotalMinutes(b);
-      if (expectedDiff !== 0) return expectedDiff;
+  const sorted = candidates.slice().sort((a, b) => {
+    const expectedDiff = expectedTotalMinutes(a) - expectedTotalMinutes(b);
+    if (expectedDiff !== 0) return expectedDiff;
 
-      return (a.totalWalk ?? Number.MAX_SAFE_INTEGER) - (b.totalWalk ?? Number.MAX_SAFE_INTEGER);
-    })
-    .slice(0, 2);
+    return (a.totalWalk ?? Number.MAX_SAFE_INTEGER) - (b.totalWalk ?? Number.MAX_SAFE_INTEGER);
+  });
+
+  return uniqueRoutesByRouteNo(sorted).slice(0, 2);
 }
 
 function buildRouteGuideFallback(selectedRoutes: Route[]): RouteGuideResult {

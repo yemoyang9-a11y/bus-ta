@@ -122,3 +122,38 @@ test("같은 노선 번호가 여러 번 오면 하나만 남긴다", () => {
     ["34", "35"],
   );
 });
+
+test("같은 노선 번호 중에서는 느린 후보가 앞에 와도 빠른 후보가 남는다", () => {
+  // 중복 제거를 정렬보다 먼저 하면 입력 순서상 앞에 있는 90분짜리가 남고
+  // 뒤에 있는 15분짜리는 점수 비교도 받지 못한 채 사라진다.
+  const routes = [
+    buildRoute({ candidateId: 1, routeNo: "34", totalTime: 90, intervalTime: 10 }), // 95
+    buildRoute({ candidateId: 2, routeNo: "34", totalTime: 15, intervalTime: 10 }), // 20
+    buildRoute({ candidateId: 3, routeNo: "35", totalTime: 30, intervalTime: 10 }), // 35
+  ];
+
+  const selected = selectRouteCandidates(routes);
+
+  assert.deepEqual(
+    selected.map((route) => route.candidateId),
+    [2, 3],
+  );
+  assert.equal(selected[0]?.totalTime, 15);
+});
+
+test("중복 노선이 밀려나도 다른 노선으로 2개를 채운다", () => {
+  const routes = [
+    buildRoute({ candidateId: 1, routeNo: "34", totalTime: 90, intervalTime: 10 }), // 95
+    buildRoute({ candidateId: 2, routeNo: "34", totalTime: 10, intervalTime: 10 }), // 15
+    buildRoute({ candidateId: 3, routeNo: "35", totalTime: 12, intervalTime: 10 }), // 17
+    buildRoute({ candidateId: 4, routeNo: "36", totalTime: 40, intervalTime: 10 }), // 45
+  ];
+
+  const selected = selectRouteCandidates(routes);
+
+  assert.deepEqual(
+    selected.map((route) => route.routeNo),
+    ["34", "35"],
+  );
+  assert.equal(selected[0]?.candidateId, 2);
+});
