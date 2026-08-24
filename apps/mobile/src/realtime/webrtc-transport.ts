@@ -5,6 +5,7 @@ import {
   type MediaStream,
   type MediaStreamTrack,
 } from "react-native-webrtc";
+import InCallManager from "react-native-incall-manager";
 import type { RealtimeTransport } from "./types";
 
 type RealtimeWebRTCTransportOptions = {
@@ -47,6 +48,7 @@ export class RealtimeWebRTCTransport implements RealtimeTransport {
   private peerConnection: RTCPeerConnection | null = null;
   private dataChannel: RealtimeDataChannel | null = null;
   private mediaStream: MediaStream | null = null;
+  private speakerRoutingActive = false;
 
   constructor(options: RealtimeWebRTCTransportOptions) {
     this.options = options;
@@ -74,6 +76,13 @@ export class RealtimeWebRTCTransport implements RealtimeTransport {
 
       mediaStream = await mediaDevices.getUserMedia({ audio: true, video: false });
       this.throwIfAborted();
+
+      // Realtime 음성 안내는 통화용 수화기가 아니라 기기 하단 스피커로 재생한다.
+      // media="video"는 영상 전송을 뜻하지 않고 InCallManager가 큰 스피커를 기본 출력으로
+      // 선택하게 하는 오디오 세션 모드다. 실제 WebRTC stream은 위처럼 audio-only다.
+      InCallManager.start({ media: "video", auto: true });
+      this.speakerRoutingActive = true;
+
       const dataChannel = peerConnection.createDataChannel("oai-events") as unknown as RealtimeDataChannel;
 
       mediaStream.getTracks().forEach((track: MediaStreamTrack) => {
@@ -81,6 +90,7 @@ export class RealtimeWebRTCTransport implements RealtimeTransport {
       });
 
       dataChannel.onclose = () => {
+        this.stopSpeakerRouting();
         this.options.onClose?.();
       };
       dataChannel.onerror = (error) => {
@@ -124,6 +134,12 @@ export class RealtimeWebRTCTransport implements RealtimeTransport {
       await this.waitForDataChannelOpen(dataChannel);
       this.throwIfAborted();
 
+      // WebRTC가 연결 과정에서 iOS 오디오 경로를 다시 설정할 수 있으므로
+      // 연결이 완료된 뒤 스피커 출력을 한 번 더 명시한다.
+      if (this.speakerRoutingActive) {
+        InCallManager.setForceSpeakerphoneOn(true);
+      }
+
       this.peerConnection = peerConnection;
       this.dataChannel = dataChannel;
       this.mediaStream = mediaStream;
@@ -134,6 +150,7 @@ export class RealtimeWebRTCTransport implements RealtimeTransport {
       // 지금까지는 예외 경로에서 close()가 실행되지 않아 peer connection·마이크 stream이 남아있었다.
       mediaStream?.getTracks().forEach((track: MediaStreamTrack) => track.stop());
       peerConnection.close();
+      this.stopSpeakerRouting();
       throw error;
     }
   }
@@ -197,10 +214,21 @@ export class RealtimeWebRTCTransport implements RealtimeTransport {
       track.stop();
     });
     this.peerConnection?.close();
+    this.stopSpeakerRouting();
 
     this.dataChannel = null;
     this.mediaStream = null;
     this.peerConnection = null;
+  }
+
+  private stopSpeakerRouting() {
+    if (!this.speakerRoutingActive) {
+      return;
+    }
+
+    InCallManager.setForceSpeakerphoneOn(false);
+    InCallManager.stop();
+    this.speakerRoutingActive = false;
   }
 
   private handleMessage(message: { data: unknown }) {
