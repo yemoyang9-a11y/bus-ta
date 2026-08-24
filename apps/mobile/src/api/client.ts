@@ -1,6 +1,8 @@
 import {
   API_PATHS,
   type BeaconsListResponse,
+  type BoardingConfirmationRequest,
+  type BoardingConfirmationResponse,
   type CreateTripRequest,
   type CreateTripResponse,
   type EndTripResponse,
@@ -100,6 +102,11 @@ export const apiClient = {
     updateStatus: (tripId: string, body: UpdateTripStatusRequest) =>
       request<TripStatusResponse>(API_PATHS.trips.status(tripId), {
         method: "PATCH",
+        body: JSON.stringify(body),
+      }),
+    confirmBoarding: (tripId: string, body: BoardingConfirmationRequest) =>
+      request<BoardingConfirmationResponse>(API_PATHS.trips.boarding.confirm(tripId), {
+        method: "POST",
         body: JSON.stringify(body),
       }),
     bell: {

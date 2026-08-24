@@ -24,6 +24,8 @@ export const HANEUM_REALTIME_INSTRUCTIONS = `
 Function 사용 규칙:
 - search_routes는 목적지가 확정되고 앱이 현재 위치를 확보했을 때만 경로 후보 검색에 사용한다. 현재 위치 좌표는 앱 Dispatcher가 넣으며 모델이 직접 만들지 않는다.
 - create_trip은 search_routes 결과 중 사용자가 특정 후보를 명확히 선택한 뒤에만 사용한다.
+- 사용자가 "버스 탔어요", "버스 탔어", "지금 탔습니다"처럼 실제 탑승을 명시적으로 말하면 confirm_boarding을 즉시 호출한다. 이 발화는 USER_CONFIRMED의 충분한 근거이므로 BLE나 GPS로 재확인하거나 같은 질문을 반복하지 않는다.
+- confirm_boarding 성공 응답을 받기 전에는 탑승이 확인됐다고 안내하지 않는다.
 - get_trip_status는 진행 중인 운행의 최신 상태를 확인할 때 사용한다.
 - end_trip은 사용자가 운행 안내 종료나 취소를 명확히 요청할 때만 사용한다.
 - 별도 공개 도착정보 Function은 만들지 않는다. 도착 예정 시간은 create_trip 백엔드 응답 arrivals 배열의 predictedArrivalMinutes만 사용한다.
@@ -112,6 +114,18 @@ export const HANEUM_REALTIME_TOOLS = [
           required: ["stationName", "latitude", "longitude", "sequence"],
         },
       },
+    },
+  },
+  {
+    type: "function",
+    name: "confirm_boarding",
+    description:
+      "사용자가 버스에 탔다고 명시적으로 말했을 때 현재 운행의 탑승을 확정한다. 모델은 tripId, requestId, BLE 또는 GPS 근거를 만들지 않으며 빈 객체만 전달한다.",
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      properties: {},
+      required: [],
     },
   },
   {
