@@ -48,6 +48,18 @@ Function은 사용자 의도를 처리하는 경로다. 자동 GPS·하차벨 �
 
 성공 응답은 `success: true`, `serverStatus: "UP"`, `dbStatus: "UP" | "NOT_CONFIGURED"`, `message`, `timestamp`를 포함한다. 장애 응답은 `success: false`, `serverStatus: "UP"`, `dbStatus: "DOWN"`, `errorCode: "DB_ERROR"`, `message`, `timestamp`를 포함한다. 이 조합과 다른 모순된 상태 조합은 shared Schema에서 허용하지 않는다.
 
+## 노선 검색 도착 정보
+
+`POST /api/routes/search` 성공 응답의 각 후보에도 **`arrivals` 배열**이 실린다(선택 필드). 사용자가 노선을 고르기 전에 "몇 분 뒤에 오는지"를 알아야 선택할 수 있기 때문이다.
+
+- 안내할 후보(최대 2개)에 대해서만 조회한다. 두 후보가 같은 정류장·노선이면 GBIS 호출은 한 번으로 합쳐진다.
+- 조회에 실패하면 해당 후보의 `arrivals` 필드를 **생략**한다. 도착 시간을 못 얻었다고 노선 자체를 빼지는 않는다.
+- 실시간 차량이 없으면 빈 배열 `[]`이다. **필드 없음(조회 실패)과 빈 배열(차량 없음)은 다른 의미다.**
+- 값의 형태는 아래 `POST /api/trips`의 `arrivals`와 같은 계약을 쓴다.
+- **탑승 안내에 쓰는 값은 이 값이 아니라 `POST /api/trips` 응답의 `arrivals`다.** 검색 시점과 선택 시점 사이에 시간이 흐르기 때문이다.
+
+도착정보는 갱신 주기를 두고 캐시된다. 자세한 정책은 `docs/ARRIVAL_POLLING.md`를 참고한다.
+
 ## 운행 생성 도착 정보
 
 `POST /api/trips` 성공 응답은 도착 예정 차량을 **`arrivals` 배열**로 반환한다. 도착 순서대로 최대 2대이며, GBIS가 1대만 주면 1개, 정보가 없거나 조회에 실패하면 빈 배열 `[]`이다. **조회 실패는 운행 생성을 막지 않는다** — `arrivals: []`로 `201`을 반환한다. GBIS 호출 timeout은 5초다.

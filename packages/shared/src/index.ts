@@ -16,6 +16,7 @@ export * from "./types/bell.js";
 export * from "./types/beacon.js";
 
 // schemas
+export * from "./schemas/arrival.schema.js";
 export * from "./schemas/route.schema.js";
 export * from "./schemas/trip.schema.js";
 export * from "./schemas/location.schema.js";

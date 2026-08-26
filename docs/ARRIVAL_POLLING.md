@@ -3,7 +3,8 @@
 버스 도착 예정 시간을 언제 다시 조회할지, 스마트지팡이 비콘 스캔을 언제 켤지 정하는 정책이다.
 
 - 코드: `apps/server/src/services/arrival/arrival-poll-policy.ts`, `arrival-cache.ts`
-- 상태: **정책과 캐시만 구현됨. 아직 어떤 API에도 연결되어 있지 않다.** 연결에는 아래 "남은 작업"의 협의가 필요하다.
+- 연결됨: `POST /api/routes/search` — 안내할 후보 2개에 `arrivals`를 실어 보낸다.
+- 연결 안 됨: `PATCH /api/trips/{tripId}/status` — 대기 중 갱신과 비콘 스캔 신호는 아직 협의 필요(아래 "남은 작업").
 
 ## 왜 필요한가
 

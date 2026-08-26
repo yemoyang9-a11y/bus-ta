@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ArrivalInfoSchema } from "./arrival.schema.js";
 
 export const RoutesSearchRequestSchema = z.object({
   destination: z.string().min(1),
@@ -35,6 +36,11 @@ export const RouteCandidateSchema = z.object({
   intervalTime: z.number().int().nonnegative().optional(),
   recommendationReason: z.string().optional(),
   guideMessage: z.string().optional(),
+  // 선택 전에도 도착 예정 시간을 안내할 수 있도록 추천 후보에만 실어 보낸다.
+  // 조회에 실패했거나 실시간 차량이 없으면 빈 배열이다. create_trip 응답의
+  // arrivals 와 같은 계약을 쓰되, 여기 값은 검색 시점 기준이라 탑승 안내는
+  // create_trip 응답을 다시 사용한다.
+  arrivals: z.array(ArrivalInfoSchema).max(2).optional(),
 });
 
 export const RoutesSearchResponseSchema = z.object({
