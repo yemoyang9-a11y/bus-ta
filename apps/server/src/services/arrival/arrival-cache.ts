@@ -39,7 +39,9 @@ export interface ArrivalSnapshot {
 }
 
 interface CacheEntry {
-  arrivals: ArrivalInfo[];
+  /** 마지막으로 성공한 조회 결과. 한 번도 성공하지 못했으면 null. */
+  arrivals: ArrivalInfo[] | null;
+  /** arrivals 를 실제로 받아온 시각. 실패해도 갱신하지 않아 낡은 정도를 잰다. */
   fetchedAt: number;
   refreshAfter: number;
 }
@@ -120,19 +122,22 @@ export class ArrivalCache {
       );
 
       // 실패 뒤에는 최소 간격으로 빠르게 재시도한다. 낡은 값을 오래 들고 있는
-      // 것보다 정상 값을 빨리 되찾는 편이 안전하다.
+      // 것보다 정상 값을 빨리 되찾는 편이 안전하다. 다만 이 간격이 실제로
+      // 지켜지려면 실패 사실도 캐시에 남겨야 한다 — 항목을 지워 버리면 바로 다음
+      // 요청이 캐시 미스가 되어 GBIS 를 곧장 다시 두드린다.
       const refreshAfter = at + ARRIVAL_POLL_MIN_MS;
-      const staleFor = cached ? at - cached.fetchedAt : Number.POSITIVE_INFINITY;
+      const staleFor = cached?.arrivals ? at - cached.fetchedAt : Number.POSITIVE_INFINITY;
+      const keepStale = cached?.arrivals != null && staleFor <= this.maxStaleMs;
 
-      if (cached && staleFor <= this.maxStaleMs) {
-        // 아직 쓸 만한 직전 값이 있으면 유지하되, 그 값이 언제 것인지는 그대로 둔다.
-        // fetchedAt 을 갱신하면 낡은 값이 영원히 젊어져 한도가 의미를 잃는다.
-        this.entries.set(key, { ...cached, refreshAfter });
-        return this.toSnapshot(cached.arrivals, at, refreshAfter, true);
-      }
+      const entry: CacheEntry = keepStale
+        ? // 아직 쓸 만한 직전 값이 있으면 유지하되, 그 값이 언제 것인지는 그대로 둔다.
+          // fetchedAt 을 갱신하면 낡은 값이 영원히 젊어져 한도가 의미를 잃는다.
+          { ...cached!, refreshAfter }
+        : { arrivals: null, fetchedAt: cached?.fetchedAt ?? at, refreshAfter };
 
-      this.entries.delete(key);
-      return this.toSnapshot(null, at, refreshAfter, true);
+      this.entries.set(key, entry);
+      this.evictExpired(at);
+      return this.toSnapshot(entry.arrivals, at, refreshAfter, true);
     }
   }
 
@@ -152,11 +157,13 @@ export class ArrivalCache {
   }
 
   /**
-   * 갱신 시점이 한참 지난 항목을 버린다.
+   * 항목 수를 maxEntries 이하로 유지한다.
    *
-   * 정류장·노선 조합은 사용자가 검색할수록 계속 늘어난다. 갱신 시점이 지난 뒤
-   * maxStaleMs 까지도 아무도 찾지 않은 항목은 어차피 다시 쓸 때 새로 부르므로
-   * 들고 있을 이유가 없다.
+   * 정류장·노선 조합은 사용자가 검색할수록 계속 늘어난다. 먼저 갱신 시점이 한참
+   * 지난 항목을 버리고, 그래도 한도를 넘으면 오래된 순서로 더 버린다. 만료된 것만
+   * 지우면 짧은 시간에 새 조합이 몰릴 때 전부 최신이라 하나도 못 지운다.
+   *
+   * Map 은 삽입 순서를 지키므로 앞쪽이 오래된 항목이다.
    */
   private evictExpired(at: number): void {
     if (this.entries.size <= this.maxEntries) return;
@@ -165,6 +172,11 @@ export class ArrivalCache {
       if (at - entry.refreshAfter > this.maxStaleMs) {
         this.entries.delete(key);
       }
+    }
+
+    for (const key of this.entries.keys()) {
+      if (this.entries.size <= this.maxEntries) break;
+      this.entries.delete(key);
     }
   }
 
