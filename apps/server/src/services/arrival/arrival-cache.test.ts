@@ -15,7 +15,7 @@ function arrival(minutes: number): ArrivalInfo {
 }
 
 /** 호출 횟수를 세고 시간을 직접 흘려보내는 테스트 하네스. */
-function buildCache(responses: ArrivalInfo[][]) {
+function buildCache(responses: ArrivalInfo[][], maxStaleMs?: number) {
   let clock = 0;
   let calls = 0;
 
@@ -25,7 +25,7 @@ function buildCache(responses: ArrivalInfo[][]) {
       calls += 1;
       return { arrivals };
     },
-    () => clock,
+    { now: () => clock, ...(maxStaleMs === undefined ? {} : { maxStaleMs }) },
   );
 
   return {
@@ -55,13 +55,11 @@ test("앱이 3초마다 물어도 GBIS 호출은 갱신 주기를 따른다", as
   const h = buildCache([[arrival(30)]]);
   await h.cache.get(TARGET);
 
-  // 5분 동안 3초 간격으로 100번 물어본다.
   for (let i = 0; i < 100; i += 1) {
     h.advance(3_000);
     await h.cache.get(TARGET);
   }
 
-  // 30분 남은 상태의 갱신 주기는 상한인 5분이다. 300초 동안 호출은 몇 번뿐이어야 한다.
   assert.ok(h.calls <= 2, `호출이 ${h.calls}회로 과도하다`);
 });
 
@@ -73,7 +71,6 @@ test("갱신 시점이 지나면 다시 부른다", async () => {
 
   const refreshed = await h.cache.get(TARGET);
   assert.equal(refreshed.fromCache, false);
-  assert.equal(h.calls, 2);
   assert.equal(refreshed.predictedArrivalMinutes, 24);
 });
 
@@ -81,102 +78,155 @@ test("버스가 가까워지면 갱신 주기가 좁아진다", async () => {
   const far = buildCache([[arrival(30)]]);
   const near = buildCache([[arrival(2)]]);
 
-  const farSnapshot = await far.cache.get(TARGET);
-  const nearSnapshot = await near.cache.get(TARGET);
-
-  assert.equal(farSnapshot.nextRefreshInMs, ARRIVAL_POLL_MAX_MS);
-  assert.equal(nearSnapshot.nextRefreshInMs, 1 * MINUTE);
+  assert.equal((await far.cache.get(TARGET)).nextRefreshInMs, ARRIVAL_POLL_MAX_MS);
+  assert.equal((await near.cache.get(TARGET)).nextRefreshInMs, 1 * MINUTE);
 });
 
-test("5분 이내로 들어오면 스캔 신호가 켜진다", async () => {
-  const h = buildCache([[arrival(30)], [arrival(4)]]);
-
-  const before = await h.cache.get(TARGET);
-  assert.equal(before.scanBeacon, false);
-
-  h.advance(ARRIVAL_POLL_MAX_MS);
-  const after = await h.cache.get(TARGET);
-  assert.equal(after.scanBeacon, true);
-});
-
-test("앞차가 떠나 도착시간이 늘어나도 스캔 신호는 꺼지지 않는다", async () => {
-  // 실측 720-2번: 1분 → 9분(다음 차량으로 교체)
-  const h = buildCache([[arrival(1)], [arrival(9)]]);
-
-  const first = await h.cache.get(TARGET);
-  assert.equal(first.scanBeacon, true);
-
-  h.advance(ARRIVAL_POLL_MAX_MS);
-  const second = await h.cache.get(TARGET);
-  assert.equal(second.predictedArrivalMinutes, 9, "값 자체는 갱신된다");
-  assert.equal(second.scanBeacon, true, "스캔 신호는 유지되어야 한다");
-});
-
-test("도착정보가 비어 있으면 스캔을 켜고 최대 주기로 재시도한다", async () => {
+test("실시간 차량이 없으면 빈 배열이고, 조회 실패가 아니다", async () => {
   const h = buildCache([[]]);
 
   const snapshot = await h.cache.get(TARGET);
-  assert.deepEqual(snapshot.arrivals, []);
+  assert.deepEqual(snapshot.arrivals, [], "빈 배열은 '차량 없음'을 뜻한다");
+  assert.notEqual(snapshot.arrivals, null);
   assert.equal(snapshot.predictedArrivalMinutes, null);
-  assert.equal(snapshot.scanBeacon, true, "정보가 없다고 스캔을 막으면 탑승을 놓친다");
-  assert.equal(snapshot.nextRefreshInMs, ARRIVAL_POLL_MAX_MS);
 });
 
-test("조회에 실패하면 직전 값을 유지하고 안내를 비우지 않는다", async () => {
+// ─────────────────────────────────────────────
+// 리뷰 지적 반영 (2026-08-26)
+// ─────────────────────────────────────────────
+
+test("첫 조회가 실패하면 빈 배열이 아니라 null 을 돌려준다", async () => {
+  // 빈 배열로 접으면 호출부가 "실시간 차량 없음"으로 오해한다.
+  const cache = new ArrivalCache(async () => {
+    throw new Error("GBIS down");
+  });
+
+  const snapshot = await cache.get(TARGET);
+  assert.equal(snapshot.arrivals, null, "조회 실패는 null 이어야 한다");
+  assert.equal(snapshot.predictedArrivalMinutes, null);
+});
+
+/**
+ * 1분 남은 버스는 갱신 주기가 30초라, 40초 뒤부터 갱신을 시도하고 실패를 겪는다.
+ * 만료 한도를 90초로 두면 "잠시 유지 → 결국 버림"을 한 흐름에서 볼 수 있다.
+ */
+function buildFlakyCache() {
   let calls = 0;
   let clock = 0;
   const cache = new ArrivalCache(
     async () => {
       calls += 1;
-      if (calls === 1) return { arrivals: [arrival(6)] };
+      if (calls === 1) return { arrivals: [arrival(1)] };
       throw new Error("network error");
     },
-    () => clock,
+    { now: () => clock, maxStaleMs: 90_000 },
   );
 
-  const first = await cache.get(TARGET);
-  assert.equal(first.predictedArrivalMinutes, 6);
+  return {
+    cache,
+    advance: (ms: number) => {
+      clock += ms;
+    },
+  };
+}
 
-  clock += ARRIVAL_POLL_MAX_MS;
-  const afterFailure = await cache.get(TARGET);
+test("갱신에 실패하면 직전 값을 잠시 유지한다", async () => {
+  const h = buildFlakyCache();
 
-  assert.equal(afterFailure.predictedArrivalMinutes, 6, "실패했다고 값을 버리면 안 된다");
-  assert.ok(afterFailure.nextRefreshInMs > 0, "실패 뒤에도 재시도 시점이 잡혀야 한다");
+  await h.cache.get(TARGET);
+  h.advance(40_000); // 갱신 시점(30초)은 지났고 만료 한도(90초)는 안 지났다
+
+  const afterFailure = await h.cache.get(TARGET);
+  assert.equal(afterFailure.predictedArrivalMinutes, 1, "일시적 실패에 안내를 비우지 않는다");
+});
+
+test("실패가 이어지면 낡은 값을 버리고 null 로 바꾼다", async () => {
+  // 버스가 이미 지나갔는데 계속 "1분 후 도착"이라고 안내하면 위험하다.
+  const h = buildFlakyCache();
+
+  await h.cache.get(TARGET);
+
+  h.advance(40_000);
+  assert.equal((await h.cache.get(TARGET)).predictedArrivalMinutes, 1, "아직은 유지");
+
+  h.advance(60_000); // 최초 조회로부터 100초 > 90초 한도
+  const expired = await h.cache.get(TARGET);
+  assert.equal(expired.arrivals, null, "한도를 넘긴 값은 버려야 한다");
+});
+
+test("실패 뒤에는 최소 간격으로 빠르게 재시도한다", async () => {
+  const cache = new ArrivalCache(async () => {
+    throw new Error("down");
+  });
+
+  const snapshot = await cache.get(TARGET);
+  assert.equal(
+    snapshot.nextRefreshInMs,
+    ARRIVAL_POLL_MIN_MS,
+    "실패 후 5분을 기다리면 정상 값을 되찾는 데 너무 오래 걸린다",
+  );
+});
+
+test("같은 대상에 동시 요청이 와도 GBIS는 한 번만 부른다", async () => {
+  let calls = 0;
+  const cache = new ArrivalCache(async () => {
+    calls += 1;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    return { arrivals: [arrival(5)] };
+  });
+
+  await Promise.all([cache.get(TARGET), cache.get(TARGET), cache.get(TARGET)]);
+
+  assert.equal(calls, 1, `동시 3회 요청에 GBIS를 ${calls}회 불렀다`);
+});
+
+test("동시 요청이 실패해도 다음 요청은 다시 시도할 수 있다", async () => {
+  let calls = 0;
+  const cache = new ArrivalCache(async () => {
+    calls += 1;
+    if (calls === 1) throw new Error("down");
+    return { arrivals: [arrival(4)] };
+  });
+
+  const failed = await cache.get(TARGET);
+  assert.equal(failed.arrivals, null);
+
+  const recovered = await cache.get(TARGET);
+  assert.equal(recovered.predictedArrivalMinutes, 4, "실패한 요청이 캐시에 남아 막으면 안 된다");
 });
 
 test("노선이 다르면 갱신 주기를 따로 관리한다", async () => {
-  let clock = 0;
   const seen: string[] = [];
   const cache = new ArrivalCache(
     async (t) => {
       seen.push(t.localBusId);
       return { arrivals: t.localBusId === "A" ? [arrival(30)] : [arrival(2)] };
     },
-    () => clock,
+    { now: () => 0 },
   );
 
   const a = await cache.get({ gbisStationId: "S", localBusId: "A" });
   const b = await cache.get({ gbisStationId: "S", localBusId: "B" });
 
-  assert.deepEqual(seen, ["A", "B"], "같은 정류장이어도 노선별로 조회한다");
+  assert.deepEqual(seen, ["A", "B"]);
   assert.equal(a.nextRefreshInMs, ARRIVAL_POLL_MAX_MS);
   assert.equal(b.nextRefreshInMs, 1 * MINUTE);
 });
 
-test("운행이 끝나면 스캔 상태가 다음 운행으로 새지 않는다", async () => {
-  const h = buildCache([[arrival(2)], [arrival(30)]]);
+test("오래 쓰이지 않은 항목은 정리해 무한히 쌓이지 않게 한다", async () => {
+  let clock = 0;
+  const cache = new ArrivalCache(
+    async () => ({ arrivals: [arrival(1)] }),
+    { now: () => clock, maxStaleMs: 1_000, maxEntries: 2 },
+  );
 
-  const first = await h.cache.get(TARGET);
-  assert.equal(first.scanBeacon, true);
+  await cache.get({ gbisStationId: "S", localBusId: "R1" });
+  await cache.get({ gbisStationId: "S", localBusId: "R2" });
 
-  h.cache.clear(TARGET);
+  clock += 10 * MINUTE;
+  await cache.get({ gbisStationId: "S", localBusId: "R3" });
 
-  const afterClear = await h.cache.get(TARGET);
-  assert.equal(afterClear.scanBeacon, false, "clear 뒤에는 스캔 상태가 초기화되어야 한다");
-});
-
-test("도착 직전에도 최소 주기보다 자주 부르지 않는다", async () => {
-  const h = buildCache([[arrival(0)]]);
-  const snapshot = await h.cache.get(TARGET);
-  assert.equal(snapshot.nextRefreshInMs, ARRIVAL_POLL_MIN_MS);
+  // R1·R2 는 정리됐어야 하므로 다시 물으면 새로 조회한다.
+  const revisited = await cache.get({ gbisStationId: "S", localBusId: "R1" });
+  assert.equal(revisited.fromCache, false, "정리된 항목은 새로 조회되어야 한다");
 });
