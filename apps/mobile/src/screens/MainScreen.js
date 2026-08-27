@@ -65,7 +65,7 @@ export default function MainScreen({ navigation }) {
   return (
     <View style={styles.container}>
       <Text style={styles.title}>버스 도우미</Text>
-      <Text style={styles.subtitle}>시각장애인 대중교통 보조 앱</Text>
+      <Text style={styles.subtitle}>시각장애인 대중교통 이용 보조 시스템</Text>
 
       {/* 보조 정보 — 필수 확인 단계 아님, 저시력 사용자·보호자·테스트 담당자용 */}
       <View style={styles.statusBox}>
@@ -135,7 +135,7 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     justifyContent: 'space-between',
-    backgroundColor: '#F5F7FA',
+    backgroundColor: '#0A0C10',
     paddingHorizontal: 20,
     paddingTop: 40,
     paddingBottom: 32,
@@ -144,17 +144,20 @@ const styles = StyleSheet.create({
   title: {
     fontSize: 28,
     fontWeight: '800',
-    color: '#111111',
-    textAlign: 'center',
+    color: '#FFD400',
+    textAlign: 'left',
     marginBottom: 4,
   },
 
   subtitle: {
     fontSize: 15,
     fontWeight: '500',
-    color: '#6B7280',
-    textAlign: 'center',
-    marginBottom: 28,
+    color: '#8A8F98',
+    textAlign: 'left',
+    marginBottom: 16,
+    paddingBottom: 16,
+    borderBottomWidth: 1, // 시안의 서브타이틀 아래 얇은 구분선
+    borderBottomColor: '#2A2E37',
   },
 
   statusBox: {
@@ -165,24 +168,22 @@ const styles = StyleSheet.create({
 
   statusRow: {
     width: '100%',
-    backgroundColor: '#FFFFFF',
+    backgroundColor: '#15181F',
     borderRadius: 18,
-    borderWidth: 2.5,
-    borderColor: '#B8C2D0',
+    borderWidth: 1, // 점선 → 얇은 실선
+    borderStyle: 'solid',
+    borderColor: '#2A2E37',
     paddingVertical: 22,
     paddingHorizontal: 22,
     marginBottom: 14,
-    shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
-    shadowRadius: 8,
-    elevation: 2,
   },
 
+  // 목적지 카드 — 얇은 실선이지만 블루로 강조
   statusRowHighlight: {
-    backgroundColor: '#1E4FD8',
-    borderColor: '#0F2E8C',
-    shadowOpacity: 0.15,
+    backgroundColor: '#15181F',
+    borderStyle: 'solid',
+    borderColor: '#2F8FFF',
+    borderWidth: 1.5,
   },
 
   statusLabelRow: {
@@ -195,11 +196,11 @@ const styles = StyleSheet.create({
   statusLabel: {
     fontSize: 15,
     fontWeight: '600',
-    color: '#6B7280',
+    color: '#9CA3AF',
   },
 
   statusLabelOnHighlight: {
-    color: '#DCE6FF',
+    color: '#93B4FF',
   },
 
   statusDot: {
@@ -207,25 +208,28 @@ const styles = StyleSheet.create({
     height: 14,
     borderRadius: 7,
     borderWidth: 1.5,
-    borderColor: '#00000030',
+    borderColor: '#00000060',
   },
 
   statusValue: {
     fontSize: 28,
     lineHeight: 36,
-    color: '#000000',
+    color: '#FFD400',
     fontWeight: '800',
   },
 
   statusValueOnHighlight: {
-    color: '#FFFFFF',
+    color: '#FFD400',
   },
 
   retryButton: {
     width: '100%',
     minHeight: 76,
-    backgroundColor: '#1E4FD8',
-    borderRadius: 18,
+    backgroundColor: '#FFC400',
+    borderRadius: 22,
+    borderWidth: 3, // 시안처럼 두꺼운 흰 테두리
+    borderStyle: 'solid',
+    borderColor: '#FFFFFF',
     justifyContent: 'center',
     alignItems: 'center',
     paddingHorizontal: 20,
@@ -233,7 +237,7 @@ const styles = StyleSheet.create({
   },
 
   retryButtonText: {
-    color: '#FFFFFF',
+    color: '#111111',
     fontSize: 22,
     fontWeight: '800',
     textAlign: 'center',
@@ -241,15 +245,18 @@ const styles = StyleSheet.create({
 
   hint: {
     width: '100%',
-    backgroundColor: '#1E4FD8',
-    color: '#FFFFFF',
+    backgroundColor: '#FFC400',
+    color: '#111111',
     fontSize: 24,
     lineHeight: 32,
     fontWeight: '800',
     textAlign: 'center',
     paddingVertical: 24,
     paddingHorizontal: 20,
-    borderRadius: 18,
+    borderRadius: 22,
+    borderWidth: 3,
+    borderStyle: 'solid',
+    borderColor: '#FFFFFF',
     marginTop: 4,
   }
 });

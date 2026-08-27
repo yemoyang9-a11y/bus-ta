@@ -10,6 +10,12 @@
  *
  * 정민님 확인(2026-08-24): RSSI 임계값과 연속 감지 시간은 아직 실측 데이터가 부족해
  * 확정되지 않았다. 아래 설정값은 임시값이며, 실측 데이터가 나오면 갱신해야 한다.
+ *
+ * 예모님 지적(2026-08-27): 기존에는 "임계값 아래로 떨어진 횟수"만 세서, 시간 연속성을
+ * 보장하지 못했다 (긴 신호 공백이나 긴 RSSI 하락 뒤에도 샘플 1건만 정상이면 예전 시작
+ * 시각이 그대로 남아 있어 바로 확정될 위험이 있었다). 이제 "마지막 정상 샘플 시각"과
+ * "최대 허용 샘플 간격(maxSampleGapMs)"을 기준으로, 그 간격을 넘겨서 샘플이 오면
+ * 연속 구간 자체를 리셋한다.
  */
 
 // TODO(정민님 실측 대기): 아래 값들은 실측 전 임시값이다.
@@ -19,9 +25,11 @@ const BOARDING_DETECTION_CONFIG = {
   rssiThreshold: -60,
   // 위 기준을 만족하는 상태가 이 시간(ms) 이상 연속 유지되어야 탑승으로 확정한다.
   requiredDurationMs: 7000,
-  // 히스테리시스: 한 번 임계값을 벗어나도, 이 횟수 이내의 순간적 이탈은 무시한다.
-  // (노이즈로 인한 순간적 RSSI 급락으로 판정이 리셋되는 것을 방지)
+  // 히스테리시스: 한 번 임계값을 벗어나도, 이 횟수 이내의 순간적 이탈(노이즈)은 무시한다.
   toleratedDropCount: 2,
+  // 정상 샘플 사이에 이 시간(ms)보다 더 긴 공백이 생기면, 연속 구간이 끊긴 것으로 보고
+  // 처음부터 다시 판정한다. 신호 공백·긴 RSSI 하락으로 인한 오탐을 방지한다.
+  maxSampleGapMs: 4000,
 };
 
 /**
@@ -37,7 +45,8 @@ const BOARDING_DETECTION_CONFIG = {
 export function createBoardingDetector(config = {}) {
   const settings = { ...BOARDING_DETECTION_CONFIG, ...config };
 
-  let aboveThresholdSinceMs = null; // 임계값 이상 상태가 시작된 시각
+  let aboveThresholdSinceMs = null; // 현재 연속 구간이 시작된 시각
+  let lastSampleAtMs = null; // 마지막으로 처리한 샘플의 시각 (공백 판정용)
   let consecutiveDropCount = 0;
   let confirmed = false;
 
@@ -45,8 +54,14 @@ export function createBoardingDetector(config = {}) {
 
   function reset() {
     aboveThresholdSinceMs = null;
+    lastSampleAtMs = null;
     consecutiveDropCount = 0;
     confirmed = false;
+  }
+
+  function startNewWindow(now) {
+    aboveThresholdSinceMs = now;
+    consecutiveDropCount = 0;
   }
 
   /**
@@ -57,12 +72,21 @@ export function createBoardingDetector(config = {}) {
     if (confirmed) return; // 이미 확정됐으면 더 이상 판정하지 않는다.
 
     const now = sample.timestamp ?? Date.now();
+
+    // 마지막 샘플 이후 너무 오래 공백이 있었다면, 이전 연속 구간은 무효로 보고 새로 시작한다.
+    // (긴 신호 두절이나 긴 RSSI 하락 뒤 샘플 1건만 정상이어도 바로 확정되는 것을 방지)
+    if (lastSampleAtMs !== null && now - lastSampleAtMs > settings.maxSampleGapMs) {
+      aboveThresholdSinceMs = null;
+      consecutiveDropCount = 0;
+    }
+    lastSampleAtMs = now;
+
     const isAboveThreshold = sample.rssi >= settings.rssiThreshold;
 
     if (isAboveThreshold) {
       consecutiveDropCount = 0;
       if (aboveThresholdSinceMs === null) {
-        aboveThresholdSinceMs = now;
+        startNewWindow(now);
       }
 
       const elapsed = now - aboveThresholdSinceMs;
