@@ -26,7 +26,7 @@ const initialState = {
 function tripReducer(state, action) {
   switch (action.type) {
     case 'SET_DESTINATION_AND_ROUTES':
-      // ConfirmScreen에서 검색 성공 후 호출
+      // Realtime search_routes Function 성공 후 호출
       return {
         ...state,
         destination: action.destination,

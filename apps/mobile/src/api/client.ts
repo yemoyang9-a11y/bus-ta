@@ -125,9 +125,7 @@ export const apiClient = {
   realtime: {
     createSession: (sharedSecret?: string, signal?: AbortSignal) => {
       const headers = sharedSecret ? { "x-realtime-shared-secret": sharedSecret } : undefined;
-      // 예모님 지적(2026-08-27): exactOptionalPropertyTypes 환경에서는 signal: undefined를
-      // 그대로 넣으면 타입 오류가 난다. signal이 실제로 있을 때만 옵션 객체에 포함시킨다.
-      const init: RequestInit = { method: "POST" };
+      const init: RequestInit & { signal?: AbortSignal } = { method: "POST" };
       if (headers) {
         init.headers = headers;
       }

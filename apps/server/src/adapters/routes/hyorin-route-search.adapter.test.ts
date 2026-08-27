@@ -253,6 +253,12 @@ test("ODsay가 result 없이 error 본문을 돌려주면 후보는 비되 원�
 // ─────────────────────────────────────────────
 const gbisArrivalFixture = loadFixture("gbis-bus-arrival-list-station-233000575.json");
 
+// 2026-08-20 실제 GBIS getBusRouteStationListv2 호출로 캡처한 노선 전체 정류장 순서.
+// 205(233000281)·200(233000268) 둘 다 수원대학교(233000575)를 회차 전/후로 두 번
+// 지난다. Task 24(중복 routeId 방향 판별) 테스트의 근거 fixture다.
+const gbisRouteStations205Fixture = loadFixture("gbis-bus-route-station-list-233000281.json");
+const gbisRouteStations200Fixture = loadFixture("gbis-bus-route-station-list-233000268.json");
+
 const GBIS_STATION_ID = "233000575";
 
 function stubGbisArrival(t: import("node:test").TestContext) {
@@ -264,9 +270,50 @@ function stubGbisArrival(t: import("node:test").TestContext) {
   });
 }
 
+// 중복 routeId 방향 판별 테스트용: busarrivalservice 는 고정 fixture, busrouteservice
+// 는 routeId 별로 다른 fixture를 돌려준다. 예상 밖의 routeId 조회는 실패시켜
+// 어떤 노선을 조회했는지 테스트에서 바로 드러나게 한다.
+function stubGbisArrivalAndRoute(t: import("node:test").TestContext) {
+  const routeFixturesByRouteId: Record<string, unknown> = {
+    "233000281": gbisRouteStations205Fixture,
+    "233000268": gbisRouteStations200Fixture,
+  };
+
+  return t.mock.method(axios, "get", async (url: string, config?: { params?: { routeId?: string } }) => {
+    if (url.includes("busarrivalservice")) {
+      return { data: gbisArrivalFixture };
+    }
+    if (url.includes("busrouteservice")) {
+      const routeId = config?.params?.routeId ?? "";
+      const fixture = routeFixturesByRouteId[routeId];
+      if (!fixture) {
+        throw new Error(`이 테스트에서 예상하지 못한 routeId 의 busrouteservice 호출: ${routeId}`);
+      }
+      return { data: fixture };
+    }
+    throw new Error(`이 테스트에서 예상하지 못한 axios.get 호출: ${url}`);
+  });
+}
+
 function arrivalCandidate(localBusId: string) {
   return { gbisStationId: GBIS_STATION_ID, localBusId };
 }
+
+// 병점역사거리: 205·200 둘 다 회차 전(동탄파크릭스/반도10차 방향) 구간에 있는 정류장.
+const DESTINATION_TOWARD_TURN_POINT = {
+  stationName: "병점역사거리",
+  latitude: 37.2069833,
+  longitude: 127.0356333,
+};
+
+// 일진산업단지: 205·200 둘 다 노선 전체에서 회차 후(경기고속차고지 방향, 복귀)
+// 구간에만 유일하게 나오는 정류장이다. 회차 전 구간에도 같은 정류장이 있는
+// "융건릉입구" 같은 이름은 방향을 하나로 확정할 수 없어 테스트 목적지로 못 쓴다.
+const DESTINATION_AFTER_TURN_POINT = {
+  stationName: "일진산업단지",
+  latitude: 37.1959,
+  longitude: 126.9978,
+};
 
 test("도착 예정 차량이 두 대면 도착 순서대로 arrivals 두 개를 반환한다", async (t) => {
   stubGbisArrival(t);
@@ -376,7 +423,16 @@ test("routeTypeCd 가 혼잡도·잔여좌석 어느 집합에도 속하지 않�
 function stubGbisArrivalWith(t: import("node:test").TestContext, items: unknown[]) {
   return t.mock.method(axios, "get", async (url: string) => {
     if (url.includes("busarrivalservice")) {
-      return { data: { response: { msgBody: { busArrivalList: items } } } };
+      // 실제 GBIS 응답은 항상 msgHeader 를 포함한다. resultCode 를 빠뜨리면
+      // 어댑터가 응답 오류로 간주하므로 정상값을 함께 준다.
+      return {
+        data: {
+          response: {
+            msgHeader: { resultCode: 0, resultMessage: "정상적으로 처리되었습니다." },
+            msgBody: { busArrivalList: items },
+          },
+        },
+      };
     }
     throw new Error(`이 테스트에서 예상하지 못한 axios.get 호출: ${url}`);
   });
@@ -499,9 +555,10 @@ test("변환된 arrivals 항목은 모두 공개 계약(ArrivalInfoSchema)을 �
   // fixture 안의 여러 차종을 훑어 어떤 차종도 계약을 깨는 값을 만들지 않는지 본다.
   //
   // 233000281(205), 233000268(200)은 일부러 뺐다. 두 routeId 는 fixture 에 각각 두 번
-  // 나오는데 첫 항목이 전부 빈 값이라 arrivals 가 항상 [] 로 나온다. 목록에 넣어봐야
-  // 아래 단언 루프가 한 번도 돌지 않아 검증하는 척만 하게 된다.
-  // 그 동작 자체는 바로 아래 별도 테스트에서 명시적으로 단언한다.
+  // 나오는 중복 routeId다(Task 24). 이 테스트의 arrivalCandidate() 는 destinationStation
+  // 을 안 넘기므로 방향을 판별하지 않고 arrivals: [] 로 접혀 아래 단언 루프가 한 번도
+  // 돌지 않아 검증하는 척만 하게 된다. 중복 routeId 의 방향 판별 자체는
+  // "중복 routeId:"로 시작하는 별도 테스트들에서 다룬다.
   const localBusIds = [
     "234000021", // 700-2, 일반시내버스 (CONGESTION)
     "233000326", // 1006, 직행좌석 (REMAINING_SEATS)
@@ -533,26 +590,258 @@ test("변환된 arrivals 항목은 모두 공개 계약(ArrivalInfoSchema)을 �
   assert.ok(checkedArrivals > 0, "계약 검증이 한 번도 실행되지 않았다");
 });
 
-// 알려진 선재 이슈 (이번 변경으로 생긴 것이 아니다. handoff 에 "범위 밖·미착수"로 등록되어 있다)
+// Task 24: FIX-GBIS-ARRIVAL-DUPLICATE-ROUTEID
 //
 // GBIS 응답에는 같은 routeId 가 두 번 나올 수 있다. fixture 의 233000281(205)과
-// 233000268(200)이 그렇고, 두 경우 모두 첫 항목이 빈 값이고 뒤 항목에 실제 도착 정보가 있다.
-// getArrivalInfo 는 .find() 로 첫 항목만 집기 때문에 뒤쪽 유효값을 놓치고 [] 를 반환한다.
+// 233000268(200)이 그렇다 — 회차 노선이 같은 정류장(233000575)을 회차 전/후로
+// 두 번 지나기 때문이다. 두 occurrence 는 routeDestName(종점)이 다르고,
+// 실측(2026-08-20) 결과 "바로 다음 정류장"만으로는 구분되지 않는다 — 회차 전/후
+// 구간이 같은 도로를 그대로 다시 지나 다음 정류장이 완전히 동일하다.
 //
-// 이 테스트는 그 동작을 옳다고 주장하는 것이 아니라, 현재 동작이 무엇인지 고정해 둔다.
-// .find() 를 고치면 이 테스트가 깨지고, 그때 기대값을 실제 도착 정보로 바꾸면 된다.
-test("같은 routeId 가 중복으로 오면 첫 항목만 보고 [] 를 반환한다 (선재 이슈, 미수정)", async (t) => {
+// 그래서 목적지가 노선 전체 순서상 어디 있는지로 방향을 가른다. 아래 두 테스트가
+// 왕복 방향을 각각 실측 fixture로 검증한다.
+test("중복 routeId: 목적지가 회차 전 구간에 있으면 그 방향 도착정보를 쓴다", async (t) => {
+  stubGbisArrivalAndRoute(t);
+
+  for (const localBusId of ["233000281", "233000268"]) {
+    const info = await getArrivalInfo({
+      ...arrivalCandidate(localBusId),
+      destinationStation: DESTINATION_TOWARD_TURN_POINT,
+    });
+
+    // fixture 캡처 시점에 이 방향(동탄파크릭스/반도10차 행)엔 실제로 오는 차가 없었다.
+    // 반대 방향 값이 여기로 새면 안 된다는 것이 이번 수정의 핵심이다.
+    assert.deepEqual(
+      info.arrivals,
+      [],
+      `${localBusId}: 회차 전 방향은 fixture 상 도착정보가 없어야 한다`,
+    );
+  }
+});
+
+test("중복 routeId: 목적지가 회차 후 구간에 있으면 그 방향 도착정보를 쓴다", async (t) => {
+  stubGbisArrivalAndRoute(t);
+
+  const info205 = await getArrivalInfo({
+    ...arrivalCandidate("233000281"),
+    destinationStation: DESTINATION_AFTER_TURN_POINT,
+  });
+  assert.deepEqual(info205.arrivals.map((a) => a.predictedArrivalMinutes), [15, 88]);
+
+  const info200 = await getArrivalInfo({
+    ...arrivalCandidate("233000268"),
+    destinationStation: DESTINATION_AFTER_TURN_POINT,
+  });
+  assert.deepEqual(info200.arrivals.map((a) => a.predictedArrivalMinutes), [43]);
+});
+
+test("중복 routeId: destinationStation 이 없으면 방향을 판별하지 않고 [] 를 반환한다", async (t) => {
+  // busrouteservice 를 stub 하지 않는다 — destinationStation 이 없으면
+  // resolveDirectionalStaOrder 가 그 전에 null 을 반환해 아예 호출하지 않아야 한다.
   stubGbisArrival(t);
 
   for (const localBusId of ["233000281", "233000268"]) {
     const info = await getArrivalInfo(arrivalCandidate(localBusId));
 
-    assert.deepEqual(
-      info.arrivals,
-      [],
-      `${localBusId}: 뒤쪽 항목에 도착 정보가 있어도 현재는 첫 항목만 본다`,
-    );
+    assert.deepEqual(info.arrivals, [], `${localBusId}: destinationStation 없이는 방향을 추측하지 않는다`);
   }
+});
+
+test("중복 routeId: 목적지가 노선에 없으면(불일치) [] 를 반환한다", async (t) => {
+  stubGbisArrivalAndRoute(t);
+
+  const info = await getArrivalInfo({
+    ...arrivalCandidate("233000281"),
+    destinationStation: { stationName: "존재하지 않는 정류장", latitude: 0, longitude: 0 },
+  });
+
+  assert.deepEqual(info.arrivals, []);
+});
+
+test("중복 routeId: 노선 정류장 목록 조회(GBIS busrouteservice)가 실패해도 예외 없이 [] 를 반환한다", async (t) => {
+  t.mock.method(axios, "get", async (url: string) => {
+    if (url.includes("busarrivalservice")) return { data: gbisArrivalFixture };
+    if (url.includes("busrouteservice")) throw new Error("network error");
+    throw new Error(`이 테스트에서 예상하지 못한 axios.get 호출: ${url}`);
+  });
+
+  const info = await getArrivalInfo({
+    ...arrivalCandidate("233000281"),
+    destinationStation: DESTINATION_AFTER_TURN_POINT,
+  });
+
+  assert.deepEqual(info.arrivals, []);
+});
+
+// PR #33 리뷰 지적: 이번 도착정보 응답에 routeId 레코드가 "몇 개 왔는지"만 보고
+// 방향 검증 여부를 정하면, 회차 노선인데 GBIS가 이번엔 반대 방향 레코드를 아예
+// 안 준 경우(레코드 1개) 그 1개를 검증 없이 그대로 써버려 반대 방향을 안내할 수
+// 있다. 지금은 노선 구조(정류장 목록에서 보딩역이 몇 번 나오는지)로 판단하므로
+// 레코드가 1개뿐이어도 방향을 확인한다.
+function stubGbisArrivalItemsAndRoute(t: import("node:test").TestContext, items: unknown[]) {
+  return t.mock.method(axios, "get", async (url: string, config?: { params?: { routeId?: string } }) => {
+    if (url.includes("busarrivalservice")) {
+      return { data: { response: { msgBody: { busArrivalList: items } } } };
+    }
+    if (url.includes("busrouteservice")) {
+      const routeId = config?.params?.routeId ?? "";
+      if (routeId === "233000281") return { data: gbisRouteStations205Fixture };
+      throw new Error(`이 테스트에서 예상하지 못한 routeId 의 busrouteservice 호출: ${routeId}`);
+    }
+    throw new Error(`이 테스트에서 예상하지 못한 axios.get 호출: ${url}`);
+  });
+}
+
+test("중복 routeId 회귀: 반대 방향 레코드 1개만 반환돼도 그대로 쓰지 않고 [] 를 반환한다", async (t) => {
+  // 233000281 은 노선 구조상 233000575 를 두 번 지난다(staOrder 11, 128). 이번엔
+  // GBIS 가 반대 방향(staOrder 11, 목적지가 있는 128 방향이 아님) 레코드 1개만
+  // 줬다고 가정한다 — predictTime 을 일부러 유효값(9분)으로 채워서, 검증 없이
+  // 그대로 썼다면 이 값이 새 나갔을 것임을 보인다.
+  stubGbisArrivalItemsAndRoute(t, [
+    syntheticArrivalItem({ routeId: 233000281, staOrder: 11, predictTime1: "9" }),
+  ]);
+
+  const info = await getArrivalInfo({
+    ...arrivalCandidate("233000281"),
+    destinationStation: DESTINATION_AFTER_TURN_POINT, // staOrder 128 방향으로 확정되는 목적지
+  });
+
+  assert.deepEqual(
+    info.arrivals,
+    [],
+    "반대 방향(staOrder 11)의 도착정보 9분이 검증 없이 새 나가면 안 된다",
+  );
+});
+
+test("중복 routeId 회귀: 정방향 레코드 1개만 와도 검증을 통과하면 정상 반환한다", async (t) => {
+  // 위 테스트와 대비되는 양성 케이스: 레코드가 1개뿐이어도 그 방향이 destinationStation
+  // 과 일치하면(staOrder 128) 정상적으로 도착정보를 반환해야 한다 — 방향 검증이
+  // "레코드 1개면 무조건 []" 로 과도하게 안전한 쪽으로 치우치지 않았는지 확인한다.
+  stubGbisArrivalItemsAndRoute(t, [
+    syntheticArrivalItem({ routeId: 233000281, staOrder: 128, predictTime1: "9" }),
+  ]);
+
+  const info = await getArrivalInfo({
+    ...arrivalCandidate("233000281"),
+    destinationStation: DESTINATION_AFTER_TURN_POINT,
+  });
+
+  assert.deepEqual(info.arrivals.map((a) => a.predictedArrivalMinutes), [9]);
+});
+
+// PR #33 리뷰 P1: 노선 경유정류소 조회가 실패하거나 빈 응답이면 방향을 검증할 수
+// 없다. 이때 실패를 빈 배열로 접으면 "이 노선은 정류장을 한 번만 지난다"로 오해해
+// 레코드 1개를 검증 없이 통과시킨다(fail open). 검증 불가는 fail closed 여야 한다.
+test("PR #33 리뷰 P1: 경유정류소 조회가 실패하면 레코드가 1개여도 fail closed 로 [] 를 반환한다", async (t) => {
+  t.mock.method(axios, "get", async (url: string) => {
+    if (url.includes("busarrivalservice")) {
+      return {
+        data: {
+          response: {
+            msgBody: {
+              busArrivalList: [
+                syntheticArrivalItem({ routeId: 233000281, staOrder: 11, predictTime1: "9" }),
+              ],
+            },
+          },
+        },
+      };
+    }
+    if (url.includes("busrouteservice")) throw new Error("network error");
+    throw new Error(`이 테스트에서 예상하지 못한 axios.get 호출: ${url}`);
+  });
+
+  const info = await getArrivalInfo({
+    ...arrivalCandidate("233000281"),
+    destinationStation: DESTINATION_AFTER_TURN_POINT,
+  });
+
+  assert.deepEqual(
+    info.arrivals,
+    [],
+    "방향을 확인하지 못한 상태에서 도착정보 9분이 검증 없이 새 나가면 안 된다",
+  );
+});
+
+test("PR #33 리뷰 P1: 경유정류소 응답이 비어 있으면 레코드가 1개여도 fail closed 로 [] 를 반환한다", async (t) => {
+  t.mock.method(axios, "get", async (url: string) => {
+    if (url.includes("busarrivalservice")) {
+      return {
+        data: {
+          response: {
+            msgBody: {
+              busArrivalList: [
+                syntheticArrivalItem({ routeId: 233000281, staOrder: 11, predictTime1: "9" }),
+              ],
+            },
+          },
+        },
+      };
+    }
+    // resultCode 는 정상인데 목록만 비어 오는 경우 — 조회 실패와 똑같이 "확인 못 함"이다.
+    if (url.includes("busrouteservice")) return { data: { response: { msgBody: {} } } };
+    throw new Error(`이 테스트에서 예상하지 못한 axios.get 호출: ${url}`);
+  });
+
+  const info = await getArrivalInfo({
+    ...arrivalCandidate("233000281"),
+    destinationStation: DESTINATION_AFTER_TURN_POINT,
+  });
+
+  assert.deepEqual(info.arrivals, [], "빈 응답을 '한 번만 지나는 노선'으로 오해하면 안 된다");
+});
+
+// 벽시계 시간(elapsedMs)으로 병렬성을 판정하면 CI 러너가 느릴 때 병렬인데도
+// 임계값을 넘겨 임의로 실패한다(PR #33 리뷰). 시간 대신 호출 순서를 본다 —
+// 두 번째 요청이 첫 번째 요청이 끝나기 전에 시작됐으면 병렬이고, 첫 번째가
+// 끝난 뒤에야 시작됐으면 순차다. 이 판정은 실행 속도와 무관하게 결정적이다.
+test("PR #33 리뷰 지적: 도착정보 조회와 노선 정류장 조회는 병렬로 실행된다", async (t) => {
+  const events: string[] = [];
+  let releaseArrival: (() => void) | undefined;
+  const arrivalGate = new Promise<void>((resolve) => {
+    releaseArrival = resolve;
+  });
+
+  t.mock.method(axios, "get", async (url: string) => {
+    if (url.includes("busarrivalservice")) {
+      events.push("arrival:start");
+      // 순차 실행이라면 이 요청이 끝나야 다음 요청이 시작된다. 아래에서 두 번째
+      // 요청 시작이 관측될 때까지 붙잡아 두므로, 순차라면 여기서 교착되지 않고
+      // events 에 route:start 가 없는 채로 끝난다.
+      await arrivalGate;
+      events.push("arrival:end");
+      return { data: gbisArrivalFixture };
+    }
+    if (url.includes("busrouteservice")) {
+      events.push("route:start");
+      // 첫 요청이 아직 진행 중인 상태에서 두 번째가 시작됐음을 확인했으니 풀어준다.
+      releaseArrival?.();
+      return { data: gbisRouteStations205Fixture };
+    }
+    throw new Error(`이 테스트에서 예상하지 못한 axios.get 호출: ${url}`);
+  });
+
+  // 순차 실행으로 되돌아가면 arrivalGate 가 영원히 풀리지 않아 이 await 가 멈춘다.
+  // 테스트 러너 타임아웃으로 실패하게 두지 않고, 명시적으로 판정한다.
+  const timedOut = Symbol("timedOut");
+  const result = await Promise.race([
+    getArrivalInfo({
+      ...arrivalCandidate("233000281"),
+      destinationStation: DESTINATION_AFTER_TURN_POINT,
+    }),
+    new Promise((resolve) => setTimeout(() => resolve(timedOut), 2000)),
+  ]);
+
+  assert.notEqual(
+    result,
+    timedOut,
+    "두 요청이 순차로 실행되어 두 번째 요청이 시작되지 못했다 — 병렬 실행이 깨졌다",
+  );
+  assert.deepEqual(
+    events,
+    ["arrival:start", "route:start", "arrival:end"],
+    "두 번째 요청은 첫 번째 요청이 끝나기 전에 시작되어야 한다",
+  );
 });
 
 test("GBIS 도착정보 호출에는 5초 timeout 을 지정한다", async (t) => {
@@ -573,4 +862,73 @@ test("GBIS 도착정보 호출에는 5초 timeout 을 지정한다", async (t) =
     5000,
     "timeout 이 없으면 GBIS 응답 지연이 운행 생성 전체를 붙잡는다",
   );
+});
+
+// ─────────────────────────────────────────────
+// GBIS 는 요청이 잘못돼도 HTTP 200 으로 응답하고 msgHeader.resultCode 에만 이유를
+// 담는다(실측: 없는 정류장 resultCode 4, 파라미터 누락 resultCode 2).
+// 이때 busArrivalList 가 없다고 빈 배열로 접으면 "호출 실패"가 "실시간 차량 없음"
+// 으로 둔갑해 사용자에게 그대로 전달된다. 두 상태는 반드시 구분되어야 한다.
+// ─────────────────────────────────────────────
+
+test("GBIS 가 200 이어도 resultCode 가 정상이 아니면 실패로 던진다", async (t) => {
+  t.mock.method(axios, "get", async (url: string) => {
+    if (url.includes("busarrivalservice")) {
+      return {
+        data: {
+          response: {
+            msgHeader: { resultCode: 4, resultMessage: "결과가 존재하지 않습니다." },
+            msgBody: {},
+          },
+        },
+      };
+    }
+    throw new Error(`이 테스트에서 예상하지 못한 axios.get 호출: ${url}`);
+  });
+
+  await assert.rejects(
+    () => getArrivalInfo(arrivalCandidate("234000021")),
+    (error: unknown) => {
+      assert.match(String((error as Error).message), /resultCode=4/);
+      return true;
+    },
+    "resultCode 오류를 빈 배열로 접으면 '차량 없음'과 구분되지 않는다",
+  );
+});
+
+test("GBIS 가 파라미터 오류(resultCode 2)를 줘도 실패로 던진다", async (t) => {
+  t.mock.method(axios, "get", async (url: string) => {
+    if (url.includes("busarrivalservice")) {
+      return {
+        data: {
+          response: {
+            msgHeader: { resultCode: 2, resultMessage: "필수 요청 Parameter 가 존재하지 않습니다." },
+            msgBody: {},
+          },
+        },
+      };
+    }
+    throw new Error(`이 테스트에서 예상하지 못한 axios.get 호출: ${url}`);
+  });
+
+  await assert.rejects(() => getArrivalInfo(arrivalCandidate("234000021")));
+});
+
+test("resultCode 가 정상인데 목록만 비면 실제로 차량이 없는 것이다", async (t) => {
+  t.mock.method(axios, "get", async (url: string) => {
+    if (url.includes("busarrivalservice")) {
+      return {
+        data: {
+          response: {
+            msgHeader: { resultCode: 0, resultMessage: "정상적으로 처리되었습니다." },
+            msgBody: {},
+          },
+        },
+      };
+    }
+    throw new Error(`이 테스트에서 예상하지 못한 axios.get 호출: ${url}`);
+  });
+
+  const info = await getArrivalInfo(arrivalCandidate("234000021"));
+  assert.deepEqual(info.arrivals, [], "정상 응답의 빈 목록은 예외가 아니라 빈 배열이다");
 });

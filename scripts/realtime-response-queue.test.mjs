@@ -147,7 +147,8 @@ test('연결 성공 안내는 Realtime 응답 한 건으로 생성한다', () =>
       instructions: HANEUM_REALTIME_READY_INSTRUCTIONS,
     },
   });
-  assert.match(HANEUM_REALTIME_READY_INSTRUCTIONS, /목적지를 말씀해주세요/);
+  assert.match(HANEUM_REALTIME_READY_INSTRUCTIONS, /버스 도우미 앱입니다/);
+  assert.match(HANEUM_REALTIME_READY_INSTRUCTIONS, /어디로 가실 건가요/);
 });
 
 test('전체 연결 제한 시간이 지나면 작업을 중단하고 재시도 가능한 오류를 반환한다', async () => {

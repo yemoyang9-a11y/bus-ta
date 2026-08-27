@@ -33,6 +33,9 @@ jobs:
       - name: Typecheck (shared + server + mobile)
         run: pnpm -r typecheck
 
+      - name: Boarding confirmation regressions
+        run: pnpm --filter @bus-ta/server test:boarding
+
   supabase-boarding-sql:
     name: Supabase Boarding SQL
     runs-on: ubuntu-latest

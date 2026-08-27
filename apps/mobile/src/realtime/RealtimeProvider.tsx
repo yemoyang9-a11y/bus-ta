@@ -84,6 +84,7 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
     const guideContext = createRealtimeGuideContext({
       getAppState: () => stateRef.current,
       getCurrentLocation: () => currentLocationRef.current,
+      refreshCurrentLocation,
       dispatchAppAction: (action: AppAction) => dispatchRef.current(action),
     });
     sessionRef.current = new HaneumRealtimeSession(guideContext);

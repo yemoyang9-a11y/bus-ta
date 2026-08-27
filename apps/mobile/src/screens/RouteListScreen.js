@@ -114,7 +114,7 @@ export default function RouteListScreen({ navigation }) {
   if (loading) {
     return (
       <View style={styles.container}>
-        <ActivityIndicator size="large" color="#1E4FD8" />
+        <ActivityIndicator size="large" color="#2196F3" />
         <Text style={{ marginTop: 20 }}>운행을 준비하는 중...</Text>
       </View>
     );
@@ -158,74 +158,56 @@ export default function RouteListScreen({ navigation }) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#F5F7FA',
+    backgroundColor: '#fff',
     padding: 20,
   },
-
-  // 노선 카드 — 큰 글씨, 두꺼운 테두리, 넓은 터치 영역
   routeCard: {
-    backgroundColor: '#FFFFFF',
-    padding: 22,
-    borderRadius: 18,
-    marginBottom: 16,
-    borderWidth: 2.5,
-    borderColor: '#B8C2D0',
-    borderLeftWidth: 8,
-    borderLeftColor: '#1E4FD8',
+    backgroundColor: '#f5f5f5',
+    padding: 20,
+    borderRadius: 10,
+    marginBottom: 15,
+    borderLeftWidth: 5,
+    borderLeftColor: '#2196F3',
   },
-
   routeNo: {
-    fontSize: 26,
-    fontWeight: '800',
-    color: '#111111',
-    marginBottom: 10,
+    fontSize: 22,
+    fontWeight: 'bold',
+    marginBottom: 8,
   },
-
   routeInfo: {
-    fontSize: 18,
-    lineHeight: 26,
-    color: '#333333',
-    fontWeight: '600',
-    marginBottom: 6,
+    fontSize: 14,
+    color: '#555',
+    marginBottom: 4,
   },
-
   routeReason: {
-    fontSize: 16,
-    lineHeight: 22,
-    color: '#1E4FD8',
-    marginTop: 10,
-    fontWeight: '700',
+    fontSize: 13,
+    color: '#2196F3',
+    marginTop: 8,
+    fontStyle: 'italic',
   },
-
   emptyContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#F5F7FA',
+    backgroundColor: '#fff',
     padding: 20,
   },
-
   emptyText: {
-    fontSize: 22,
-    fontWeight: '700',
-    color: '#333333',
+    fontSize: 18,
+    color: '#555',
     marginBottom: 30,
     textAlign: 'center',
   },
-
   backButton: {
-    backgroundColor: '#1E4FD8',
-    minHeight: 76,
-    borderRadius: 18,
-    justifyContent: 'center',
+    backgroundColor: '#2196F3',
+    padding: 15,
+    borderRadius: 10,
     alignItems: 'center',
-    width: '100%',
-    paddingHorizontal: 20,
+    width: 200,
   },
-
   backButtonText: {
-    color: '#FFFFFF',
-    fontSize: 22,
-    fontWeight: '800',
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: 'bold',
   },
 });

@@ -22,17 +22,6 @@ const INITIAL_STATUS = {
   guideMessage: '버스 위치를 확인하는 중입니다.',
 };
 
-// 예모님 확정(2026-08-24): ON_BUS_AUTO/ON_BUS_CONFIRMED는 실제 운행 상태가 아니라
-// "탑승 판정 방법"의 차이다. 서버 상태는 기존 tripStatus(WAITING_BUS/ON_BUS/...)를 그대로 쓰고,
-// boardingMethod(AUTO_DETECTED | USER_CONFIRMED)와 boardingConfirmedAt으로 탑승 확정 여부와
-// 방법을 구분한다. 화면 제목은 tripStatus 기준으로, "탑승 확정 여부"는 boardingConfirmedAt으로 판단한다.
-const TITLE_BY_STATUS = {
-  WAITING_BUS: '버스 탑승 대기',
-  ON_BUS: '버스 탑승 중',
-  NEAR_DESTINATION: '하차 준비',
-  TRIP_DONE: '목적지 도착',
-};
-
 export default function RidingScreen({ route, navigation }) {
   const { tripId, selectedRoute } = route.params;
   const [status, setStatus] = useState(INITIAL_STATUS);
@@ -40,9 +29,26 @@ export default function RidingScreen({ route, navigation }) {
   const requestCounterRef = useRef(0);
   const stoppedRef = useRef(false);
   const stoppingBeaconScanRef = useRef(false); // 예모님 P0-2: 중복 재시도 방지용 진행중 플래그
-  const patchInFlightRef = useRef(false); // 유나님 확인(2026-08-15): PATCH 겹침 방지
+  const patchInFlightRef = useRef(false);
   const { state, dispatch } = useTrip();
   const { session, isConnected } = useRealtime();
+  const currentTripStatus = state.tripStatus ?? status.tripStatus;
+  const boardingConfirmedAt = state.boardingConfirmedAt ?? status.boardingConfirmedAt;
+
+  const screenTitle = (() => {
+    switch (currentTripStatus) {
+      case 'WAITING_BUS':
+        return '버스 탑승 대기';
+      case 'NEAR_DESTINATION':
+        return '하차 준비';
+      case 'TRIP_DONE':
+        return '목적지 도착';
+      case 'ON_BUS':
+        return '버스 탑승 중';
+      default:
+        return '운행 상태 확인 중';
+    }
+  })();
 
   // 최초 진입 안내
   // 유나님 확인(2026-08-15): Realtime 연결 중에는 expo-speech와 Realtime 음성이
@@ -77,10 +83,9 @@ export default function RidingScreen({ route, navigation }) {
 
   // 정민님 확인(2026-08-12): 탑승 완료 시 비콘 스캔 중지
   // 예모님 확정(2026-08-24): "탑승 완료"는 boardingConfirmedAt이 존재하는 시점이다.
-  // (AUTO_DETECTED든 USER_CONFIRMED든 방법과 무관하게, 확정 여부만 본다.)
   useEffect(() => {
     if (
-      status.boardingConfirmedAt &&
+      boardingConfirmedAt &&
       state.beaconScanActive &&
       !stoppingBeaconScanRef.current
     ) {
@@ -96,7 +101,7 @@ export default function RidingScreen({ route, navigation }) {
           stoppingBeaconScanRef.current = false;
         });
     }
-  }, [status.boardingConfirmedAt, state.beaconScanActive]);
+  }, [boardingConfirmedAt, state.beaconScanActive]);
 
   // 1정거장 남았을 때 TTS 출력 후 하차 안내 화면 전환
   useEffect(() => {
@@ -238,7 +243,7 @@ export default function RidingScreen({ route, navigation }) {
   if (!isBoarded || !status.currentStation || !status.nextStation) {
     return (
       <View style={styles.container}>
-        <Text style={styles.title}>{TITLE_BY_STATUS[status.tripStatus] ?? '버스 탑승 대기'}</Text>
+        <Text style={styles.title}>{screenTitle}</Text>
         <View style={styles.guideBox}>
           <Text style={styles.guideText}>{status.guideMessage}</Text>
         </View>
@@ -248,7 +253,7 @@ export default function RidingScreen({ route, navigation }) {
 
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>{TITLE_BY_STATUS[status.tripStatus] ?? '버스 탑승 중'}</Text>
+      <Text style={styles.title}>{screenTitle}</Text>
 
       <View style={styles.infoBox}>
         <Text style={styles.label}>현재 정류장</Text>
