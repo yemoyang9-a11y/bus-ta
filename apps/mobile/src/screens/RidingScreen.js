@@ -13,6 +13,8 @@ const INITIAL_STATUS = {
   nextStation: null,
   remainingStations: null,
   tripStatus: 'WAITING_BUS',
+  boardingMethod: null,
+  boardingConfirmedAt: null,
   shouldTriggerBell: false,
   bellStatus: 'NOT_REQUESTED',
   bellRequestId: null,
@@ -20,19 +22,16 @@ const INITIAL_STATUS = {
   guideMessage: '버스 위치를 확인하는 중입니다.',
 };
 
-// 예모님 확정(2026-08-16, [버스 탑승 여부 판단 개발 문서 공유]):
-// WAITING_BUS → BOARDING_CANDIDATE → ON_BUS_AUTO | ON_BUS_CONFIRMED → NEAR_DESTINATION → TRIP_DONE
+// 예모님 확정(2026-08-24): ON_BUS_AUTO/ON_BUS_CONFIRMED는 실제 운행 상태가 아니라
+// "탑승 판정 방법"의 차이다. 서버 상태는 기존 tripStatus(WAITING_BUS/ON_BUS/...)를 그대로 쓰고,
+// boardingMethod(AUTO_DETECTED | USER_CONFIRMED)와 boardingConfirmedAt으로 탑승 확정 여부와
+// 방법을 구분한다. 화면 제목은 tripStatus 기준으로, "탑승 확정 여부"는 boardingConfirmedAt으로 판단한다.
 const TITLE_BY_STATUS = {
   WAITING_BUS: '버스 탑승 대기',
-  BOARDING_CANDIDATE: '탑승 확인 중',
-  ON_BUS_AUTO: '버스 탑승 중',
-  ON_BUS_CONFIRMED: '버스 탑승 중',
+  ON_BUS: '버스 탑승 중',
   NEAR_DESTINATION: '하차 준비',
   TRIP_DONE: '목적지 도착',
 };
-
-// 탑승이 확정된 상태(정류장 상세 정보 표시, 비콘 스캔 중지 대상)
-const BOARDED_STATUSES = new Set(['ON_BUS_AUTO', 'ON_BUS_CONFIRMED', 'NEAR_DESTINATION', 'TRIP_DONE']);
 
 export default function RidingScreen({ route, navigation }) {
   const { tripId, selectedRoute } = route.params;
@@ -77,11 +76,11 @@ export default function RidingScreen({ route, navigation }) {
   }, [status.guideMessage, status.remainingStations, isConnected]);
 
   // 정민님 확인(2026-08-12): 탑승 완료 시 비콘 스캔 중지
-  // 예모님 확정(2026-08-16): "탑승 완료"는 이제 ON_BUS_AUTO 또는 ON_BUS_CONFIRMED로 전환된 시점이다.
-  // 기존 ON_BUS 단일 상태 기준을 BOARDED_STATUSES(탑승 확정된 상태들) 기준으로 변경.
+  // 예모님 확정(2026-08-24): "탑승 완료"는 boardingConfirmedAt이 존재하는 시점이다.
+  // (AUTO_DETECTED든 USER_CONFIRMED든 방법과 무관하게, 확정 여부만 본다.)
   useEffect(() => {
     if (
-      BOARDED_STATUSES.has(status.tripStatus) &&
+      status.boardingConfirmedAt &&
       state.beaconScanActive &&
       !stoppingBeaconScanRef.current
     ) {
@@ -97,7 +96,7 @@ export default function RidingScreen({ route, navigation }) {
           stoppingBeaconScanRef.current = false;
         });
     }
-  }, [status.tripStatus, state.beaconScanActive]);
+  }, [status.boardingConfirmedAt, state.beaconScanActive]);
 
   // 1정거장 남았을 때 TTS 출력 후 하차 안내 화면 전환
   useEffect(() => {
@@ -171,6 +170,8 @@ export default function RidingScreen({ route, navigation }) {
       dispatch({ type: 'UPDATE_TRIP_STATUS', status: data });
       session?.notifyStatusChange({
         tripStatus: data.tripStatus,
+        boardingMethod: data.boardingMethod,
+        boardingConfirmedAt: data.boardingConfirmedAt,
         remainingStations: data.remainingStations,
         currentStation: data.currentStation,
         bellStatus: data.bellStatus,
@@ -191,6 +192,8 @@ export default function RidingScreen({ route, navigation }) {
             dispatch({ type: 'UPDATE_TRIP_STATUS', status: latest });
             session?.notifyStatusChange({
               tripStatus: latest.tripStatus,
+              boardingMethod: latest.boardingMethod,
+              boardingConfirmedAt: latest.boardingConfirmedAt,
               remainingStations: latest.remainingStations,
               currentStation: latest.currentStation,
               bellStatus: latest.bellStatus,
@@ -228,9 +231,9 @@ export default function RidingScreen({ route, navigation }) {
     });
   };
 
-  // 예모님 확정(2026-08-16): 정류장 상세 정보는 탑승이 확정된 상태(BOARDED_STATUSES)에서만 표시.
-  // WAITING_BUS, BOARDING_CANDIDATE에서는 대기 화면을 유지한다.
-  const isBoarded = BOARDED_STATUSES.has(status.tripStatus);
+  // 예모님 확정(2026-08-24): 정류장 상세 정보는 boardingConfirmedAt이 있을 때만 표시.
+  // WAITING_BUS(탑승 전)에서는 대기 화면을 유지한다.
+  const isBoarded = Boolean(status.boardingConfirmedAt);
 
   if (!isBoarded || !status.currentStation || !status.nextStation) {
     return (

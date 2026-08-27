@@ -140,6 +140,44 @@ export async function stopBeaconScan() {
   await writeCommand(CANE_DEVICE_NAME, payload);
 }
 
+/**
+ * 지팡이가 판정한 버스 접근 상태(Notify)를 구독한다.
+ * 정민님 확인(2026-08-24): 지팡이가 APPROACHING/ARRIVED/PASSING/PASSED_STOPPED/LEAVING 상태와
+ * 원시 RSSI 값을 함께 Notify로 보낸다. 탑승 자동 판정(AUTO_DETECTED)에 쓸 구체적인 조건(임계값,
+ * 지속 시간)은 아직 실측 전이라 미정 — 이 함수는 상태·RSSI를 그대로 전달만 하고,
+ * 판정 로직은 호출부(추후 구현)에서 담당한다.
+ * @param {(state: { state: string, rssi: number }) => void} onState
+ * @returns {() => void} 구독 해제 함수
+ */
+export function subscribeCaneState(onState) {
+  const device = connectedDevices.get(CANE_DEVICE_NAME);
+  if (!device) {
+    throw new Error('BLE_NOT_CONNECTED: 지팡이에 연결되어 있지 않습니다.');
+  }
+
+  const subscription = device.monitorCharacteristicForService(
+    SERVICE_UUID,
+    CHARACTERISTIC_UUID,
+    (error, characteristic) => {
+      if (error) {
+        console.log('지팡이 상태 Notify 오류:', error);
+        return;
+      }
+      if (!characteristic?.value) return;
+
+      try {
+        const jsonString = Buffer.from(characteristic.value, 'base64').toString('utf-8');
+        const parsed = JSON.parse(jsonString);
+        onState(parsed);
+      } catch (parseError) {
+        console.log('지팡이 상태 파싱 실패:', parseError);
+      }
+    }
+  );
+
+  return () => subscription.remove();
+}
+
 // ── 하차벨 명령 ──────────────────────────────
 
 /** 하차벨에 STOP_REQUEST를 전송한다. */
