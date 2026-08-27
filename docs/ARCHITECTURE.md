@@ -98,6 +98,9 @@ ODsay searchPubTransPathT
 
 GBIS getBusArrivalListv2
 -> 선택 후보의 gbisStationId와 localBusId로 실시간 버스 도착정보 조회
+-> 같은 routeId가 두 번 응답되면(회차 노선이 같은 정류장을 방향별로 두 번 지남)
+   GBIS getBusRouteStationListv2로 노선 전체 정류장 순서를 조회해 목적지 위치 기준으로
+   방향을 판별한다. 방향을 확정하지 못하면 arrivals를 빈 배열로 반환한다.
 
 OpenAI API
 -> 최종 후보 2개 선택, 추천 이유와 음성 안내 문장 생성
