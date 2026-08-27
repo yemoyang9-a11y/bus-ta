@@ -213,6 +213,26 @@ export async function searchRoutes(request: RoutesSearchRequest): Promise<Route[
 // 초과하면 axios 가 던지고, 상위(create-trip)가 arrivals: [] 로 진행한다.
 const GBIS_REQUEST_TIMEOUT_MS = 5000;
 
+/**
+ * GBIS 는 요청이 잘못돼도 HTTP 200 으로 응답하고 msgHeader.resultCode 에만 이유를 담는다.
+ * (실측: 없는 정류장 → resultCode 4, 파라미터 누락 → resultCode 2, 둘 다 HTTP 200)
+ *
+ * 이때 busArrivalList 가 없다고 빈 배열로 접으면 "호출이 실패했다"가 "실시간 차량이
+ * 없다"로 둔갑해 사용자에게 그대로 전달된다. 정상 조회(resultCode 0)에서만 목록을
+ * 읽고, 나머지는 예외로 올려 호출부가 실패로 다루게 한다.
+ */
+const GBIS_RESULT_CODE_OK = 0;
+
+class GbisResponseError extends Error {
+  readonly resultCode: string;
+
+  constructor(resultCode: unknown, resultMessage: unknown) {
+    super(`GBIS 응답 오류 (resultCode=${String(resultCode ?? "unknown")}): ${String(resultMessage ?? "unknown")}`);
+    this.name = "GbisResponseError";
+    this.resultCode = String(resultCode ?? "unknown");
+  }
+}
+
 async function getBusArrivalByStationId(gbisStationId: string) {
   const url = "https://apis.data.go.kr/6410000/busarrivalservice/v2/getBusArrivalListv2";
   const res = await axios.get(url, {
@@ -223,7 +243,16 @@ async function getBusArrivalByStationId(gbisStationId: string) {
     },
     timeout: GBIS_REQUEST_TIMEOUT_MS,
   });
+
+  const header = res.data?.response?.msgHeader;
+  const resultCode = readGbisNumber(header?.resultCode);
+
+  if (resultCode !== GBIS_RESULT_CODE_OK) {
+    throw new GbisResponseError(header?.resultCode, header?.resultMessage);
+  }
+
   const items = res.data?.response?.msgBody?.busArrivalList;
+  // resultCode 가 정상인데 목록만 비어 있는 경우다. 이때는 실제로 차량이 없는 것이다.
   if (!items) return [];
   return Array.isArray(items) ? items : [items];
 }

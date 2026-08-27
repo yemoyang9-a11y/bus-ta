@@ -423,7 +423,16 @@ test("routeTypeCd 가 혼잡도·잔여좌석 어느 집합에도 속하지 않�
 function stubGbisArrivalWith(t: import("node:test").TestContext, items: unknown[]) {
   return t.mock.method(axios, "get", async (url: string) => {
     if (url.includes("busarrivalservice")) {
-      return { data: { response: { msgBody: { busArrivalList: items } } } };
+      // 실제 GBIS 응답은 항상 msgHeader 를 포함한다. resultCode 를 빠뜨리면
+      // 어댑터가 응답 오류로 간주하므로 정상값을 함께 준다.
+      return {
+        data: {
+          response: {
+            msgHeader: { resultCode: 0, resultMessage: "정상적으로 처리되었습니다." },
+            msgBody: { busArrivalList: items },
+          },
+        },
+      };
     }
     throw new Error(`이 테스트에서 예상하지 못한 axios.get 호출: ${url}`);
   });
@@ -853,4 +862,73 @@ test("GBIS 도착정보 호출에는 5초 timeout 을 지정한다", async (t) =
     5000,
     "timeout 이 없으면 GBIS 응답 지연이 운행 생성 전체를 붙잡는다",
   );
+});
+
+// ─────────────────────────────────────────────
+// GBIS 는 요청이 잘못돼도 HTTP 200 으로 응답하고 msgHeader.resultCode 에만 이유를
+// 담는다(실측: 없는 정류장 resultCode 4, 파라미터 누락 resultCode 2).
+// 이때 busArrivalList 가 없다고 빈 배열로 접으면 "호출 실패"가 "실시간 차량 없음"
+// 으로 둔갑해 사용자에게 그대로 전달된다. 두 상태는 반드시 구분되어야 한다.
+// ─────────────────────────────────────────────
+
+test("GBIS 가 200 이어도 resultCode 가 정상이 아니면 실패로 던진다", async (t) => {
+  t.mock.method(axios, "get", async (url: string) => {
+    if (url.includes("busarrivalservice")) {
+      return {
+        data: {
+          response: {
+            msgHeader: { resultCode: 4, resultMessage: "결과가 존재하지 않습니다." },
+            msgBody: {},
+          },
+        },
+      };
+    }
+    throw new Error(`이 테스트에서 예상하지 못한 axios.get 호출: ${url}`);
+  });
+
+  await assert.rejects(
+    () => getArrivalInfo(arrivalCandidate("234000021")),
+    (error: unknown) => {
+      assert.match(String((error as Error).message), /resultCode=4/);
+      return true;
+    },
+    "resultCode 오류를 빈 배열로 접으면 '차량 없음'과 구분되지 않는다",
+  );
+});
+
+test("GBIS 가 파라미터 오류(resultCode 2)를 줘도 실패로 던진다", async (t) => {
+  t.mock.method(axios, "get", async (url: string) => {
+    if (url.includes("busarrivalservice")) {
+      return {
+        data: {
+          response: {
+            msgHeader: { resultCode: 2, resultMessage: "필수 요청 Parameter 가 존재하지 않습니다." },
+            msgBody: {},
+          },
+        },
+      };
+    }
+    throw new Error(`이 테스트에서 예상하지 못한 axios.get 호출: ${url}`);
+  });
+
+  await assert.rejects(() => getArrivalInfo(arrivalCandidate("234000021")));
+});
+
+test("resultCode 가 정상인데 목록만 비면 실제로 차량이 없는 것이다", async (t) => {
+  t.mock.method(axios, "get", async (url: string) => {
+    if (url.includes("busarrivalservice")) {
+      return {
+        data: {
+          response: {
+            msgHeader: { resultCode: 0, resultMessage: "정상적으로 처리되었습니다." },
+            msgBody: {},
+          },
+        },
+      };
+    }
+    throw new Error(`이 테스트에서 예상하지 못한 axios.get 호출: ${url}`);
+  });
+
+  const info = await getArrivalInfo(arrivalCandidate("234000021"));
+  assert.deepEqual(info.arrivals, [], "정상 응답의 빈 목록은 예외가 아니라 빈 배열이다");
 });
