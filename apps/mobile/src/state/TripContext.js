@@ -7,6 +7,8 @@ const initialState = {
   selectedRoute: null,     // 사용자가 선택한 노선 후보 객체
   tripId: null,
   tripStatus: null,        // WAITING_BUS | ON_BUS | NEAR_DESTINATION | TRIP_DONE | CANCELLED | ERROR
+  boardingMethod: null,    // USER_CONFIRMED | AUTO_DETECTED
+  boardingConfirmedAt: null,
   currentStation: null,
   nextStation: null,
   remainingStations: null,
@@ -24,7 +26,7 @@ const initialState = {
 function tripReducer(state, action) {
   switch (action.type) {
     case 'SET_DESTINATION_AND_ROUTES':
-      // ConfirmScreen에서 검색 성공 후 호출
+      // Realtime search_routes Function 성공 후 호출
       return {
         ...state,
         destination: action.destination,
@@ -44,6 +46,17 @@ function tripReducer(state, action) {
         ...state,
         tripId: action.tripId,
         tripStatus: 'WAITING_BUS',
+        boardingMethod: null,
+        boardingConfirmedAt: null,
+      };
+
+    case 'CONFIRM_BOARDING':
+      // 서버의 원자 저장 성공 응답만 반영한다. 프론트가 자체적으로 ON_BUS를 만들지 않는다.
+      return {
+        ...state,
+        tripStatus: action.tripStatus,
+        boardingMethod: action.boardingMethod,
+        boardingConfirmedAt: action.boardingConfirmedAt,
       };
 
     case 'UPDATE_TRIP_STATUS': {
@@ -53,6 +66,8 @@ function tripReducer(state, action) {
       return {
         ...state,
         tripStatus: s.tripStatus,
+        boardingMethod: s.boardingMethod,
+        boardingConfirmedAt: s.boardingConfirmedAt,
         currentStation: s.currentStation,
         nextStation: s.nextStation,
         remainingStations: s.remainingStations,

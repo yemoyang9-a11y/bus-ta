@@ -6,6 +6,7 @@ import { getTripStatus } from "../services/trip/get-trip-status.service.js";
 import { recordBellResult } from "../services/trip/bell-result.service.js";
 import { endTrip } from "../services/trip/end-trip.service.js";
 import { updateTripStatus } from "../services/trip/update-trip-status.service.js";
+import { confirmBoarding } from "../services/trip/confirm-boarding.service.js";
 
 export const tripsRouter = Router();
 
@@ -67,6 +68,25 @@ tripsRouter.patch("/:tripId/status", async (req, res) => {
   }
 
   const result = await updateTripStatus(req.params.tripId ?? "", req.body, repository);
+  res.status(result.httpStatus).json(result.body);
+});
+
+// POST /api/trips/:tripId/boarding/confirm
+// 명시적 사용자 확인과 프론트 BLE 자동 판정이 공유하는 단일 탑승확정 경로.
+tripsRouter.post("/:tripId/boarding/confirm", async (req, res) => {
+  const repository = createSupabaseTripRepositoryFromEnv();
+
+  if (!repository) {
+    res.status(500).json({
+      success: false,
+      errorCode: "DB_ERROR",
+      message: "Supabase is not configured",
+      timestamp: new Date().toISOString(),
+    });
+    return;
+  }
+
+  const result = await confirmBoarding(req.params.tripId ?? "", req.body, repository);
   res.status(result.httpStatus).json(result.body);
 });
 

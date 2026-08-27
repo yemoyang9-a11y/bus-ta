@@ -1,5 +1,6 @@
 import { apiClient, ApiError } from "../api/client";
 import type {
+  BoardingConfirmationResponse,
   CreateTripResponse,
   CreateTripRequest,
   EndTripResponse,
@@ -21,45 +22,73 @@ import type {
 
 type FunctionResult =
   | RoutesSearchResponse
+  | BoardingConfirmationResponse
   | TripStatusResponse
   | CreateTripResponse
   | EndTripResponse
   | ApiErrorResult;
 
 // 동일 함수+인자 조합의 병렬 재호출 방지 (create_trip은 선택당 1회만 등)
-const inFlightCalls = new Map<string, Promise<RealtimeClientEvent[]>>();
+const inFlightCalls = new Map<string, Promise<FunctionResult>>();
+let boardingRequestSequence = 0;
 
-function buildCallKey(event: RealtimeFunctionCallEvent): string {
+function buildCallKey(
+  event: RealtimeFunctionCallEvent,
+  context: RealtimeGuideContext,
+): string {
+  if (event.name === "confirm_boarding") {
+    return `${event.name}:${context.getAppState().tripId ?? "NO_ACTIVE_TRIP"}`;
+  }
   return `${event.name}:${event.arguments}`;
+}
+
+function buildFunctionResponseInstructions(name: RealtimeFunctionName): string {
+  const common =
+    "방금 전달된 Function 결과만 근거로 사용자에게 짧고 명확한 한국어 음성 안내를 생성한다. Function 결과가 오기 전의 추측은 사용하지 않는다. 내부 식별자와 오류 코드는 그대로 읽지 않는다. routeNo의 숫자 부분이 네 자리 이상이면 각 숫자를 한 자리씩 읽고, 세 자리 이하면 일반적인 한국어 수 읽기 방식으로 읽는다. 알파벳, 하이픈 뒤 숫자, 괄호 안 표시는 생략하지 않는다. 숫자-숫자 형태의 routeNo를 말할 때 하이픈(-)은 반드시 '다시'라고 읽고, '대시'나 '하이픈'이라고 읽거나 생략하지 않는다.";
+
+  if (name === "search_routes") {
+    return `${common} success가 true이고 routes가 빈 배열일 때만 조건에 맞는 노선 후보가 없다고 안내한다. success가 false이면 result.message의 원인을 바꾸어 말하지 않고, 위치 확인 실패나 API 오류를 노선 없음으로 안내하지 않는다. 후보가 있으면 각 후보의 routeNo, totalTime, intervalTime을 사용해 \"OO번은 예상 소요시간이 N분이고 배차 간격은 M분입니다\" 형식으로 최대 두 개를 모두 설명하고, 마지막에 반드시 \"어떤 버스를 선택하시겠어요?\"라고 묻는다. 값이 없는 시간은 추측하지 말고 확인할 수 없다고 말한다.`;
+  }
+
+  if (name === "create_trip") {
+    return `${common} create_trip 성공은 실제 탑승 완료가 아니라 WAITING_BUS 상태의 탑승 대기 시작이다. 성공 결과이면 \"OO번 버스를 선택했습니다. OO 정류장에서 기다려 주세요.\"라고 routeNo와 앱이 제공한 탑승 정류장을 안내한다. arrivals의 첫 항목이 있으면 predictedArrivalMinutes를 사용해 \"버스는 약 N분 후 도착합니다.\"라고 반드시 말한다. arrivals가 비어 있으면 시간을 추측하지 말고 \"현재 실시간 버스 도착정보를 확인할 수 없습니다\"라고 반드시 말한다. 이 응답에서는 절대 \"탑승했습니다\", \"탑승 중입니다\", \"운행을 시작합니다\"라고 말하지 않는다. 두 번째 차량은 사용자가 물을 때만 안내한다.`;
+  }
+
+  if (name === "confirm_boarding") {
+    return `${common} success가 true인 서버 응답을 받은 경우에만 "탑승이 확인되었습니다. 하차까지 남은 정류장을 안내하겠습니다."라고 안내한다. success가 false이면 탑승이 확인됐다고 말하지 말고 result.message의 확인된 실패 원인만 짧게 안내한 뒤 다시 시도할지 묻는다. boardingMethod, boardingConfirmedAt, tripStatus 같은 내부 필드명은 읽지 않는다.`;
+  }
+
+  return common;
 }
 
 export async function dispatchRealtimeFunctionCall(
   event: RealtimeFunctionCallEvent,
   context: RealtimeGuideContext,
 ): Promise<RealtimeClientEvent[]> {
-  const callKey = buildCallKey(event);
-
-  const existing = inFlightCalls.get(callKey);
-  if (existing) return existing;
-
-  const callPromise = executeFunctionCall(event, context).finally(() => {
-    inFlightCalls.delete(callKey);
-  });
-
-  inFlightCalls.set(callKey, callPromise);
-  return callPromise;
-}
-
-async function executeFunctionCall(
-  event: RealtimeFunctionCallEvent,
-  context: RealtimeGuideContext,
-): Promise<RealtimeClientEvent[]> {
   const args = parseFunctionArguments(event.arguments);
-  const result = isApiErrorResult(args)
-    ? args
-    : await callBackendFunction(event.name, args, context).catch(toApiErrorResult);
+  let result: FunctionResult;
+
+  if (isApiErrorResult(args)) {
+    result = args;
+  } else {
+    const callKey = buildCallKey(event, context);
+    let callPromise = inFlightCalls.get(callKey);
+
+    if (!callPromise) {
+      callPromise = callBackendFunction(event.name, args, context)
+        .catch(toApiErrorResult)
+        .finally(() => {
+          inFlightCalls.delete(callKey);
+        });
+      inFlightCalls.set(callKey, callPromise);
+    }
+
+    result = await callPromise;
+    result = rejectStaleTripResult(event.name, result, context);
+  }
 
   updateContext(event.name, args, result, context);
+  const modelResult = buildModelFunctionResult(event.name, args, result, context);
 
   return [
     {
@@ -67,17 +96,52 @@ async function executeFunctionCall(
       item: {
         type: "function_call_output",
         call_id: event.call_id,
-        output: JSON.stringify(result),
+        output: JSON.stringify(modelResult),
       },
     },
     {
       type: "response.create",
       response: {
-        instructions:
-          "Function 결과만 근거로 사용자에게 짧고 명확한 한국어 음성 안내를 생성한다. 내부 식별자와 오류 코드는 그대로 읽지 않는다.",
+        instructions: buildFunctionResponseInstructions(event.name),
       },
     },
   ];
+}
+
+function buildModelFunctionResult(
+  name: RealtimeFunctionName,
+  args: unknown,
+  result: FunctionResult,
+  context: RealtimeGuideContext,
+): FunctionResult | (CreateTripResponse & { boardingStation: Route["boardingStation"] }) {
+  if (name !== "create_trip" || result.success !== true || !("arrivals" in result)) {
+    return result;
+  }
+
+  const selectedRoute = findSelectedRoute(args, context);
+  return selectedRoute ? { ...result, boardingStation: selectedRoute.boardingStation } : result;
+}
+
+function rejectStaleTripResult(
+  name: RealtimeFunctionName,
+  result: FunctionResult,
+  context: RealtimeGuideContext,
+): FunctionResult {
+  if (name !== "confirm_boarding" || result.success !== true) {
+    return result;
+  }
+
+  const boardingResult = result as BoardingConfirmationResponse;
+  if (boardingResult.tripId === context.getAppState().tripId) {
+    return result;
+  }
+
+  return {
+    success: false,
+    errorCode: "STALE_TRIP_CONTEXT",
+    message: "활성 운행이 변경되어 이전 탑승확정 응답을 적용하지 않았습니다.",
+    timestamp: new Date().toISOString(),
+  };
 }
 
 export function isRealtimeFunctionCallEvent(event: unknown): event is RealtimeFunctionCallEvent {
@@ -89,7 +153,7 @@ export function isRealtimeFunctionCallEvent(event: unknown): event is RealtimeFu
     typeof value.call_id === "string" &&
     typeof value.name === "string" &&
     typeof value.arguments === "string" &&
-    ["search_routes", "create_trip", "get_trip_status", "end_trip"].includes(value.name)
+    ["search_routes", "create_trip", "confirm_boarding", "get_trip_status", "end_trip"].includes(value.name)
   );
 }
 
@@ -100,9 +164,17 @@ async function callBackendFunction(
 ): Promise<FunctionResult> {
   switch (name) {
     case "search_routes":
-      return apiClient.routes.search(assertRoutesSearchRequest(args, context));
+      return apiClient.routes.search(await assertRoutesSearchRequest(args, context));
     case "create_trip":
       return apiClient.trips.create(assertCreateTripRequest(args, context));
+    case "confirm_boarding": {
+      assertEmptyObject(args);
+      const tripId = assertCurrentTripId(context);
+      return apiClient.trips.confirmBoarding(tripId, {
+        requestId: createBoardingRequestId(tripId),
+        boardingMethod: "USER_CONFIRMED",
+      });
+    }
     case "get_trip_status":
       return apiClient.trips.getStatus(assertTripId(args, context));
     case "end_trip": {
@@ -154,20 +226,38 @@ function updateContext(
     return;
   }
 
+  if (name === "confirm_boarding") {
+    const boardingResult = result as BoardingConfirmationResponse;
+    context.dispatchAppAction({
+      type: "CONFIRM_BOARDING",
+      tripStatus: boardingResult.tripStatus,
+      boardingMethod: boardingResult.boardingMethod,
+      boardingConfirmedAt: boardingResult.boardingConfirmedAt,
+    });
+    return;
+  }
+
   if (name === "end_trip") {
     clearActiveTripContext(context);
   }
 }
 
-function assertRoutesSearchRequest(
+async function assertRoutesSearchRequest(
   args: unknown,
   context: RealtimeGuideContext,
-): RoutesSearchRequest {
+): Promise<RoutesSearchRequest> {
   const value = assertRecord(args);
 
   // 좌표는 모델이 지어낼 수 있는 값이라 Function 인자에서 받지 않고,
   // 화면(GPS)이 갱신해 둔 실제 위치(getCurrentLocation)만 사용한다.
-  const currentLocation = context.getCurrentLocation();
+  let currentLocation = context.getCurrentLocation();
+  if (!currentLocation) {
+    // Realtime 연결이 GPS보다 먼저 완료된 경우, 검색 시점에 실제 위치를 한 번 더 요청한다.
+    // 위치 실패는 WebRTC 연결을 끊지 않고 이 Function 호출만 오류로 처리한다.
+    await context.refreshCurrentLocation().catch(() => undefined);
+    currentLocation = context.getCurrentLocation();
+  }
+
   if (!currentLocation) {
     throw new Error("현재 위치를 확인할 수 없습니다.");
   }
@@ -237,6 +327,16 @@ function assertTripId(args: unknown, context: RealtimeGuideContext): string {
   return assertActiveTripId(value.tripId, context.getAppState().tripId);
 }
 
+function assertCurrentTripId(context: RealtimeGuideContext): string {
+  const activeTripId = context.getAppState().tripId;
+  return assertActiveTripId(activeTripId, activeTripId);
+}
+
+function createBoardingRequestId(tripId: string): string {
+  boardingRequestSequence += 1;
+  return `boarding-${tripId}-${Date.now()}-${boardingRequestSequence}`;
+}
+
 function assertEndTripRequest(
   args: unknown,
   context: RealtimeGuideContext,
@@ -299,6 +399,13 @@ function assertRecord(value: unknown): Record<string, unknown> {
   }
 
   return value as Record<string, unknown>;
+}
+
+function assertEmptyObject(value: unknown): void {
+  const record = assertRecord(value);
+  if (Object.keys(record).length > 0) {
+    throw new Error("confirm_boarding Function 인자는 빈 객체여야 합니다.");
+  }
 }
 
 function assertNonEmptyString(value: unknown, fieldName: string): string {

@@ -8,11 +8,15 @@ import { createLocationRefreshCoordinator } from './location-refresh';
 import type { RealtimeWebRTCTransport } from './webrtc-transport';
 import type { AppAction, AppTripState } from './types';
 
+export type RealtimeConnectionStatus = 'idle' | 'connecting' | 'connected' | 'error';
+
 // RealtimeProvider가 화면에 제공하는 것
 type RealtimeContextValue = {
   session: HaneumRealtimeSession | null;
   transport: RealtimeWebRTCTransport | null;
   isConnected: boolean;
+  connectionStatus: RealtimeConnectionStatus;
+  connectionError: string | null;
   connect: () => Promise<void>;
 };
 
@@ -31,6 +35,8 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
 
   const [transport, setTransport] = useState<RealtimeWebRTCTransport | null>(null);
   const [isConnected, setIsConnected] = useState(false);
+  const [connectionStatus, setConnectionStatus] = useState<RealtimeConnectionStatus>('idle');
+  const [connectionError, setConnectionError] = useState<string | null>(null);
   const connectPromiseRef = useRef<Promise<void> | null>(null);
 
   // Function Dispatcher가 항상 최신 state/dispatch를 참조하도록 ref로 보관
@@ -78,6 +84,7 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
     const guideContext = createRealtimeGuideContext({
       getAppState: () => stateRef.current,
       getCurrentLocation: () => currentLocationRef.current,
+      refreshCurrentLocation,
       dispatchAppAction: (action: AppAction) => dispatchRef.current(action),
     });
     sessionRef.current = new HaneumRealtimeSession(guideContext);
@@ -87,19 +94,38 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
     if (!sessionRef.current) return Promise.resolve();
     if (isConnected || transport) return Promise.resolve();
 
+    setConnectionStatus('connecting');
+    setConnectionError(null);
+
     return runSingleFlight(connectPromiseRef, async () => {
-      const connectedTransport = await connectWithBestEffortLocation({
-        refreshCurrentLocation,
-        connectWebRTC: () => sessionRef.current!.connectWebRTC(),
-      });
-      setTransport(connectedTransport);
-      setIsConnected(true);
+      try {
+        const connectedTransport = await connectWithBestEffortLocation({
+          refreshCurrentLocation,
+          connectWebRTC: () => sessionRef.current!.connectWebRTC(),
+        });
+        setTransport(connectedTransport);
+        setIsConnected(true);
+        setConnectionStatus('connected');
+      } catch (error) {
+        setConnectionStatus('error');
+        setConnectionError(
+          error instanceof Error ? error.message : '음성 연결에 실패했습니다.',
+        );
+        throw error;
+      }
     });
   };
 
   return (
     <RealtimeContext.Provider
-      value={{ session: sessionRef.current, transport, isConnected, connect }}
+      value={{
+        session: sessionRef.current,
+        transport,
+        isConnected,
+        connectionStatus,
+        connectionError,
+        connect,
+      }}
     >
       {children}
     </RealtimeContext.Provider>

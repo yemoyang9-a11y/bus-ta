@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { BELL_COMMAND } from "../constants/bell-command.js";
 import { BELL_STATUS } from "../constants/bell-status.js";
+import { BOARDING_METHOD } from "../constants/boarding-method.js";
 import { TRIP_STATUS } from "../constants/trip-status.js";
 import { StationListItemSchema, StationSchema } from "./route.schema.js";
 
@@ -18,6 +19,11 @@ const BellStatusSchema = z.enum([
   BELL_STATUS.PENDING,
   BELL_STATUS.SUCCESS,
   BELL_STATUS.FAIL,
+]);
+
+const BoardingMethodSchema = z.enum([
+  BOARDING_METHOD.USER_CONFIRMED,
+  BOARDING_METHOD.AUTO_DETECTED,
 ]);
 
 export const CreateTripRequestSchema = z.object({
@@ -142,6 +148,34 @@ export const UpdateTripStatusRequestSchema = z.object({
 });
 export type UpdateTripStatusRequest = z.infer<typeof UpdateTripStatusRequestSchema>;
 
+export const BoardingConfirmationRequestSchema = z.discriminatedUnion("boardingMethod", [
+  z
+    .object({
+      requestId: z.string().min(1),
+      boardingMethod: z.literal(BOARDING_METHOD.USER_CONFIRMED),
+    })
+    .strict(),
+  z
+    .object({
+      requestId: z.string().min(1),
+      boardingMethod: z.literal(BOARDING_METHOD.AUTO_DETECTED),
+      detectedAt: z.string().datetime({ offset: true }).optional(),
+    })
+    .strict(),
+]);
+export type BoardingConfirmationRequest = z.infer<typeof BoardingConfirmationRequestSchema>;
+
+export const BoardingConfirmationResponseSchema = z.object({
+  success: z.literal(true),
+  tripId: z.string().min(1),
+  tripStatus: z.enum([TRIP_STATUS.ON_BUS, TRIP_STATUS.NEAR_DESTINATION]),
+  boardingMethod: BoardingMethodSchema,
+  boardingConfirmedAt: z.string().datetime({ offset: true }),
+  message: z.string(),
+  timestamp: z.string().datetime({ offset: true }),
+});
+export type BoardingConfirmationResponse = z.infer<typeof BoardingConfirmationResponseSchema>;
+
 export const TripStatusResponseSchema = z.object({
   success: z.boolean(),
   tripId: z.string(),
@@ -151,6 +185,8 @@ export const TripStatusResponseSchema = z.object({
   nextStation: StationSchema.nullable().optional(),
   remainingStations: z.number().int().nonnegative(),
   tripStatus: TripStatusSchema,
+  boardingMethod: BoardingMethodSchema.nullable(),
+  boardingConfirmedAt: z.string().datetime({ offset: true }).nullable(),
   bellStatus: BellStatusSchema,
   shouldTriggerBell: z.boolean(),
   bellRequestId: z.string().optional(),

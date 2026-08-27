@@ -21,6 +21,8 @@ type GetTripStatusSuccessBody = {
   nextStation: Station | null;
   remainingStations: number;
   tripStatus: string;
+  boardingMethod: "USER_CONFIRMED" | "AUTO_DETECTED" | null;
+  boardingConfirmedAt: string | null;
   bellStatus: string;
   shouldTriggerBell: false;
   bellRequestId?: string;
@@ -92,6 +94,8 @@ export async function getTripStatus(
     nextStation: status.nextStation,
     remainingStations: status.remainingStations,
     tripStatus: status.tripStatus,
+    boardingMethod: status.boardingMethod,
+    boardingConfirmedAt: status.boardingConfirmedAt,
     bellStatus: status.bellStatus,
     shouldTriggerBell: false,
     // 조회 전용 — 하차벨 명령은 PATCH 자동 생성 응답에서만 전달한다(계약). 항상 null.
@@ -99,6 +103,8 @@ export async function getTripStatus(
     guideMessage:
       status.tripStatus === TRIP_STATUS.CANCELLED
         ? "운행 안내가 종료되었습니다."
+        : status.tripStatus === TRIP_STATUS.WAITING_BUS
+          ? "버스 탑승을 기다리고 있습니다."
         : buildGuideMessage(status.remainingStations, status.bellStatus),
     message: "현재 이동 상태를 조회했습니다.",
     timestamp,

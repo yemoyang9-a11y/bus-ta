@@ -59,7 +59,13 @@ const systemMessage = {
 - TTS로 읽기 쉽게 짧고 명확하게 말해.
 - 특수문자나 복잡한 기호는 사용하지 마.
 - 백엔드가 전달한 정보만 사용해.
-- 최저요금, 전체 이동 소요시간은 말하지 마.
+- 경로 후보를 안내할 때는 제공된 총 소요시간과 배차 간격을 각 후보의 버스 번호와 함께 말해.
+- 노선 번호의 숫자 부분이 네 자리 이상이면 각 숫자를 한 자리씩 읽고, 세 자리 이하면 일반적인 한국어 수 읽기 방식으로 읽어.
+- 노선 번호의 알파벳, 하이픈 뒤 숫자, 괄호 안 표시는 생략하지 마. 하이픈은 음성으로 "다시"라고 읽어.
+- 제공되지 않은 시간은 추측하지 마.
+- create_trip 성공과 WAITING_BUS는 실제 탑승 완료가 아니라 탑승 정류장에서 버스를 기다리는 상태야.
+- WAITING_BUS에서는 절대 "탑승했습니다", "탑승 중입니다", "운행을 시작합니다"라고 말하지 마.
+- 실제 탑승 사실은 운행 상태가 ON_BUS일 때만 안내해.
 - 하차벨 성공 또는 실패 여부는 말하지 마.
 - 목적지명과 실제 하차 정류장명을 항상 구분해서 안내해. 같더라도 반드시 하차 정류장을 명시해.
   예: "수원대학교를 목적지로 하면 쌍용아파트 정류장에서 하차합니다."
@@ -145,10 +151,12 @@ function buildRouteGuideFallback(selectedRoutes: Route[]): RouteGuideResult {
 
 function buildBasicRouteGuide(candidate: Route): string {
   const routeNo = candidate.routeNo || "선택한";
-  const boardingStation = candidate.boardingStation.stationName || "탑승 정류장";
-  const destinationStation = candidate.destinationStation.stationName || "하차 정류장";
+  const totalTime =
+    candidate.totalTime != null ? `${candidate.totalTime}분` : "확인할 수 없습니다";
+  const intervalTime =
+    candidate.intervalTime != null ? `${candidate.intervalTime}분` : "확인할 수 없습니다";
 
-  return `${routeNo}번 버스를 ${boardingStation}에서 탑승하시면 환승 없이 이동합니다. ${destinationStation} 정류장에서 하차해 주세요.`;
+  return `${routeNo}번은 예상 소요시간이 ${totalTime}이고 배차 간격은 ${intervalTime}입니다.`;
 }
 
 function parseOpenAIRouteGuide(raw: string): OpenAIRouteGuideResponse | null {
@@ -223,6 +231,8 @@ ${candidateInfos}
 조건:
 - 후보 목록에 있는 candidateId 전부에 대해 각각 안내 문장을 하나씩 만들어줘.
 - candidateId는 후보 목록에 있는 값을 그대로 사용해.
+- 각 guideMessage에는 해당 버스 번호, 총 소요시간, 배차 간격을 반드시 포함해.
+- 시간 정보가 없으면 숫자를 추측하지 말고 해당 정보를 확인할 수 없다고 안내해.
 - recommendationReason은 반환하지 마.
 - 질문 문장 없이 안내 문장만 만들어줘.
 - JSON으로만 반환해. 백틱이나 마크다운 없이 순수 JSON만:
@@ -251,6 +261,11 @@ export async function generateTripStartGuide({
   }
 
   const predictedArrivalMinutes = arrivals?.[0]?.predictedArrivalMinutes ?? null;
+  const boardingStationName = selectedRoute.boardingStation.stationName || "탑승 정류장";
+  const tripStartFallbackMessage =
+    predictedArrivalMinutes != null
+      ? `${selectedRoute.routeNo}번 버스를 선택했습니다. ${boardingStationName} 정류장에서 기다려 주세요. 버스는 약 ${predictedArrivalMinutes}분 후 도착합니다.`
+      : `${selectedRoute.routeNo}번을 선택했습니다. ${boardingStationName} 정류장에서 기다려 주세요. 현재 실시간 버스 도착정보를 확인할 수 없습니다.`;
 
   const prompt = `
 사용자가 아래 버스 노선을 선택했어.
@@ -263,13 +278,14 @@ export async function generateTripStartGuide({
 조건:
 - 사용자가 선택한 버스 번호를 반드시 안내해.
 - 탑승 정류장 이름이 있으면 해당 정류장에서 기다리라고 안내해.
-- 버스 도착 예정 시간 정보가 있으면 약 N분 후 도착 예정이라고 안내해.
-- 버스 도착 예정 시간 정보가 없으면 도착 시간 언급을 생략해.
+- 현재 상태는 탑승 완료가 아니라 탑승 대기 상태야. "탑승했습니다", "탑승 중입니다", "운행을 시작합니다"라고 말하지 마.
+- 버스 도착 예정 시간 정보가 있으면 "버스는 약 N분 후 도착합니다"라고 반드시 안내해.
+- 버스 도착 예정 시간 정보가 없으면 도착 시간 언급을 생략하지 말고 "현재 실시간 버스 도착정보를 확인할 수 없습니다"라고 반드시 안내해.
 - 하차벨 상태나 운행 상태값 자체를 말하지 마.
-- 두 문장 이내로 말해.
+- 세 문장 이내로 말해.
   `.trim();
 
-  const guideMessage = await createGuideMessage(prompt, TRIP_START_FALLBACK_MESSAGE);
+  const guideMessage = await createGuideMessage(prompt, tripStartFallbackMessage);
   return { guideMessage };
 }
 
@@ -291,6 +307,8 @@ export async function generateMovingGuide({
 운행 상태: ${tripStatus || "정보 없음"}
 조건:
 - 현재 정류장과 다음 정류장 이름이 있으면 함께 안내해.
+- 운행 상태가 WAITING_BUS이면 탑승 정류장에서 버스를 기다리는 상태로만 안내하고, "탑승했습니다", "탑승 중입니다", "운행을 시작합니다"라고 말하지 마.
+- 버스 탑승이 확인됐다는 안내는 운행 상태가 ON_BUS일 때만 할 수 있어.
 - 하차벨 성공, 실패, 요청 완료 여부는 절대 말하지 마.
 - 하차벨이 눌렸다고 말하지 마.
 - 임의로 도착 시간을 예측하거나 말하지 마.

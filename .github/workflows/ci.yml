@@ -36,3 +36,31 @@ jobs:
       # 타입 체크만 돌던 동안 서버 테스트는 CI 에서 한 번도 실행되지 않았다.
       - name: Test (server)
         run: pnpm --filter @bus-ta/server test
+
+      - name: Boarding confirmation regressions
+        run: pnpm --filter @bus-ta/server test:boarding
+
+  supabase-boarding-sql:
+    name: Supabase Boarding SQL
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run boarding migration and race regressions
+        env:
+          PGHOST: 127.0.0.1
+          PGPORT: 5432
+          PGUSER: postgres
+          PGPASSWORD: postgres
+        run: bash scripts/test-supabase-boarding.sh

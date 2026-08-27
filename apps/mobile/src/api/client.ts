@@ -1,6 +1,8 @@
 import {
   API_PATHS,
   type BeaconsListResponse,
+  type BoardingConfirmationRequest,
+  type BoardingConfirmationResponse,
   type CreateTripRequest,
   type CreateTripResponse,
   type EndTripResponse,
@@ -102,6 +104,11 @@ export const apiClient = {
         method: "PATCH",
         body: JSON.stringify(body),
       }),
+    confirmBoarding: (tripId: string, body: BoardingConfirmationRequest) =>
+      request<BoardingConfirmationResponse>(API_PATHS.trips.boarding.confirm(tripId), {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
     bell: {
       // 하차벨 요청은 PATCH /status 응답으로 자동 생성되므로 별도 request 호출이 없다.
       result: (tripId: string, body: unknown) =>
@@ -116,11 +123,16 @@ export const apiClient = {
       request<BeaconsListResponse>(API_PATHS.beacons.list(routeNo)),
   },
   realtime: {
-    createSession: (sharedSecret?: string) => {
+    createSession: (sharedSecret?: string, signal?: AbortSignal) => {
       const headers = sharedSecret ? { "x-realtime-shared-secret": sharedSecret } : undefined;
+      const options: RequestInit = {
+        method: "POST",
+        ...(headers ? { headers } : {}),
+        ...(signal ? { signal } : {}),
+      };
       return request<RealtimeSessionResponse>(
         API_PATHS.realtime.session,
-        headers ? { method: "POST", headers } : { method: "POST" },
+        options,
       );
     },
   },
