@@ -26,6 +26,8 @@ export type RealtimeTransport = {
 // 상태 변화 감지의 대상이 되는 필드만 담은 축소본 (event-dispatcher.ts에서 사용)
 export type TripStatusSnapshot = {
   tripStatus: string | null;
+  boardingMethod: BoardingMethod | null;
+  boardingConfirmedAt: string | null;
   remainingStations: number | null;
   currentStation: { stationName: string } | null;
   bellStatus: string;
@@ -36,6 +38,8 @@ export type TripStatusSnapshot = {
 export type TripStatusChangedEvent = {
   type: "trip_status_changed";
   tripStatus: string | null;
+  boardingMethod: BoardingMethod | null;
+  boardingConfirmedAt: string | null;
   remainingStations: number | null;
   currentStationName: string | null;
   bellStatus: string;
@@ -80,6 +84,7 @@ export type AppAction =
 export type RealtimeGuideContext = {
   getAppState(): AppTripState;
   getCurrentLocation(): { latitude: number; longitude: number } | undefined;
+  refreshCurrentLocation(): Promise<void>;
   dispatchAppAction(action: AppAction): void;
   lastFunctionResult?: unknown;
 };

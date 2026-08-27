@@ -123,11 +123,16 @@ export const apiClient = {
       request<BeaconsListResponse>(API_PATHS.beacons.list(routeNo)),
   },
   realtime: {
-    createSession: (sharedSecret?: string) => {
+    createSession: (sharedSecret?: string, signal?: AbortSignal) => {
       const headers = sharedSecret ? { "x-realtime-shared-secret": sharedSecret } : undefined;
+      const options: RequestInit = {
+        method: "POST",
+        ...(headers ? { headers } : {}),
+        ...(signal ? { signal } : {}),
+      };
       return request<RealtimeSessionResponse>(
         API_PATHS.realtime.session,
-        headers ? { method: "POST", headers } : { method: "POST" },
+        options,
       );
     },
   },

@@ -34,6 +34,7 @@ function createContext(actions: AppAction[]): RealtimeGuideContext {
   return {
     getAppState: () => baseState,
     getCurrentLocation: () => undefined,
+    refreshCurrentLocation: async () => {},
     dispatchAppAction: (action) => actions.push(action),
   };
 }
@@ -100,6 +101,44 @@ test("explicit voice function supplies active trip and USER_CONFIRMED evidence t
     if (events[0]?.type === "conversation.item.create") {
       assert.equal(events[0].item.call_id, "call-boarding-1");
     }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("rejects model-supplied boarding identifiers instead of forwarding them", async () => {
+  const actions: AppAction[] = [];
+  let fetchCalls = 0;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    fetchCalls += 1;
+    return Response.json({});
+  };
+
+  try {
+    const events = await dispatchRealtimeFunctionCall(
+      {
+        type: "response.function_call_arguments.done",
+        call_id: "call-boarding-invalid-args",
+        name: "confirm_boarding",
+        arguments: JSON.stringify({
+          tripId: "model-invented-trip",
+          requestId: "model-invented-request",
+          boardingMethod: BOARDING_METHOD.AUTO_DETECTED,
+        }),
+      },
+      createContext(actions),
+    );
+
+    assert.equal(fetchCalls, 0);
+    assert.deepEqual(actions, []);
+    assert.equal(events[0]?.type, "conversation.item.create");
+    if (events[0]?.type !== "conversation.item.create") {
+      assert.fail("expected function_call_output event");
+    }
+    const output = JSON.parse(events[0].item.output) as Record<string, unknown>;
+    assert.equal(output.success, false);
+    assert.equal(output.errorCode, "FUNCTION_DISPATCH_FAILED");
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -178,6 +217,7 @@ test("does not apply a delayed confirmation response to a different active trip"
   const context: RealtimeGuideContext = {
     getAppState: () => currentState,
     getCurrentLocation: () => undefined,
+    refreshCurrentLocation: async () => {},
     dispatchAppAction: (action) => actions.push(action),
   };
 
