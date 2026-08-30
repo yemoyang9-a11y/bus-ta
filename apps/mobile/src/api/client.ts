@@ -125,15 +125,14 @@ export const apiClient = {
   realtime: {
     createSession: (sharedSecret?: string, signal?: AbortSignal) => {
       const headers = sharedSecret ? { "x-realtime-shared-secret": sharedSecret } : undefined;
-      const options: RequestInit = {
-        method: "POST",
-        ...(headers ? { headers } : {}),
-        ...(signal ? { signal } : {}),
-      };
-      return request<RealtimeSessionResponse>(
-        API_PATHS.realtime.session,
-        options,
-      );
+      const init: RequestInit & { signal?: AbortSignal } = { method: "POST" };
+      if (headers) {
+        init.headers = headers;
+      }
+      if (signal) {
+        init.signal = signal;
+      }
+      return request<RealtimeSessionResponse>(API_PATHS.realtime.session, init);
     },
   },
 };

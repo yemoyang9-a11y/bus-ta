@@ -20,12 +20,20 @@ export default function ErrorScreen({ navigation }) {
   };
 
   return (
-    <TouchableWithoutFeedback onPress={handleReturnToMain}>
+    <TouchableWithoutFeedback
+      onPress={handleReturnToMain}
+      accessibilityRole="button"
+      accessibilityLabel="오류가 발생했습니다. 잠시 후 다시 시도해주세요."
+      accessibilityHint="화면 어디든 터치하면 처음 화면으로 돌아갑니다"
+    >
       <View style={styles.container}>
         <Text style={styles.emoji}>⚠️</Text>
         <Text style={styles.title}>오류 발생</Text>
         <Text style={styles.message}>잠시 후 다시 시도해주세요.</Text>
-        <Text style={styles.guideText}>화면을 터치하면 처음으로 돌아갑니다</Text>
+
+        <View style={styles.guideBox}>
+          <Text style={styles.guideText}>화면을 터치하면 처음으로 돌아갑니다</Text>
+        </View>
       </View>
     </TouchableWithoutFeedback>
   );
@@ -36,28 +44,47 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#fff',
-    padding: 20,
+    backgroundColor: '#F5F7FA', // 다른 화면들과 통일된 배경
+    padding: 24,
   },
+
   emoji: {
-    fontSize: 80,
+    fontSize: 72,
     marginBottom: 20,
   },
+
   title: {
-    fontSize: 28,
-    fontWeight: 'bold',
-    marginBottom: 20,
-    color: '#333',
+    fontSize: 30,
+    fontWeight: '800',
+    color: '#111111',
+    marginBottom: 16,
   },
+
   message: {
-    fontSize: 18,
-    color: '#666',
-    marginBottom: 20,
+    fontSize: 20,
+    lineHeight: 28,
+    fontWeight: '600',
+    color: '#333333',
+    marginBottom: 32,
     textAlign: 'center',
   },
+
+  // 안내 문구 — 카드 형태로 감싸서 "이게 지금 할 수 있는 행동"이라는 걸 시각적으로 구분
+  guideBox: {
+    backgroundColor: '#1E4FD8',
+    borderWidth: 2.5,
+    borderColor: '#0F2E8C',
+    borderRadius: 18,
+    paddingVertical: 22,
+    paddingHorizontal: 28,
+    width: '100%',
+  },
+
   guideText: {
-    fontSize: 15,
-    color: '#999',
+    fontSize: 20,
+    lineHeight: 28,
+    fontWeight: '800',
+    color: '#FFFFFF',
     textAlign: 'center',
   },
 });

@@ -39,7 +39,7 @@ export class HaneumRealtimeSession {
   private hasSentReadyResponse = false;
 
   // context는 RealtimeProvider가 TripContext와 연결해서 만든 것을 그대로 받는다.
-  // (2026-08-12, 예모님 확정: TripContext를 운행 상태의 유일한 원본으로 사용)
+  // (2026-08-12, 예모님 확정 구조: TripContext를 운행 상태의 유일한 원본으로 사용)
   constructor(context: RealtimeGuideContext) {
     this.context = context;
   }
@@ -65,7 +65,7 @@ export class HaneumRealtimeSession {
     let pendingTransport: RealtimeWebRTCTransport | null = null;
 
     try {
-      return await runWithRealtimeConnectionTimeout(async (signal) => {
+      const connected = await runWithRealtimeConnectionTimeout(async (signal) => {
         const { clientSecret } = await this.createClientSecret(sharedSecret, signal);
         const transport = new RealtimeWebRTCTransport({
           clientSecret,
@@ -82,8 +82,12 @@ export class HaneumRealtimeSession {
         this.sendSessionUpdate(transport);
         return transport;
       }, totalTimeoutMs);
+
+      return connected;
     } catch (error) {
-      pendingTransport?.close();
+      if (pendingTransport) {
+        (pendingTransport as RealtimeWebRTCTransport).close();
+      }
       throw error;
     }
   }

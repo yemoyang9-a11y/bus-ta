@@ -51,6 +51,9 @@ export default function RidingScreen({ route, navigation }) {
   })();
 
   // 최초 진입 안내
+  // 유나님 확인(2026-08-15): Realtime 연결 중에는 expo-speech와 Realtime 음성이
+  // 동시에 같은 내용을 말해서 중복 출력이 생긴다. Realtime이 연결됐을 때는
+  // expo-speech 안내를 재생하지 않고, 연결 실패·미연결 시에만 대체 안내로 사용한다.
   useFocusEffect(
     React.useCallback(() => {
       if (isConnected) return;
@@ -67,6 +70,7 @@ export default function RidingScreen({ route, navigation }) {
   );
 
   // 정류장·상태 바뀔 때마다 TTS (1정거장 남은 경우는 아래 하차 안내 useEffect가 별도 처리)
+  // 유나님 확인(2026-08-15): Realtime 연결 중이면 이 TTS는 재생하지 않는다.
   useEffect(() => {
     if (isConnected) return;
     if (status.guideMessage && status.remainingStations !== 1) {
@@ -77,14 +81,8 @@ export default function RidingScreen({ route, navigation }) {
     }
   }, [status.guideMessage, status.remainingStations, isConnected]);
 
-  // 정민님 확인(2026-08-12): 탑승 완료(WAITING_BUS → ON_BUS 전환) 시 비콘 스캔 중지
-  // "탑승하면 버스 찾는 진동이 필요 없으니까" — 하차벨 STOP_REQUEST와는 별개
-  //
-  // 예모님 코멘트 P0-2(2026-08-14): 이전에는 시도 여부만 기록해서 stopBeaconScan()이
-  // 실패해도 "처리 완료"로 간주되고 재시도가 없었다. 이제 TripContext의
-  // beaconScanActive(RouteListScreen이 스캔 시작 성공 시에만 true로 세팅)를 확인해서,
-  // 스캔이 실제로 켜져 있고 아직 안 껐을 때만 시도하고, 성공했을 때만 false로 바꾼다.
-  // 실패하면 beaconScanActive가 true로 남아있어 다음 GPS 주기(3초 후)에 다시 시도된다.
+  // 정민님 확인(2026-08-12): 탑승 완료 시 비콘 스캔 중지
+  // 예모님 확정(2026-08-24): "탑승 완료"는 boardingConfirmedAt이 존재하는 시점이다.
   useEffect(() => {
     if (
       boardingConfirmedAt &&
@@ -106,9 +104,6 @@ export default function RidingScreen({ route, navigation }) {
   }, [boardingConfirmedAt, state.beaconScanActive]);
 
   // 1정거장 남았을 때 TTS 출력 후 하차 안내 화면 전환
-  // API_SPEC.md 기준:
-  // - bellRequestId는 백엔드가 PATCH /status 응답에서 생성한 값 (프론트 생성 금지)
-  // - shouldTriggerBell: true + bellStatus: PENDING + bellRequestId 존재 시 실행
   useEffect(() => {
     if (
       status.shouldTriggerBell === true &&
@@ -162,7 +157,6 @@ export default function RidingScreen({ route, navigation }) {
   }, [tripId]);
 
   // PATCH /api/trips/{tripId}/status 호출
-  // requestId는 앱이 생성하는 멱등 키 — 같은 좌표 재전송 시에는 재사용하지 않고 매 전송마다 새로 발급한다
   const patchStatus = async () => {
     patchInFlightRef.current = true;
     try {
@@ -179,8 +173,6 @@ export default function RidingScreen({ route, navigation }) {
 
       setStatus(data);
       dispatch({ type: 'UPDATE_TRIP_STATUS', status: data });
-      // dispatch는 비동기라, TripContext를 다시 읽지 않고 방금 받은 data를 직접 넘긴다.
-      // (예모님 코멘트 2번, 2026-08-13 반영)
       session?.notifyStatusChange({
         tripStatus: data.tripStatus,
         boardingMethod: data.boardingMethod,
@@ -191,7 +183,6 @@ export default function RidingScreen({ route, navigation }) {
         guideMessage: data.guideMessage,
       });
 
-      // 9.2: 종료된 운행이면 전송 중단
       if (data.tripStatus === 'TRIP_DONE' || data.tripStatus === 'CANCELLED') {
         stoppedRef.current = true;
         dispatch({ type: 'RESET_TRIP' });
@@ -199,7 +190,6 @@ export default function RidingScreen({ route, navigation }) {
     } catch (error) {
       if (error instanceof ApiError) {
         if (error.errorCode === 'INVALID_TRIP_STATUS') {
-          // 앱 상태가 실제 운행 상태보다 뒤처짐 — 전송 중단하고 최신 상태로 맞춤
           stoppedRef.current = true;
           try {
             const latest = await apiClient.trips.getStatus(tripId);
@@ -226,16 +216,12 @@ export default function RidingScreen({ route, navigation }) {
           return;
         }
       }
-      // 네트워크 실패 등은 다음 주기에 재시도 (requestId는 다음 좌표에 새로 발급되므로 중복 걱정 없음)
       console.log('위치 업데이트 실패:', error);
     } finally {
       patchInFlightRef.current = false;
     }
   };
 
-  // 하차 안내 화면으로 이동
-  // 예모님 코멘트 P1-2(2026-08-14): navigate()는 이전 화면을 언마운트하지 않아
-  // GPS 폴링(setInterval)과 TTS가 계속 실행될 수 있다. 화면 전환 직전에 명시적으로 멈춘다.
   const handleAlightNavigation = () => {
     if (bellHandledRef.current) return;
     bellHandledRef.current = true;
@@ -250,7 +236,11 @@ export default function RidingScreen({ route, navigation }) {
     });
   };
 
-  if (!status.currentStation || !status.nextStation) {
+  // 예모님 확정(2026-08-24): 정류장 상세 정보는 boardingConfirmedAt이 있을 때만 표시.
+  // WAITING_BUS(탑승 전)에서는 대기 화면을 유지한다.
+  const isBoarded = Boolean(status.boardingConfirmedAt);
+
+  if (!isBoarded || !status.currentStation || !status.nextStation) {
     return (
       <View style={styles.container}>
         <Text style={styles.title}>{screenTitle}</Text>

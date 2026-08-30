@@ -15,51 +15,42 @@ const manager = new BleManager();
 const connectedDevices = new Map();
 
 /**
- * 여러 개의 device name을 한 번의 스캔으로 동시에 찾아서 연결한다.
- * (예모님 코멘트 3번, 2026-08-13 반영)
- * BleManager 인스턴스가 하나뿐이라 startDeviceScan을 두 번 부르면 서로의
- * stopDeviceScan()이 충돌하던 문제를, 스캔 자체를 한 번만 실행하는 방식으로 해결한다.
- *
- * @param {string[]} deviceNames - 찾을 기기 이름 목록
- * @returns {Promise<Map<string, import('react-native-ble-plx').Device>>} 이름별 연결 결과
- *   연결 성공한 기기만 담기고, 실패(타임아웃 등)한 기기는 결과에서 빠진다.
+ * 한 개의 device name을 스캔해서 찾은 뒤 연결한다.
+ * @param {string} deviceName
+ * @returns {Promise<import('react-native-ble-plx').Device | null>} 연결 성공한 기기, 실패 시 null
  */
-function connectByNames(deviceNames) {
+function connectOneByName(deviceName) {
   return new Promise((resolve) => {
-    const remaining = new Set(deviceNames);
-    const found = new Map();
     let settled = false;
 
-    const finish = () => {
+    const finish = (result) => {
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
       manager.stopDeviceScan();
-      resolve(found);
+      resolve(result);
     };
 
-    const timeout = setTimeout(finish, 10000);
+    const timeout = setTimeout(() => finish(null), 10000);
 
-    manager.startDeviceScan([SERVICE_UUID], null, async (error, device) => {
+    manager.startDeviceScan(null, null, async (error, device) => {
       if (error) {
-        finish();
+        console.log('[BLE] 스캔 오류:', error);
+        finish(null);
         return;
       }
 
-      if (device?.name && remaining.has(device.name)) {
-        remaining.delete(device.name);
+      if (device?.name === deviceName) {
+        manager.stopDeviceScan(); // 연결 시도 중 다른 콜백이 겹치지 않도록 즉시 스캔 중단
 
         try {
           const connected = await device.connect();
           await connected.discoverAllServicesAndCharacteristics();
-          connectedDevices.set(device.name, connected);
-          found.set(device.name, connected);
-        } catch {
-          // 연결 실패한 기기는 found에 담지 않는다. 호출부가 개별 처리.
-        }
-
-        if (remaining.size === 0) {
-          finish();
+          connectedDevices.set(deviceName, connected);
+          finish(connected);
+        } catch (connectError) {
+          console.log('[BLE] 연결 실패:', deviceName, connectError);
+          finish(null);
         }
       }
     });
@@ -67,7 +58,29 @@ function connectByNames(deviceNames) {
 }
 
 /**
- * 지팡이·하차벨을 한 번의 스캔으로 동시에 연결한다.
+ * 여러 개의 device name을 순서대로(하나씩) 연결한다.
+ * 유나님·정민님 확인(2026-08-18): 스캔 콜백 안에서 두 기기를 거의 동시에 connect()하면
+ * 폰 BLE 스택에서 한쪽(하차벨)이 계속 disconnected로 실패하는 문제를 발견.
+ * 지팡이 연결이 완전히 끝난 뒤에 하차벨 연결을 시작하도록 직렬화한다.
+ *
+ * @param {string[]} deviceNames - 찾을 기기 이름 목록 (순서대로 연결됨)
+ * @returns {Promise<Map<string, import('react-native-ble-plx').Device>>} 이름별 연결 결과
+ */
+async function connectByNames(deviceNames) {
+  const found = new Map();
+
+  for (const name of deviceNames) {
+    const connected = await connectOneByName(name);
+    if (connected) {
+      found.set(name, connected);
+    }
+  }
+
+  return found;
+}
+
+/**
+ * 지팡이·하차벨을 순서대로 연결한다.
  * 각 기기별 성공/실패 여부를 개별적으로 반환하므로, 호출부는 필요한 기기가
  * 연결됐는지 결과 Map으로 확인해야 한다.
  */
@@ -125,6 +138,44 @@ export async function startBeaconScan() {
 export async function stopBeaconScan() {
   const payload = JSON.stringify({ cmd: 'STOP_BEACON_SCAN' });
   await writeCommand(CANE_DEVICE_NAME, payload);
+}
+
+/**
+ * 지팡이가 판정한 버스 접근 상태(Notify)를 구독한다.
+ * 정민님 확인(2026-08-24): 지팡이가 APPROACHING/ARRIVED/PASSING/PASSED_STOPPED/LEAVING 상태와
+ * 원시 RSSI 값을 함께 Notify로 보낸다. 탑승 자동 판정(AUTO_DETECTED)에 쓸 구체적인 조건(임계값,
+ * 지속 시간)은 아직 실측 전이라 미정 — 이 함수는 상태·RSSI를 그대로 전달만 하고,
+ * 판정 로직은 호출부(추후 구현)에서 담당한다.
+ * @param {(state: { state: string, rssi: number }) => void} onState
+ * @returns {() => void} 구독 해제 함수
+ */
+export function subscribeCaneState(onState) {
+  const device = connectedDevices.get(CANE_DEVICE_NAME);
+  if (!device) {
+    throw new Error('BLE_NOT_CONNECTED: 지팡이에 연결되어 있지 않습니다.');
+  }
+
+  const subscription = device.monitorCharacteristicForService(
+    SERVICE_UUID,
+    CHARACTERISTIC_UUID,
+    (error, characteristic) => {
+      if (error) {
+        console.log('지팡이 상태 Notify 오류:', error);
+        return;
+      }
+      if (!characteristic?.value) return;
+
+      try {
+        const jsonString = Buffer.from(characteristic.value, 'base64').toString('utf-8');
+        const parsed = JSON.parse(jsonString);
+        onState(parsed);
+      } catch (parseError) {
+        console.log('지팡이 상태 파싱 실패:', parseError);
+      }
+    }
+  );
+
+  return () => subscription.remove();
 }
 
 // ── 하차벨 명령 ──────────────────────────────

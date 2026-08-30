@@ -5,11 +5,15 @@ import { useTrip } from '../state/TripContext';
 import { connectAll, setTargetBeacon, startBeaconScan } from '../ble/bleManager';
 
 export default function RouteListScreen({ navigation }) {
-  // Realtime Function 결과의 단일 원본인 TripContext를 사용한다.
+  // 예모님 확인(2026-08-15): ConfirmScreen 삭제에 따라 route.params 대신 TripContext에서 값을 가져온다.
+  // destination, routeCandidates는 function-dispatcher.ts의 search_routes 처리 결과로 채워진다.
   const { state, dispatch } = useTrip();
   const { destination, routeCandidates } = state;
-  const guideMessage = routeCandidates?.[0]?.guideMessage || '';
+
   const [loading, setLoading] = useState(false);
+
+  // 채린님 확인(2026-08-15): AI가 이미 노선 후보를 음성으로 안내하므로,
+  // 화면 상단의 guideMessage 텍스트(중복 안내)는 제거한다.
 
   // 정민님 확인(2026-08-12): 노선 선택 후(=여기) BLE 연결 시작, 배터리 절약을 위해
   // 앱 켤 때가 아니라 실제 필요 시점에 연결한다.
@@ -23,7 +27,7 @@ export default function RouteListScreen({ navigation }) {
   // 기록해야, RidingScreen이 stopBeaconScan()을 정확한 시점에만 시도할 수 있다.
   // setTargetBeacon·startBeaconScan까지 전부 성공했을 때만 beaconScanActive: true로 표시한다.
   //
-  // @returns {boolean} 하차벨(비콘 겸용) 연결 성공 여부 — AlightScreen에 전달할 isMock 판단에 사용
+  // @returns {boolean} 하차벨(비콘 겸용) 연결 성공 여부 — TripContext에 전달할 isMock 판단에 사용
   const setupBle = async (targetBeaconId) => {
     const connected = await connectAll();
 
@@ -43,8 +47,6 @@ export default function RouteListScreen({ navigation }) {
     if (!bellConnected) {
       console.log('하차벨 연결 실패');
     }
-    // 예모님 코멘트 P1-1(2026-08-14): 이 구독은 결과를 어디에도 전달하지 않고,
-    // AlightScreen이 sendStopRequest() 호출 전에 이미 자체 구독을 걸기 때문에 안전하게 제거.
 
     return bellConnected;
   };
@@ -87,7 +89,6 @@ export default function RouteListScreen({ navigation }) {
         .list(selectedRoute.routeNo)
         .then(async (beaconData) => {
           const bleConnected = await setupBle(beaconData.targetBeaconId);
-          // 서버 비콘이 mock이 아니고, 실제로 BLE 연결까지 성공했을 때만 "실제 응답"으로 취급
           dispatch({
             type: 'SET_BLE_MOCK_STATUS',
             isMock: beaconData.isMock || !bleConnected,
@@ -133,8 +134,6 @@ export default function RouteListScreen({ navigation }) {
 
   return (
     <View style={styles.container}>
-      {/* 유나 AI 안내 문장 화면에도 표시 */}
-      <Text style={styles.guideMessage}>{guideMessage}</Text>
       <FlatList
         data={routeCandidates}
         keyExtractor={(item) => String(item.candidateId)}
@@ -161,14 +160,6 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#fff',
     padding: 20,
-  },
-  guideMessage: {
-    fontSize: 16,
-    color: '#333',
-    marginBottom: 20,
-    padding: 15,
-    backgroundColor: '#E3F2FD',
-    borderRadius: 10,
   },
   routeCard: {
     backgroundColor: '#f5f5f5',
