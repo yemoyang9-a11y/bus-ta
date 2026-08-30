@@ -91,6 +91,10 @@ async function createGuideMessage(prompt: string, fallbackMessage: string): Prom
   }
 }
 
+/**
+ * 같은 노선 번호를 하나만 남긴다. 앞에 오는 후보를 남기므로, 점수순으로 정렬한
+ * 뒤에 호출해야 노선별로 가장 좋은 후보가 살아남는다.
+ */
 function uniqueRoutesByRouteNo(candidates: Route[]): Route[] {
   const seen = new Set<string>();
   return candidates.filter((candidate) => {
@@ -101,25 +105,47 @@ function uniqueRoutesByRouteNo(candidates: Route[]): Route[] {
   });
 }
 
-function buildRouteGuideFallback(candidates: Route[]): RouteGuideResult {
+/**
+ * 이동시간과 배차간격을 순차 비교하면, 배차간격이 아무리 길어도 이동시간이
+ * 조금이라도 짧은 경로가 항상 이겨버린다. 버스가 균등한 간격으로 온다고 가정하면
+ * 평균 대기시간은 배차간격의 절반이므로, "이동시간 + 배차간격/2"를 하나의 예상
+ * 총 소요시간으로 합쳐서 비교한다.
+ *
+ * 소요시간이나 배차간격을 확인할 수 없는 후보를 0분으로 취급하면 정보가 없다는
+ * 이유로 오히려 가장 유리해진다. 누락 값은 기존 정렬과 동일하게 후순위로 보낸다.
+ */
+function expectedTotalMinutes(route: Route): number {
+  if (route.totalTime == null || route.intervalTime == null) {
+    return Number.MAX_SAFE_INTEGER;
+  }
+  return route.totalTime + route.intervalTime / 2;
+}
+
+/**
+ * 안내할 후보 선택은 서버가 끝낸다. OpenAI 경로에서도 모델이 다시 고르지 않게
+ * 해서, 모델의 계산 편차와 무관하게 같은 입력이면 항상 같은 후보가 나오게 한다.
+ *
+ * 중복 제거보다 정렬을 먼저 한다. 같은 노선 번호가 여러 번 올라오는 경우
+ * (ODsay 가 같은 노선을 서로 다른 경로로 돌려주는 경우) 순서를 뒤집으면
+ * 점수 비교도 받지 못한 채 느린 후보가 남을 수 있다.
+ */
+export function selectRouteCandidates(candidates: Route[]): Route[] {
+  const sorted = candidates.slice().sort((a, b) => {
+    const expectedDiff = expectedTotalMinutes(a) - expectedTotalMinutes(b);
+    if (expectedDiff !== 0) return expectedDiff;
+
+    return (a.totalWalk ?? Number.MAX_SAFE_INTEGER) - (b.totalWalk ?? Number.MAX_SAFE_INTEGER);
+  });
+
+  return uniqueRoutesByRouteNo(sorted).slice(0, 2);
+}
+
+function buildRouteGuideFallback(selectedRoutes: Route[]): RouteGuideResult {
   return {
-    selectedCandidates: uniqueRoutesByRouteNo(candidates)
-      .slice()
-      .sort((a, b) => {
-        const timeDiff = (a.totalTime ?? Number.MAX_SAFE_INTEGER) - (b.totalTime ?? Number.MAX_SAFE_INTEGER);
-        if (timeDiff !== 0) return timeDiff;
-
-        const intervalDiff =
-          (a.intervalTime ?? Number.MAX_SAFE_INTEGER) - (b.intervalTime ?? Number.MAX_SAFE_INTEGER);
-        if (intervalDiff !== 0) return intervalDiff;
-
-        return (a.totalWalk ?? Number.MAX_SAFE_INTEGER) - (b.totalWalk ?? Number.MAX_SAFE_INTEGER);
-      })
-      .slice(0, 2)
-      .map((candidate) => ({
-        candidateId: candidate.candidateId,
-        guideMessage: buildBasicRouteGuide(candidate),
-      })),
+    selectedCandidates: selectedRoutes.map((candidate) => ({
+      candidateId: candidate.candidateId,
+      guideMessage: buildBasicRouteGuide(candidate),
+    })),
   };
 }
 
@@ -141,37 +167,30 @@ function parseOpenAIRouteGuide(raw: string): OpenAIRouteGuideResponse | null {
   }
 }
 
-function validateRouteGuideResponse(raw: string, candidates: Route[]): RouteGuideResult | null {
+/**
+ * 서버가 정한 후보는 그대로 두고 안내 문장만 모델 결과로 채운다. 모델이 문장을
+ * 빠뜨리거나 형식을 어겨도 후보 구성과 순서는 흔들리지 않는다.
+ */
+function mergeGuideMessages(selectedRoutes: Route[], raw: string): RouteGuideResult {
   const parsed = parseOpenAIRouteGuide(raw);
-  if (!parsed?.selectedCandidates || !Array.isArray(parsed.selectedCandidates)) {
-    return null;
+  const messageByCandidateId = new Map<number, string>();
+
+  for (const candidate of parsed?.selectedCandidates ?? []) {
+    const candidateId = candidate.candidateId;
+    const guideMessage = candidate.guideMessage;
+
+    if (typeof candidateId !== "number" || messageByCandidateId.has(candidateId)) continue;
+    if (typeof guideMessage !== "string" || guideMessage.trim().length === 0) continue;
+
+    messageByCandidateId.set(candidateId, guideMessage.trim());
   }
 
-  const candidateIds = new Set(candidates.map((candidate) => candidate.candidateId));
-  const seen = new Set<number>();
-  const selectedCandidates = parsed.selectedCandidates
-    .filter((candidate): candidate is { candidateId: number; guideMessage: string } => {
-      const candidateId = candidate.candidateId;
-      const isValid =
-        typeof candidateId === "number" &&
-        candidateIds.has(candidateId) &&
-        !seen.has(candidateId) &&
-        typeof candidate.guideMessage === "string" &&
-        candidate.guideMessage.trim().length > 0;
-
-      if (isValid) {
-        seen.add(candidateId);
-      }
-
-      return isValid;
-    })
-    .slice(0, 2)
-    .map((candidate) => ({
-      candidateId: candidate.candidateId,
-      guideMessage: candidate.guideMessage.trim(),
-    }));
-
-  return selectedCandidates.length > 0 ? { selectedCandidates } : null;
+  return {
+    selectedCandidates: selectedRoutes.map((route) => ({
+      candidateId: route.candidateId,
+      guideMessage: messageByCandidateId.get(route.candidateId) ?? buildBasicRouteGuide(route),
+    })),
+  };
 }
 
 export async function generateRouteGuide({
@@ -182,13 +201,13 @@ export async function generateRouteGuide({
     return { selectedCandidates: [] };
   }
 
-  const dedupedCandidates = uniqueRoutesByRouteNo(candidates);
-  const fallbackResult = buildRouteGuideFallback(dedupedCandidates);
+  const selectedRoutes = selectRouteCandidates(candidates);
+  const fallbackResult = buildRouteGuideFallback(selectedRoutes);
   if (!client) {
     return fallbackResult;
   }
 
-  const candidateInfos = dedupedCandidates
+  const candidateInfos = selectedRoutes
     .map((candidate) =>
       `
 candidateId: ${candidate.candidateId}
@@ -204,17 +223,14 @@ candidateId: ${candidate.candidateId}
     .join("\n---\n");
 
   const prompt = `
-다음 버스 후보 중 시각장애인에게 가장 적합한 최대 2개를 골라줘.
+아래 버스 노선 각각에 대해 시각장애인을 위한 안내 문장을 만들어줘.
+후보 선택은 이미 끝났으니 노선을 고르거나 제외하거나 순서를 바꾸지 마.
 목적지: ${destination || "정보 없음"}
 후보 목록:
 ${candidateInfos}
-선택 기준:
-1. 총 소요시간이 짧은 경로
-2. 배차 간격이 짧은 경로
-3. 도보 이동 거리가 짧은 경로
 조건:
-- 반드시 후보 목록에 있는 candidateId만 사용해.
-- selectedCandidates는 최대 2개만 반환해.
+- 후보 목록에 있는 candidateId 전부에 대해 각각 안내 문장을 하나씩 만들어줘.
+- candidateId는 후보 목록에 있는 값을 그대로 사용해.
 - 각 guideMessage에는 해당 버스 번호, 총 소요시간, 배차 간격을 반드시 포함해.
 - 시간 정보가 없으면 숫자를 추측하지 말고 해당 정보를 확인할 수 없다고 안내해.
 - recommendationReason은 반환하지 마.
@@ -232,7 +248,7 @@ ${candidateInfos}
     return fallbackResult;
   }
 
-  return validateRouteGuideResponse(raw, dedupedCandidates) ?? fallbackResult;
+  return mergeGuideMessages(selectedRoutes, raw);
 }
 
 export async function generateTripStartGuide({

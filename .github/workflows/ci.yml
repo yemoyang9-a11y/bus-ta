@@ -33,6 +33,10 @@ jobs:
       - name: Typecheck (shared + server + mobile)
         run: pnpm -r typecheck
 
+      # 타입 체크만 돌던 동안 서버 테스트는 CI 에서 한 번도 실행되지 않았다.
+      - name: Test (server)
+        run: pnpm --filter @bus-ta/server test
+
       - name: Boarding confirmation regressions
         run: pnpm --filter @bus-ta/server test:boarding
 

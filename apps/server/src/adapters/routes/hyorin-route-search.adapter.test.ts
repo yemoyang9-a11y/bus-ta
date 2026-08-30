@@ -681,7 +681,16 @@ test("중복 routeId: 노선 정류장 목록 조회(GBIS busrouteservice)가 �
 function stubGbisArrivalItemsAndRoute(t: import("node:test").TestContext, items: unknown[]) {
   return t.mock.method(axios, "get", async (url: string, config?: { params?: { routeId?: string } }) => {
     if (url.includes("busarrivalservice")) {
-      return { data: { response: { msgBody: { busArrivalList: items } } } };
+      // 실제 GBIS 응답은 항상 msgHeader 를 포함한다. resultCode 를 빠뜨리면
+      // 어댑터가 응답 오류로 간주하므로 정상값을 함께 준다.
+      return {
+        data: {
+          response: {
+            msgHeader: { resultCode: 0, resultMessage: "정상적으로 처리되었습니다." },
+            msgBody: { busArrivalList: items },
+          },
+        },
+      };
     }
     if (url.includes("busrouteservice")) {
       const routeId = config?.params?.routeId ?? "";
@@ -738,6 +747,7 @@ test("PR #33 리뷰 P1: 경유정류소 조회가 실패하면 레코드가 1개
       return {
         data: {
           response: {
+            msgHeader: { resultCode: 0, resultMessage: "정상적으로 처리되었습니다." },
             msgBody: {
               busArrivalList: [
                 syntheticArrivalItem({ routeId: 233000281, staOrder: 11, predictTime1: "9" }),
@@ -769,6 +779,7 @@ test("PR #33 리뷰 P1: 경유정류소 응답이 비어 있으면 레코드가 
       return {
         data: {
           response: {
+            msgHeader: { resultCode: 0, resultMessage: "정상적으로 처리되었습니다." },
             msgBody: {
               busArrivalList: [
                 syntheticArrivalItem({ routeId: 233000281, staOrder: 11, predictTime1: "9" }),
@@ -779,7 +790,18 @@ test("PR #33 리뷰 P1: 경유정류소 응답이 비어 있으면 레코드가 
       };
     }
     // resultCode 는 정상인데 목록만 비어 오는 경우 — 조회 실패와 똑같이 "확인 못 함"이다.
-    if (url.includes("busrouteservice")) return { data: { response: { msgBody: {} } } };
+    // msgHeader 를 빠뜨리면 나중에 경유정류소 응답에도 resultCode 검사가 붙었을 때
+    // "빈 목록이라 fail closed" 인지 "헤더 누락이라 실패" 인지 구분할 수 없다.
+    if (url.includes("busrouteservice")) {
+      return {
+        data: {
+          response: {
+            msgHeader: { resultCode: 0, resultMessage: "정상적으로 처리되었습니다." },
+            msgBody: {},
+          },
+        },
+      };
+    }
     throw new Error(`이 테스트에서 예상하지 못한 axios.get 호출: ${url}`);
   });
 
@@ -793,54 +815,70 @@ test("PR #33 리뷰 P1: 경유정류소 응답이 비어 있으면 레코드가 
 
 // 벽시계 시간(elapsedMs)으로 병렬성을 판정하면 CI 러너가 느릴 때 병렬인데도
 // 임계값을 넘겨 임의로 실패한다(PR #33 리뷰). 시간 대신 호출 순서를 본다 —
-// 두 번째 요청이 첫 번째 요청이 끝나기 전에 시작됐으면 병렬이고, 첫 번째가
-// 끝난 뒤에야 시작됐으면 순차다. 이 판정은 실행 속도와 무관하게 결정적이다.
+// 두 요청이 서로 겹쳐서 진행되면 병렬이고, 하나가 끝난 뒤에야 다음이 시작되면
+// 순차다. 이 판정은 실행 속도와 무관하게 결정적이다.
+//
+// 둘 중 어느 쪽이 먼저 시작되는지는 구현 세부사항이므로 고정하지 않는다.
+// 각 stub 은 자기 시작을 알린 뒤 "상대도 시작했다"는 신호를 기다린다(배리어).
+// 순차 실행이면 먼저 시작한 쪽이 오지 않을 신호를 기다리다 멈춘다 — 시작 순서가
+// 어느 쪽이든 동일하게 검출된다.
+function startBarrier() {
+  let resolve!: () => void;
+  const started = new Promise<void>((r) => {
+    resolve = r;
+  });
+  return { started, resolve };
+}
+
 test("PR #33 리뷰 지적: 도착정보 조회와 노선 정류장 조회는 병렬로 실행된다", async (t) => {
   const events: string[] = [];
-  let releaseArrival: (() => void) | undefined;
-  const arrivalGate = new Promise<void>((resolve) => {
-    releaseArrival = resolve;
-  });
+  const arrival = startBarrier();
+  const route = startBarrier();
 
   t.mock.method(axios, "get", async (url: string) => {
     if (url.includes("busarrivalservice")) {
       events.push("arrival:start");
-      // 순차 실행이라면 이 요청이 끝나야 다음 요청이 시작된다. 아래에서 두 번째
-      // 요청 시작이 관측될 때까지 붙잡아 두므로, 순차라면 여기서 교착되지 않고
-      // events 에 route:start 가 없는 채로 끝난다.
-      await arrivalGate;
+      arrival.resolve();
+      await route.started;
       events.push("arrival:end");
       return { data: gbisArrivalFixture };
     }
     if (url.includes("busrouteservice")) {
       events.push("route:start");
-      // 첫 요청이 아직 진행 중인 상태에서 두 번째가 시작됐음을 확인했으니 풀어준다.
-      releaseArrival?.();
+      route.resolve();
+      await arrival.started;
+      events.push("route:end");
       return { data: gbisRouteStations205Fixture };
     }
     throw new Error(`이 테스트에서 예상하지 못한 axios.get 호출: ${url}`);
   });
 
-  // 순차 실행으로 되돌아가면 arrivalGate 가 영원히 풀리지 않아 이 await 가 멈춘다.
+  // 순차 실행으로 되돌아가면 배리어가 풀리지 않아 이 await 가 멈춘다.
   // 테스트 러너 타임아웃으로 실패하게 두지 않고, 명시적으로 판정한다.
   const timedOut = Symbol("timedOut");
+  let timer: NodeJS.Timeout | undefined;
   const result = await Promise.race([
     getArrivalInfo({
       ...arrivalCandidate("233000281"),
       destinationStation: DESTINATION_AFTER_TURN_POINT,
     }),
-    new Promise((resolve) => setTimeout(() => resolve(timedOut), 2000)),
+    new Promise((resolve) => {
+      timer = setTimeout(() => resolve(timedOut), 2000);
+    }),
   ]);
+  // 성공했으면 남은 타이머를 정리한다 — 안 그러면 러너가 2초를 더 기다린다.
+  if (timer) clearTimeout(timer);
 
   assert.notEqual(
     result,
     timedOut,
-    "두 요청이 순차로 실행되어 두 번째 요청이 시작되지 못했다 — 병렬 실행이 깨졌다",
+    "두 요청이 순차로 실행되어 뒤쪽 요청이 시작되지 못했다 — 병렬 실행이 깨졌다",
   );
-  assert.deepEqual(
-    events,
-    ["arrival:start", "route:start", "arrival:end"],
-    "두 번째 요청은 첫 번째 요청이 끝나기 전에 시작되어야 한다",
+  assert.ok(events.includes("arrival:start"), "도착정보 조회가 시작되어야 한다");
+  assert.ok(events.includes("route:start"), "노선 정류장 조회가 시작되어야 한다");
+  assert.ok(
+    events.indexOf("route:start") < events.indexOf("arrival:end"),
+    `노선 정류장 조회는 도착정보 조회가 끝나기 전에 시작되어야 한다 (관측: ${events.join(" → ")})`,
   );
 });
 
