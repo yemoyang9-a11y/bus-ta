@@ -246,9 +246,15 @@ export default function RidingScreen({ route, navigation }) {
         guideMessage: data.guideMessage,
       });
 
-      if (data.tripStatus === 'TRIP_DONE' || data.tripStatus === 'CANCELLED') {
+      // 효린님 확인(2026-08-27): 정상 도착(TRIP_DONE)은 검색 결과까지 전부 초기화하지만,
+      // 사용자 취소(CANCELLED)는 destination·routeCandidates를 남겨서 처음부터
+      // 다시 검색하지 않아도 되게 한다.
+      if (data.tripStatus === 'TRIP_DONE') {
         stoppedRef.current = true;
         dispatch({ type: 'RESET_TRIP' });
+      } else if (data.tripStatus === 'CANCELLED') {
+        stoppedRef.current = true;
+        dispatch({ type: 'RESET_TRIP_KEEP_SEARCH' });
       }
     } catch (error) {
       if (error instanceof ApiError) {
@@ -273,6 +279,8 @@ export default function RidingScreen({ route, navigation }) {
           return;
         }
         if (error.errorCode === 'TRIP_NOT_FOUND') {
+          // 효린님 확인(2026-08-27): TRIP_NOT_FOUND는 앱 상태가 완전히 낡은 것이므로
+          // 검색 결과까지 포함해 전체 초기화한다.
           stoppedRef.current = true;
           dispatch({ type: 'RESET_TRIP' });
           navigation.navigate('Error');
