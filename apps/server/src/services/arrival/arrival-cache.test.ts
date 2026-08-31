@@ -7,6 +7,11 @@ import { ARRIVAL_POLL_MAX_MS, ARRIVAL_POLL_MIN_MS } from "./arrival-poll-policy.
 const TARGET = { gbisStationId: "233000575", localBusId: "233000011" };
 const MINUTE = 60_000;
 
+/** 조회는 성공한 경우의 상태. 차량이 없으면 NO_VEHICLE 이다. */
+function ok(arrivals: ArrivalInfo[]) {
+  return arrivals.length > 0 ? ("AVAILABLE" as const) : ("NO_VEHICLE" as const);
+}
+
 function arrival(minutes: number): ArrivalInfo {
   return {
     predictedArrivalMinutes: minutes,
@@ -23,7 +28,7 @@ function buildCache(responses: ArrivalInfo[][], maxStaleMs?: number) {
     async () => {
       const arrivals = responses[Math.min(calls, responses.length - 1)] ?? [];
       calls += 1;
-      return { arrivals };
+      return { arrivals, arrivalStatus: ok(arrivals) };
     },
     { now: () => clock, ...(maxStaleMs === undefined ? {} : { maxStaleMs }) },
   );
@@ -116,7 +121,7 @@ function buildFlakyCache() {
   const cache = new ArrivalCache(
     async () => {
       calls += 1;
-      if (calls === 1) return { arrivals: [arrival(1)] };
+      if (calls === 1) return { arrivals: [arrival(1)], arrivalStatus: "AVAILABLE" as const };
       throw new Error("network error");
     },
     { now: () => clock, maxStaleMs: 90_000 },
@@ -213,7 +218,7 @@ test("같은 대상에 동시 요청이 와도 GBIS는 한 번만 부른다", as
   const cache = new ArrivalCache(async () => {
     calls += 1;
     await new Promise((resolve) => setTimeout(resolve, 20));
-    return { arrivals: [arrival(5)] };
+    return { arrivals: [arrival(5)], arrivalStatus: "AVAILABLE" as const };
   });
 
   await Promise.all([cache.get(TARGET), cache.get(TARGET), cache.get(TARGET)]);
@@ -228,7 +233,7 @@ test("실패한 조회가 inFlight 에 남아 영구히 막지 않는다", async
     async () => {
       calls += 1;
       if (calls === 1) throw new Error("down");
-      return { arrivals: [arrival(4)] };
+      return { arrivals: [arrival(4)], arrivalStatus: "AVAILABLE" as const };
     },
     { now: () => clock },
   );
@@ -247,7 +252,10 @@ test("노선이 다르면 갱신 주기를 따로 관리한다", async () => {
   const cache = new ArrivalCache(
     async (t) => {
       seen.push(t.localBusId);
-      return { arrivals: t.localBusId === "A" ? [arrival(30)] : [arrival(2)] };
+      return {
+        arrivals: t.localBusId === "A" ? [arrival(30)] : [arrival(2)],
+        arrivalStatus: "AVAILABLE" as const,
+      };
     },
     { now: () => 0 },
   );
@@ -264,7 +272,7 @@ test("전부 최신이어도 항목 수는 상한을 넘지 않는다", async ()
   // 만료된 것만 지우면, 짧은 시간에 새 정류장·노선 조합이 몰릴 때 전부 최신이라
   // 하나도 못 지우고 무한히 쌓인다.
   let clock = 0;
-  const cache = new ArrivalCache(async () => ({ arrivals: [arrival(30)] }), {
+  const cache = new ArrivalCache(async () => ({ arrivals: [arrival(30)], arrivalStatus: "AVAILABLE" as const }), {
     now: () => clock,
     maxEntries: 5,
   });
@@ -285,7 +293,7 @@ test("전부 최신이어도 항목 수는 상한을 넘지 않는다", async ()
 test("오래 쓰이지 않은 항목은 정리해 무한히 쌓이지 않게 한다", async () => {
   let clock = 0;
   const cache = new ArrivalCache(
-    async () => ({ arrivals: [arrival(1)] }),
+    async () => ({ arrivals: [arrival(1)], arrivalStatus: "AVAILABLE" as const }),
     { now: () => clock, maxStaleMs: 1_000, maxEntries: 2 },
   );
 
@@ -298,4 +306,105 @@ test("오래 쓰이지 않은 항목은 정리해 무한히 쌓이지 않게 한
   // R1·R2 는 정리됐어야 하므로 다시 물으면 새로 조회한다.
   const revisited = await cache.get({ gbisStationId: "S", localBusId: "R1" });
   assert.equal(revisited.fromCache, false, "정리된 항목은 새로 조회되어야 한다");
+});
+
+// ─────────────────────────────────────────────
+// 어댑터는 GBIS 실패를 예외가 아니라 arrivalStatus: UPSTREAM_ERROR 로 올린다.
+// 캐시가 그걸 성공으로 받으면 실패가 "차량 없음"으로 굳고, 낡은 값 유지와 20초
+// 재시도가 통째로 무력해진다. 아래 테스트들이 그 회귀를 고정한다.
+// ─────────────────────────────────────────────
+
+test("UPSTREAM_ERROR 를 성공으로 캐시하지 않는다 — 실패 경로로 보낸다", async () => {
+  let clock = 0;
+  let calls = 0;
+  const cache = new ArrivalCache(
+    async () => {
+      calls += 1;
+      return { arrivals: [], arrivalStatus: "UPSTREAM_ERROR" as const };
+    },
+    { now: () => clock },
+  );
+
+  const first = await cache.get(TARGET);
+  assert.equal(first.arrivalStatus, "UPSTREAM_ERROR");
+  assert.equal(first.arrivals, null, "조회 실패는 빈 배열이 아니라 null 이어야 한다");
+
+  // 성공으로 캐시됐다면 폴링 정책상 최대 5분까지 안 부른다.
+  // 실패로 처리했으면 최소 간격(20초) 뒤에 다시 부른다.
+  clock += ARRIVAL_POLL_MIN_MS - 1_000;
+  await cache.get(TARGET);
+  assert.equal(calls, 1, "최소 간격 안에는 다시 부르지 않는다");
+
+  clock += 2_000;
+  await cache.get(TARGET);
+  assert.equal(calls, 2, "최소 간격이 지나면 다시 부른다 — 5분을 기다리면 안 된다");
+});
+
+test("UPSTREAM_ERROR 여도 maxStaleMs 안이면 직전 값을 유지하되 상태는 실패로 남는다", async () => {
+  let clock = 0;
+  let calls = 0;
+  const cache = new ArrivalCache(
+    async () => {
+      calls += 1;
+      return calls === 1
+        ? { arrivals: [arrival(1)], arrivalStatus: "AVAILABLE" as const }
+        : { arrivals: [], arrivalStatus: "UPSTREAM_ERROR" as const };
+    },
+    { now: () => clock, maxStaleMs: 90_000 },
+  );
+
+  const good = await cache.get(TARGET);
+  assert.equal(good.arrivalStatus, "AVAILABLE");
+
+  // 1분 남은 값의 갱신 주기는 30초다. 31초 뒤면 갱신 시점은 지났지만
+  // 낡은 정도(31초)는 아직 maxStaleMs(90초) 안이라 직전 값을 유지해야 한다.
+  clock += 31_000;
+  const stale = await cache.get(TARGET);
+
+  assert.equal(stale.predictedArrivalMinutes, 1, "쓸 만한 직전 값은 유지한다");
+  assert.equal(
+    stale.arrivalStatus,
+    "UPSTREAM_ERROR",
+    "낡은 값을 '지금 확인한 값'으로 안내하면 이미 지나간 버스를 기다리게 된다",
+  );
+});
+
+test("실패 뒤 캐시 적중에서도 상태가 UPSTREAM_ERROR 로 남는다", async () => {
+  let clock = 0;
+  let calls = 0;
+  const cache = new ArrivalCache(
+    async () => {
+      calls += 1;
+      return calls === 1
+        ? { arrivals: [arrival(1)], arrivalStatus: "AVAILABLE" as const }
+        : { arrivals: [], arrivalStatus: "UPSTREAM_ERROR" as const };
+    },
+    { now: () => clock, maxStaleMs: 90_000 },
+  );
+
+  await cache.get(TARGET);
+  clock += 31_000;
+  const stale = await cache.get(TARGET); // 실패 — 낡은 값 유지
+  assert.equal(stale.predictedArrivalMinutes, 1);
+
+  clock += 1_000; // 아직 재시도 간격 전이라 캐시에서 그대로 나온다
+  const hit = await cache.get(TARGET);
+
+  assert.equal(hit.fromCache, true);
+  assert.equal(calls, 2, "재시도 간격 안에는 다시 부르지 않는다");
+  assert.equal(hit.predictedArrivalMinutes, 1, "캐시 적중이라 값은 그대로다");
+  assert.equal(hit.arrivalStatus, "UPSTREAM_ERROR", "캐시를 거쳐도 실패 사실이 지워지면 안 된다");
+});
+
+test("차량이 없는 정상 응답은 NO_VEHICLE 로 캐시된다 — 실패와 섞이지 않는다", async () => {
+  let clock = 0;
+  const cache = new ArrivalCache(
+    async () => ({ arrivals: [], arrivalStatus: "NO_VEHICLE" as const }),
+    { now: () => clock },
+  );
+
+  const snapshot = await cache.get(TARGET);
+
+  assert.equal(snapshot.arrivalStatus, "NO_VEHICLE");
+  assert.deepEqual(snapshot.arrivals, [], "조회에 성공했으므로 null 이 아니라 빈 배열이다");
 });

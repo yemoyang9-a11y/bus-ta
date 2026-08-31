@@ -154,6 +154,23 @@ GBIS는 요청이 잘못돼도 HTTP 200으로 응답하고 `msgHeader.resultCode
 }
 ```
 
+### 캐시를 거칠 때
+
+`ArrivalCache`는 실패를 **예외로만** 판단했었다. 어댑터가 더 이상 던지지 않으므로,
+`arrivalStatus === UPSTREAM_ERROR` 도 실패 경로로 보낸다. 그러지 않으면 조회 실패가
+"차량 없음"으로 캐시에 굳고, 낡은 값 한도(`maxStaleMs`)와 실패 후 20초 재시도가 함께 무력해진다.
+
+`ArrivalSnapshot`과 캐시 항목은 `arrivalStatus`를 함께 들고 다닌다. 실패 뒤 직전 값을
+유지한 항목은 다음 캐시 적중에서도 `UPSTREAM_ERROR`로 남아, 낡은 값이 "지금 확인한 값"으로
+둔갑하지 않는다.
+
+| 스냅샷 | 뜻 |
+|---|---|
+| `arrivalStatus: AVAILABLE`, `arrivals: [...]` | 지금 확인한 값 |
+| `arrivalStatus: NO_VEHICLE`, `arrivals: []` | 지금 확인했고 오는 차가 없음 |
+| `arrivalStatus: UPSTREAM_ERROR`, `arrivals: null` | 확인 못 했고 쓸 만한 직전 값도 없음 |
+| `arrivalStatus: UPSTREAM_ERROR`, `arrivals: [...]` | 확인 못 했지만 90초 안의 직전 값이 있음 |
+
 ### 아직 정하지 않은 것
 
 **`UPSTREAM_ERROR`인데 캐시에 직전 값이 남아 있는 경우.** `maxStaleMs`(90초) 안이면 `ArrivalCache`가
