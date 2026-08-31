@@ -909,7 +909,13 @@ test("GBIS 도착정보 호출에는 5초 timeout 을 지정한다", async (t) =
 // 으로 둔갑해 사용자에게 그대로 전달된다. 두 상태는 반드시 구분되어야 한다.
 // ─────────────────────────────────────────────
 
-test("GBIS 가 200 이어도 resultCode 가 정상이 아니면 실패로 던진다", async (t) => {
+test("GBIS 가 200 이어도 resultCode 가 정상이 아니면 UPSTREAM_ERROR 로 구분한다", async (t) => {
+  // 예외를 그대로 던지면 호출부가 catch 해서 빈 배열로 접고, 그 결과가 "차량 없음"과
+  // 구분되지 않는다. 던지는 대신 arrivalStatus 로 올려서 안내 문구를 나눌 수 있게 한다.
+  const logged: string[] = [];
+  t.mock.method(console, "error", (...args: unknown[]) => {
+    logged.push(args.map((arg) => String(arg)).join(" "));
+  });
   t.mock.method(axios, "get", async (url: string) => {
     if (url.includes("busarrivalservice")) {
       return {
@@ -924,17 +930,23 @@ test("GBIS 가 200 이어도 resultCode 가 정상이 아니면 실패로 던진
     throw new Error(`이 테스트에서 예상하지 못한 axios.get 호출: ${url}`);
   });
 
-  await assert.rejects(
-    () => getArrivalInfo(arrivalCandidate("234000021")),
-    (error: unknown) => {
-      assert.match(String((error as Error).message), /resultCode=4/);
-      return true;
-    },
-    "resultCode 오류를 빈 배열로 접으면 '차량 없음'과 구분되지 않는다",
+  const info = await getArrivalInfo(arrivalCandidate("234000021"));
+
+  assert.equal(
+    info.arrivalStatus,
+    "UPSTREAM_ERROR",
+    "resultCode 오류를 NO_VEHICLE 로 접으면 '차량 없음'과 구분되지 않는다",
+  );
+  assert.deepEqual(info.arrivals, []);
+  // 상태로 접더라도 원인은 로그에 남아야 한다 — 조용한 실패를 만들지 않는다.
+  assert.ok(
+    logged.some((line) => line.includes("resultCode=4")),
+    `실패 원인이 로그에 남아야 한다 (관측: ${logged.join(" | ")})`,
   );
 });
 
-test("GBIS 가 파라미터 오류(resultCode 2)를 줘도 실패로 던진다", async (t) => {
+test("GBIS 가 파라미터 오류(resultCode 2)를 줘도 UPSTREAM_ERROR 다", async (t) => {
+  t.mock.method(console, "error", () => {});
   t.mock.method(axios, "get", async (url: string) => {
     if (url.includes("busarrivalservice")) {
       return {
@@ -949,7 +961,10 @@ test("GBIS 가 파라미터 오류(resultCode 2)를 줘도 실패로 던진다",
     throw new Error(`이 테스트에서 예상하지 못한 axios.get 호출: ${url}`);
   });
 
-  await assert.rejects(() => getArrivalInfo(arrivalCandidate("234000021")));
+  const info = await getArrivalInfo(arrivalCandidate("234000021"));
+
+  assert.equal(info.arrivalStatus, "UPSTREAM_ERROR");
+  assert.deepEqual(info.arrivals, []);
 });
 
 test("resultCode 가 정상인데 목록만 비면 실제로 차량이 없는 것이다", async (t) => {
@@ -969,4 +984,94 @@ test("resultCode 가 정상인데 목록만 비면 실제로 차량이 없는 �
 
   const info = await getArrivalInfo(arrivalCandidate("234000021"));
   assert.deepEqual(info.arrivals, [], "정상 응답의 빈 목록은 예외가 아니라 빈 배열이다");
+});
+
+// ─────────────────────────────────────────────
+// 예외상황 3번("버스 놓쳤어요") 계약: arrivals 가 빈 배열인 이유를 호출부가
+// 구분할 수 있어야 한다. GBIS 장애를 "오는 차가 없음"으로 안내하면 시각장애인
+// 사용자가 그 말을 듣고 정류장을 떠나 실제로 오던 버스를 놓친다.
+// ─────────────────────────────────────────────
+
+test("3번 계약: 조회 성공하고 차량이 있으면 AVAILABLE 이다", async (t) => {
+  stubGbisArrivalAndRoute(t);
+
+  const info = await getArrivalInfo({
+    ...arrivalCandidate("233000281"),
+    destinationStation: DESTINATION_AFTER_TURN_POINT,
+  });
+
+  assert.equal(info.arrivalStatus, "AVAILABLE");
+  assert.ok(info.arrivals.length > 0, "AVAILABLE 이면 안내할 차량이 있어야 한다");
+});
+
+test("3번 계약: 조회는 됐는데 이 노선 레코드가 없으면 NO_VEHICLE 이다", async (t) => {
+  stubGbisArrival(t);
+
+  // fixture 에 없는 노선 — 정류장 조회는 성공했고 이 노선 차량만 없는 상태다.
+  const info = await getArrivalInfo(arrivalCandidate("999999999"));
+
+  assert.equal(info.arrivalStatus, "NO_VEHICLE");
+  assert.deepEqual(info.arrivals, []);
+});
+
+test("3번 계약: predictTime 이 전부 비어 있으면 NO_VEHICLE 이다", async (t) => {
+  stubGbisArrivalItemsAndRoute(t, [
+    syntheticArrivalItem({ routeId: 233000281, staOrder: 128, predictTime1: "", predictTime2: "" }),
+  ]);
+
+  const info = await getArrivalInfo({
+    ...arrivalCandidate("233000281"),
+    destinationStation: DESTINATION_AFTER_TURN_POINT,
+  });
+
+  assert.equal(info.arrivalStatus, "NO_VEHICLE");
+  assert.deepEqual(info.arrivals, []);
+});
+
+test("3번 계약: 네트워크 오류는 NO_VEHICLE 이 아니라 UPSTREAM_ERROR 다", async (t) => {
+  t.mock.method(console, "error", () => {});
+  t.mock.method(axios, "get", async (url: string) => {
+    if (url.includes("busarrivalservice")) throw new Error("network error");
+    throw new Error(`이 테스트에서 예상하지 못한 axios.get 호출: ${url}`);
+  });
+
+  const info = await getArrivalInfo(arrivalCandidate("233000281"));
+
+  assert.equal(info.arrivalStatus, "UPSTREAM_ERROR");
+  assert.deepEqual(info.arrivals, []);
+});
+
+test("3번 계약: 경유정류소를 확인하지 못해 fail closed 된 경우도 UPSTREAM_ERROR 다", async (t) => {
+  // 방향을 검증하지 못한 것이지 차가 없는 것이 아니다.
+  t.mock.method(console, "error", () => {});
+  t.mock.method(axios, "get", async (url: string) => {
+    if (url.includes("busarrivalservice")) return { data: gbisArrivalFixture };
+    if (url.includes("busrouteservice")) throw new Error("network error");
+    throw new Error(`이 테스트에서 예상하지 못한 axios.get 호출: ${url}`);
+  });
+
+  const info = await getArrivalInfo({
+    ...arrivalCandidate("233000281"),
+    destinationStation: DESTINATION_AFTER_TURN_POINT,
+  });
+
+  assert.equal(info.arrivalStatus, "UPSTREAM_ERROR");
+  assert.deepEqual(info.arrivals, []);
+});
+
+test("3번 계약: 목적지가 노선에 없어 방향을 확정하지 못하면 UPSTREAM_ERROR 다", async (t) => {
+  t.mock.method(console, "error", () => {});
+  stubGbisArrivalAndRoute(t);
+
+  const info = await getArrivalInfo({
+    ...arrivalCandidate("233000281"),
+    destinationStation: { stationName: "존재하지 않는 정류장", latitude: 0, longitude: 0 },
+  });
+
+  assert.equal(
+    info.arrivalStatus,
+    "UPSTREAM_ERROR",
+    "방향을 확인하지 못한 것을 '차가 없다'로 안내하면 안 된다",
+  );
+  assert.deepEqual(info.arrivals, []);
 });

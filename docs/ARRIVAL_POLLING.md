@@ -96,3 +96,69 @@ GBIS는 요청이 잘못돼도 HTTP 200으로 응답하고 `msgHeader.resultCode
   현재 스캔 시작 코드는 `RouteListScreen`(화면 터치 경로)에만 있고 `realtime/`(음성 경로)에는 없다.
 - **스캔 시작 시점 5분이 적절한지** — 실측이 4분 창이라 더 긴 구간의 데이터는 없다.
   지팡이가 비콘을 잡는 데 걸리는 실제 시간을 하드웨어 담당과 맞춰 조정할 수 있다.
+
+## `arrivalStatus` — 조회 결과의 상태 (예외상황 3번)
+
+`getArrivalInfo`는 `arrivals`와 함께 `arrivalStatus`를 돌려준다.
+
+`arrivals: []`만으로는 "오는 차가 없음"과 "조회하지 못함"이 구분되지 않는다. 구분하지 않으면 GBIS
+장애를 "다음 버스가 없습니다"로 안내하게 되고, 시각장애인 사용자가 그 말을 듣고 정류장을 떠나면
+실제로는 오고 있던 버스를 놓친다. 두 경우는 반드시 다르게 안내해야 한다.
+
+| 값 | 뜻 | 안내 방향 |
+|---|---|---|
+| `AVAILABLE` | 조회 성공, 안내할 차량 있음 | 도착 시간을 그대로 안내 |
+| `NO_VEHICLE` | 조회 성공, 지금 오는 차 없음 | "지금 오는 차가 없다"고 안내 가능 |
+| `UPSTREAM_ERROR` | 조회 실패 또는 방향 확인 불가 | **차가 없다고 단정하지 않는다.** "지금은 확인이 안 된다"로 안내 |
+
+`occupancy.type`의 `UNAVAILABLE`과는 층이 다르다. 저건 "그 차량의 혼잡도를 모른다"는 뜻이라
+`arrivalStatus: AVAILABLE`과 같은 응답에 함께 나올 수 있다.
+
+### 어떤 경우가 어떤 값이 되는가
+
+- `AVAILABLE` — 방향까지 확인된 레코드가 있고 `predictTime`이 유효하다.
+- `NO_VEHICLE` — GBIS 응답에 이 노선 레코드가 없거나, 방향은 확정됐는데 그 방향 레코드가 없거나,
+  레코드는 있는데 `predictTime`이 전부 비어 있다.
+- `UPSTREAM_ERROR` — GBIS 호출이 실패했거나(네트워크·타임아웃·`resultCode ≠ 0`),
+  경유정류소를 확인하지 못해 fail closed 됐거나, 목적지가 노선에 없어 방향을 확정하지 못했다.
+
+방향 확인 실패를 `UPSTREAM_ERROR`로 두는 이유는, 그것이 "차가 없다"가 아니라 "확인하지 못했다"이기
+때문이다. 안내 문구도 조회 실패와 같아야 한다.
+
+`UPSTREAM_ERROR`로 접더라도 원인은 `console.error`로 남긴다. 조용한 실패를 만들지 않는다.
+
+### 예시 응답 (유나·채린 참고용)
+
+백엔드 연결을 기다리지 않고 먼저 개발할 수 있도록 세 경우의 형태를 적어 둔다.
+
+```jsonc
+// AVAILABLE — 두 번째 차량은 있을 수도, 없을 수도 있다
+{
+  "arrivalStatus": "AVAILABLE",
+  "arrivals": [
+    { "predictedArrivalMinutes": 6,  "occupancy": { "type": "CONGESTION", "congestionLevel": 3, "remainingSeats": null } },
+    { "predictedArrivalMinutes": 21, "occupancy": { "type": "REMAINING_SEATS", "congestionLevel": null, "remainingSeats": 4 } }
+  ]
+}
+
+// NO_VEHICLE — 조회는 됐고 지금 오는 차가 없다
+{
+  "arrivalStatus": "NO_VEHICLE",
+  "arrivals": []
+}
+
+// UPSTREAM_ERROR — 확인하지 못했다. "차가 없다"고 말하면 안 된다
+{
+  "arrivalStatus": "UPSTREAM_ERROR",
+  "arrivals": []
+}
+```
+
+### 아직 정하지 않은 것
+
+**`UPSTREAM_ERROR`인데 캐시에 직전 값이 남아 있는 경우.** `maxStaleMs`(90초) 안이면 `ArrivalCache`가
+직전 값을 들고 있으므로, `arrivalStatus: UPSTREAM_ERROR`와 비어 있지 않은 `arrivals`가 함께 나올 수
+있다. 그러면 "지금은 확인이 안 되는데 조금 전 정보로는 6분 뒤였어요"까지 안내할 수 있다.
+
+1차평가 범위에서는 넣지 않기로 했다. 공개 응답에 실을지는 평가 이후에 다시 논의한다.
+지금은 `UPSTREAM_ERROR`이면 `arrivals`가 비어 있다고 보고 구현해도 된다.
