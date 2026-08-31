@@ -54,9 +54,6 @@ export default function RidingScreen({ route, navigation }) {
   })();
 
   // 최초 진입 안내
-  // 유나님 확인(2026-08-15): Realtime 연결 중에는 expo-speech와 Realtime 음성이
-  // 동시에 같은 내용을 말해서 중복 출력이 생긴다. Realtime이 연결됐을 때는
-  // expo-speech 안내를 재생하지 않고, 연결 실패·미연결 시에만 대체 안내로 사용한다.
   useFocusEffect(
     React.useCallback(() => {
       if (isConnected) return;
@@ -72,8 +69,7 @@ export default function RidingScreen({ route, navigation }) {
     }, [isConnected])
   );
 
-  // 정류장·상태 바뀔 때마다 TTS (1정거장 남은 경우는 아래 하차 안내 useEffect가 별도 처리)
-  // 유나님 확인(2026-08-15): Realtime 연결 중이면 이 TTS는 재생하지 않는다.
+  // 정류장·상태 바뀔 때마다 TTS
   useEffect(() => {
     if (isConnected) return;
     if (status.guideMessage && status.remainingStations !== 1) {
@@ -145,7 +141,6 @@ export default function RidingScreen({ route, navigation }) {
   }, [tripId, state.beaconScanActive]);
 
   // 정민님 확인(2026-08-12): 탑승 완료 시 비콘 스캔 중지
-  // 예모님 확정(2026-08-24): "탑승 완료"는 boardingConfirmedAt이 존재하는 시점이다.
   useEffect(() => {
     if (
       boardingConfirmedAt &&
@@ -165,6 +160,26 @@ export default function RidingScreen({ route, navigation }) {
         });
     }
   }, [boardingConfirmedAt, state.beaconScanActive]);
+
+  // 예모님·유나님 지적(2026-08-27, P1): 음성 end_trip으로 Context의 tripId가 비워지는
+  // 순간을 감지해서, 다음 PATCH 응답을 기다리지 않고 즉시 GPS 폴링과 BLE 스캔을 멈춘다.
+  // 화면 route param의 tripId는 취소 후에도 그대로 남아있어 GPS interval 자체는 계속
+  // 돌고 있으므로, 이 tripId와 Context의 활성 tripId가 어긋나는 순간을 취소 신호로 본다.
+  useEffect(() => {
+    if (state.tripId && state.tripId !== tripId) {
+      // Context의 활성 운행이 이 화면의 tripId와 달라졌다(취소되었거나 다른 운행으로 바뀜).
+      stoppedRef.current = true;
+      if (state.beaconScanActive) {
+        stopBeaconScan()
+          .then(() => {
+            dispatch({ type: 'SET_BEACON_SCAN_ACTIVE', active: false });
+          })
+          .catch((error) => {
+            console.log('취소 후 비콘 스캔 중지 실패:', error);
+          });
+      }
+    }
+  }, [state.tripId, tripId, state.beaconScanActive]);
 
   // 1정거장 남았을 때 TTS 출력 후 하차 안내 화면 전환
   useEffect(() => {
@@ -246,9 +261,6 @@ export default function RidingScreen({ route, navigation }) {
         guideMessage: data.guideMessage,
       });
 
-      // 효린님 확인(2026-08-27): 정상 도착(TRIP_DONE)은 검색 결과까지 전부 초기화하지만,
-      // 사용자 취소(CANCELLED)는 destination·routeCandidates를 남겨서 처음부터
-      // 다시 검색하지 않아도 되게 한다.
       if (data.tripStatus === 'TRIP_DONE') {
         stoppedRef.current = true;
         dispatch({ type: 'RESET_TRIP' });
@@ -279,8 +291,6 @@ export default function RidingScreen({ route, navigation }) {
           return;
         }
         if (error.errorCode === 'TRIP_NOT_FOUND') {
-          // 효린님 확인(2026-08-27): TRIP_NOT_FOUND는 앱 상태가 완전히 낡은 것이므로
-          // 검색 결과까지 포함해 전체 초기화한다.
           stoppedRef.current = true;
           dispatch({ type: 'RESET_TRIP' });
           navigation.navigate('Error');
@@ -307,8 +317,6 @@ export default function RidingScreen({ route, navigation }) {
     });
   };
 
-  // 예모님 확정(2026-08-24): 정류장 상세 정보는 boardingConfirmedAt이 있을 때만 표시.
-  // WAITING_BUS(탑승 전)에서는 대기 화면을 유지한다.
   const isBoarded = Boolean(status.boardingConfirmedAt);
 
   if (!isBoarded || !status.currentStation || !status.nextStation) {
@@ -338,7 +346,6 @@ export default function RidingScreen({ route, navigation }) {
         <Text style={styles.stationName}>{status.currentStation.stationName}</Text>
       </View>
 
-      {/* 다음 정류장 — 노란 테두리로 강조 */}
       <View style={[styles.infoBox, styles.infoBoxHighlight]}>
         <View style={styles.labelRow}>
           <Text style={styles.labelIcon}>➡️</Text>
@@ -375,7 +382,6 @@ const styles = StyleSheet.create({
     backgroundColor: '#0A0C10',
     padding: 20,
   },
-
   title: {
     fontSize: 26,
     fontWeight: '800',
@@ -383,14 +389,12 @@ const styles = StyleSheet.create({
     textAlign: 'left',
     marginBottom: 4,
   },
-
   subtitle: {
     fontSize: 14,
     fontWeight: '500',
     color: '#9CA3AF',
     marginBottom: 20,
   },
-
   infoBox: {
     backgroundColor: '#15181F',
     borderWidth: 1,
@@ -399,39 +403,32 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     marginBottom: 14,
   },
-
   infoBoxHighlight: {
     borderColor: '#FFD400',
     borderWidth: 1.5,
   },
-
   labelRow: {
     flexDirection: 'row',
     alignItems: 'center',
     marginBottom: 6,
   },
-
   labelIcon: {
     fontSize: 13,
     marginRight: 6,
   },
-
   label: {
     fontSize: 13,
     fontWeight: '600',
     color: '#9CA3AF',
   },
-
   labelOnHighlight: {
     color: '#FFD400',
   },
-
   stationName: {
     fontSize: 22,
     fontWeight: '800',
     color: '#FFFFFF',
   },
-
   remainBox: {
     backgroundColor: '#15181F',
     borderWidth: 1,
@@ -441,19 +438,16 @@ const styles = StyleSheet.create({
     marginBottom: 14,
     alignItems: 'center',
   },
-
   remainText: {
     fontSize: 14,
     color: '#9CA3AF',
     fontWeight: '600',
   },
-
   remainCount: {
     fontSize: 40,
     fontWeight: '800',
     color: '#FFD400',
   },
-
   guideBox: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -464,12 +458,10 @@ const styles = StyleSheet.create({
     borderColor: '#FFFFFF',
     marginBottom: 14,
   },
-
   guideIcon: {
     fontSize: 18,
     marginRight: 10,
   },
-
   guideText: {
     flex: 1,
     fontSize: 17,
@@ -477,7 +469,6 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#111111',
   },
-
   prepareBox: {
     backgroundColor: '#2A1A0A',
     borderWidth: 2,
@@ -487,7 +478,6 @@ const styles = StyleSheet.create({
     marginBottom: 14,
     alignItems: 'center',
   },
-
   prepareText: {
     fontSize: 16,
     color: '#FFA766',

@@ -30,12 +30,7 @@ export default function App() {
           >
             <Stack.Screen name="Main" component={MainScreen} options={{ title: '버스 도우미' }} />
             <Stack.Screen name="RouteList" component={RouteListScreen} options={{ title: '노선 선택' }} />
-            <Stack.Screen
-              name="Riding"
-              component={RidingScreen}
-              initialParams={{ tripId: 'test-trip-001', selectedRoute: {} }}
-              options={{ title: '탑승 중' }}
-            />
+            <Stack.Screen name="Riding" component={RidingScreen} options={{ title: '탑승 중' }} />
             <Stack.Screen name="Alight" component={AlightScreen} options={{ title: '하차 안내' }} />
             <Stack.Screen name="Error" component={ErrorScreen} options={{ title: '오류' }} />
             <Stack.Screen name="BleTest" component={BleTestScreen} options={{ title: 'BLE 테스트' }} />
