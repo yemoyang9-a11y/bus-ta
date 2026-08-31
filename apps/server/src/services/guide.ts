@@ -122,6 +122,25 @@ function expectedTotalMinutes(route: Route): number {
 }
 
 /**
+ * 순위를 매겨 보관할 후보의 상한.
+ *
+ * 사용자가 "다른 버스 없어요?" 라고 하면 재검색 없이 다음 순위를 안내해야 하므로,
+ * 상위 2개만 남기고 버리지 않고 뒤 순위까지 함께 돌려준다. 중복 제거 후 실제로
+ * 남는 노선은 대개 이 상한보다 적어서(캡처된 수원대→병점은 4개) 상한은 사실상
+ * "제한을 두지 않는다"에 가깝다.
+ */
+export const ROUTE_CANDIDATE_LIMIT = 10;
+
+/**
+ * 안내 문장(guideMessage)을 만들어 줄 상위 후보 수.
+ *
+ * 후보 상한을 늘려도 OpenAI 입력이 그만큼 커지지 않도록 문장 생성은 상위 몇 개로
+ * 제한한다. 뒤 순위 후보는 응답의 routeNo·totalTime·intervalTime 을 근거로
+ * 안내하므로 문장을 미리 만들어 둘 필요가 없다.
+ */
+export const GUIDE_MESSAGE_LIMIT = 2;
+
+/**
  * 안내할 후보 선택은 서버가 끝낸다. OpenAI 경로에서도 모델이 다시 고르지 않게
  * 해서, 모델의 계산 편차와 무관하게 같은 입력이면 항상 같은 후보가 나오게 한다.
  *
@@ -129,7 +148,10 @@ function expectedTotalMinutes(route: Route): number {
  * (ODsay 가 같은 노선을 서로 다른 경로로 돌려주는 경우) 순서를 뒤집으면
  * 점수 비교도 받지 못한 채 느린 후보가 남을 수 있다.
  */
-export function selectRouteCandidates(candidates: Route[]): Route[] {
+export function selectRouteCandidates(
+  candidates: Route[],
+  limit: number = ROUTE_CANDIDATE_LIMIT,
+): Route[] {
   const sorted = candidates.slice().sort((a, b) => {
     const expectedDiff = expectedTotalMinutes(a) - expectedTotalMinutes(b);
     if (expectedDiff !== 0) return expectedDiff;
@@ -137,7 +159,7 @@ export function selectRouteCandidates(candidates: Route[]): Route[] {
     return (a.totalWalk ?? Number.MAX_SAFE_INTEGER) - (b.totalWalk ?? Number.MAX_SAFE_INTEGER);
   });
 
-  return uniqueRoutesByRouteNo(sorted).slice(0, 2);
+  return uniqueRoutesByRouteNo(sorted).slice(0, Math.max(0, limit));
 }
 
 function buildRouteGuideFallback(selectedRoutes: Route[]): RouteGuideResult {
@@ -201,7 +223,9 @@ export async function generateRouteGuide({
     return { selectedCandidates: [] };
   }
 
-  const selectedRoutes = selectRouteCandidates(candidates);
+  // 후보는 ROUTE_CANDIDATE_LIMIT 까지 순위를 매기지만, 안내 문장은 상위 몇 개만
+  // 만든다. 뒤 순위까지 문장을 만들면 후보 상한을 늘린 만큼 OpenAI 입력이 커진다.
+  const selectedRoutes = selectRouteCandidates(candidates).slice(0, GUIDE_MESSAGE_LIMIT);
   const fallbackResult = buildRouteGuideFallback(selectedRoutes);
   if (!client) {
     return fallbackResult;
