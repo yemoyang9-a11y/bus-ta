@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { Route } from "@bus-ta/shared";
-import { selectRouteCandidates } from "./guide.js";
+import { ROUTE_CANDIDATE_LIMIT, selectRouteCandidates } from "./guide.js";
 
 function buildRoute(overrides: Partial<Route> & Pick<Route, "candidateId" | "routeNo">): Route {
   return {
@@ -91,7 +91,7 @@ test("합산 점수가 같으면 도보 거리가 짧은 후보가 앞선다", (
   assert.equal(selected[0]?.routeNo, "가까운도보");
 });
 
-test("점수가 좋은 순서로 최대 2개만 선택한다", () => {
+test("점수가 좋은 순서로 정렬해서 돌려준다", () => {
   const routes = [
     buildRoute({ candidateId: 1, routeNo: "느림", totalTime: 40, intervalTime: 40 }), // 60
     buildRoute({ candidateId: 2, routeNo: "가장빠름", totalTime: 10, intervalTime: 10 }), // 15
@@ -101,10 +101,70 @@ test("점수가 좋은 순서로 최대 2개만 선택한다", () => {
 
   const selected = selectRouteCandidates(routes);
 
-  assert.equal(selected.length, 2);
   assert.deepEqual(
     selected.map((route) => route.routeNo),
-    ["가장빠름", "중간"],
+    ["가장빠름", "중간", "느림", "많이느림"],
+  );
+});
+
+// "다른 버스 없어요?" 에 재검색 없이 다음 순위를 안내하려면 상위 2개만 남기고
+// 버려서는 안 된다. 아래 세 테스트는 3위 이후가 (1) 사라지지 않고
+// (2) 점수 순서 그대로 오며 (3) 상한을 넘지 않는다는 것을 고정한다.
+test("3위 이후 후보도 버리지 않고 점수 순서 그대로 돌려준다", () => {
+  const routes = [
+    buildRoute({ candidateId: 1, routeNo: "5위", totalTime: 50, intervalTime: 20 }), // 60
+    buildRoute({ candidateId: 2, routeNo: "1위", totalTime: 10, intervalTime: 10 }), // 15
+    buildRoute({ candidateId: 3, routeNo: "4위", totalTime: 30, intervalTime: 30 }), // 45
+    buildRoute({ candidateId: 4, routeNo: "2위", totalTime: 20, intervalTime: 10 }), // 25
+    buildRoute({ candidateId: 5, routeNo: "3위", totalTime: 25, intervalTime: 20 }), // 35
+  ];
+
+  const selected = selectRouteCandidates(routes);
+
+  assert.deepEqual(
+    selected.map((route) => route.routeNo),
+    ["1위", "2위", "3위", "4위", "5위"],
+  );
+});
+
+test("후보가 상한보다 많으면 상한까지만 돌려주고 그 순서도 점수순이다", () => {
+  // 점수를 일부러 뒤섞어 넣는다. 상한으로 자르기 전에 정렬이 끝나 있어야
+  // 잘려 나가는 쪽이 항상 점수가 나쁜 후보가 된다.
+  const routes = Array.from({ length: ROUTE_CANDIDATE_LIMIT + 5 }, (_unused, index) => {
+    const rank = (index * 7) % (ROUTE_CANDIDATE_LIMIT + 5); // 0..14 를 뒤섞은 순열
+    return buildRoute({
+      candidateId: index + 1,
+      routeNo: `순위${String(rank).padStart(2, "0")}`,
+      totalTime: rank,
+      intervalTime: 0,
+    });
+  });
+
+  const selected = selectRouteCandidates(routes);
+
+  assert.equal(selected.length, ROUTE_CANDIDATE_LIMIT);
+  assert.deepEqual(
+    selected.map((route) => route.routeNo),
+    Array.from({ length: ROUTE_CANDIDATE_LIMIT }, (_unused, i) => `순위${String(i).padStart(2, "0")}`),
+  );
+});
+
+test("중복 제거 후 상한보다 적게 남으면 남은 만큼만 돌려준다", () => {
+  // 실제 캡처(수원대→병점)에서 서로 다른 노선은 34, 34-1, 46, 1000 네 개였다.
+  // 상한이 10이어도 없는 후보를 만들어 채우지 않는다.
+  const routes = [
+    buildRoute({ candidateId: 1, routeNo: "34", totalTime: 26, intervalTime: 30 }), // 41
+    buildRoute({ candidateId: 2, routeNo: "34", totalTime: 90, intervalTime: 30 }), // 중복
+    buildRoute({ candidateId: 3, routeNo: "34-1", totalTime: 28, intervalTime: 40 }), // 48
+    buildRoute({ candidateId: 4, routeNo: "46", totalTime: 30, intervalTime: 60 }), // 60
+    buildRoute({ candidateId: 5, routeNo: "1000", totalTime: 18, intervalTime: 50 }), // 43
+  ];
+
+  const selected = selectRouteCandidates(routes);
+
+  assert.deepEqual(
+    selected.map((route) => route.routeNo),
+    ["34", "1000", "34-1", "46"],
   );
 });
 
@@ -141,7 +201,7 @@ test("같은 노선 번호 중에서는 느린 후보가 앞에 와도 빠른 �
   assert.equal(selected[0]?.totalTime, 15);
 });
 
-test("중복 노선이 밀려나도 다른 노선으로 2개를 채운다", () => {
+test("중복 노선이 밀려나도 그 자리를 다른 노선이 채운다", () => {
   const routes = [
     buildRoute({ candidateId: 1, routeNo: "34", totalTime: 90, intervalTime: 10 }), // 95
     buildRoute({ candidateId: 2, routeNo: "34", totalTime: 10, intervalTime: 10 }), // 15
@@ -151,9 +211,11 @@ test("중복 노선이 밀려나도 다른 노선으로 2개를 채운다", () =
 
   const selected = selectRouteCandidates(routes);
 
+  // 중복으로 지워진 34번(candidateId 1)이 빈자리로 남지 않고 36번까지 이어진다.
   assert.deepEqual(
     selected.map((route) => route.routeNo),
-    ["34", "35"],
+    ["34", "35", "36"],
   );
+  // 같은 34번 중에서는 느린 쪽(candidateId 1)이 아니라 빠른 쪽이 살아남는다.
   assert.equal(selected[0]?.candidateId, 2);
 });
