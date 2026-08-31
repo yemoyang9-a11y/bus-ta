@@ -307,7 +307,10 @@ export default function RidingScreen({ route, navigation }) {
     return (
       <View style={styles.container}>
         <Text style={styles.title}>{screenTitle}</Text>
+        <Text style={styles.subtitle}>지정한 목적지까지 안전하게 안내합니다.</Text>
+
         <View style={styles.guideBox}>
+          <Text style={styles.guideIcon}>🔊</Text>
           <Text style={styles.guideText}>{status.guideMessage}</Text>
         </View>
       </View>
@@ -317,23 +320,35 @@ export default function RidingScreen({ route, navigation }) {
   return (
     <View style={styles.container}>
       <Text style={styles.title}>{screenTitle}</Text>
+      <Text style={styles.subtitle}>지정한 목적지까지 안전하게 안내합니다.</Text>
 
       <View style={styles.infoBox}>
-        <Text style={styles.label}>현재 정류장</Text>
+        <View style={styles.labelRow}>
+          <Text style={styles.labelIcon}>📍</Text>
+          <Text style={styles.label}>현재 정류장</Text>
+        </View>
         <Text style={styles.stationName}>{status.currentStation.stationName}</Text>
       </View>
 
-      <View style={styles.infoBox}>
-        <Text style={styles.label}>다음 정류장</Text>
+      {/* 다음 정류장 — 노란 테두리로 강조 */}
+      <View style={[styles.infoBox, styles.infoBoxHighlight]}>
+        <View style={styles.labelRow}>
+          <Text style={styles.labelIcon}>➡️</Text>
+          <Text style={[styles.label, styles.labelOnHighlight]}>다음 정류장</Text>
+        </View>
         <Text style={styles.stationName}>{status.nextStation.stationName}</Text>
       </View>
 
       <View style={styles.remainBox}>
-        <Text style={styles.remainText}>남은 정류장</Text>
+        <View style={styles.labelRow}>
+          <Text style={styles.labelIcon}>ℹ️</Text>
+          <Text style={styles.remainText}>남은 정류장</Text>
+        </View>
         <Text style={styles.remainCount}>{status.remainingStations}</Text>
       </View>
 
       <View style={styles.guideBox}>
+        <Text style={styles.guideIcon}>🔊</Text>
         <Text style={styles.guideText}>{status.guideMessage}</Text>
       </View>
 
@@ -349,66 +364,125 @@ export default function RidingScreen({ route, navigation }) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#fff',
+    backgroundColor: '#0A0C10',
     padding: 20,
   },
+
   title: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    marginBottom: 30,
-    textAlign: 'center',
+    fontSize: 26,
+    fontWeight: '800',
+    color: '#FFD400',
+    textAlign: 'left',
+    marginBottom: 4,
   },
+
+  subtitle: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: '#9CA3AF',
+    marginBottom: 20,
+  },
+
   infoBox: {
-    backgroundColor: '#f5f5f5',
-    padding: 15,
-    borderRadius: 10,
-    marginBottom: 15,
+    backgroundColor: '#15181F',
+    borderWidth: 1,
+    borderColor: '#2A2E37',
+    padding: 18,
+    borderRadius: 16,
+    marginBottom: 14,
   },
+
+  infoBoxHighlight: {
+    borderColor: '#FFD400',
+    borderWidth: 1.5,
+  },
+
+  labelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 6,
+  },
+
+  labelIcon: {
+    fontSize: 13,
+    marginRight: 6,
+  },
+
   label: {
     fontSize: 13,
-    color: '#888',
-    marginBottom: 5,
+    fontWeight: '600',
+    color: '#9CA3AF',
   },
+
+  labelOnHighlight: {
+    color: '#FFD400',
+  },
+
   stationName: {
     fontSize: 22,
-    fontWeight: 'bold',
+    fontWeight: '800',
+    color: '#FFFFFF',
   },
+
   remainBox: {
-    backgroundColor: '#E3F2FD',
-    padding: 15,
-    borderRadius: 10,
-    marginBottom: 15,
+    backgroundColor: '#15181F',
+    borderWidth: 1,
+    borderColor: '#2A2E37',
+    padding: 18,
+    borderRadius: 16,
+    marginBottom: 14,
     alignItems: 'center',
   },
+
   remainText: {
     fontSize: 14,
-    color: '#555',
+    color: '#9CA3AF',
+    fontWeight: '600',
   },
+
   remainCount: {
     fontSize: 40,
-    fontWeight: 'bold',
-    color: '#2196F3',
+    fontWeight: '800',
+    color: '#FFD400',
   },
+
   guideBox: {
-    backgroundColor: '#FFF9C4',
-    padding: 15,
-    borderRadius: 10,
-    marginBottom: 15,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFC400',
+    padding: 18,
+    borderRadius: 16,
+    borderWidth: 3,
+    borderColor: '#FFFFFF',
+    marginBottom: 14,
   },
+
+  guideIcon: {
+    fontSize: 18,
+    marginRight: 10,
+  },
+
   guideText: {
-    fontSize: 16,
-    color: '#333',
+    flex: 1,
+    fontSize: 17,
+    lineHeight: 24,
+    fontWeight: '700',
+    color: '#111111',
   },
+
   prepareBox: {
-    backgroundColor: '#FFE0B2',
-    padding: 12,
-    borderRadius: 10,
-    marginBottom: 15,
+    backgroundColor: '#2A1A0A',
+    borderWidth: 2,
+    borderColor: '#E65100',
+    padding: 14,
+    borderRadius: 16,
+    marginBottom: 14,
     alignItems: 'center',
   },
+
   prepareText: {
     fontSize: 16,
-    color: '#E65100',
-    fontWeight: 'bold',
+    color: '#FFA766',
+    fontWeight: '800',
   },
 });

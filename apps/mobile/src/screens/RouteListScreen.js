@@ -114,8 +114,8 @@ export default function RouteListScreen({ navigation }) {
   if (loading) {
     return (
       <View style={styles.container}>
-        <ActivityIndicator size="large" color="#2196F3" />
-        <Text style={{ marginTop: 20 }}>운행을 준비하는 중...</Text>
+        <ActivityIndicator size="large" color="#FFD400" />
+        <Text style={{ marginTop: 20, color: '#FFFFFF' }}>운행을 준비하는 중...</Text>
       </View>
     );
   }
@@ -137,19 +137,32 @@ export default function RouteListScreen({ navigation }) {
       <FlatList
         data={routeCandidates}
         keyExtractor={(item) => String(item.candidateId)}
-        renderItem={({ item }) => (
-          <TouchableOpacity style={styles.routeCard} onPress={() => selectRoute(item)}>
-            <Text style={styles.routeNo}>{item.routeNo}번</Text>
-            <Text style={styles.routeInfo}>탑승 정류장: {item.boardingStation.stationName}</Text>
-            <Text style={styles.routeInfo}>하차 정류장: {item.destinationStation.stationName}</Text>
-            {item.totalTime && (
-              <Text style={styles.routeInfo}>예상 소요 시간: {item.totalTime}분</Text>
-            )}
-            {item.recommendationReason && (
-              <Text style={styles.routeReason}>{item.recommendationReason}</Text>
-            )}
-          </TouchableOpacity>
-        )}
+        renderItem={({ item, index }) => {
+          // 카드마다 강조색을 번갈아 사용 — 텍스트/기능은 그대로, 시각적 구분만 추가
+          const accentColor = index % 2 === 0 ? '#FFD400' : '#2F8FFF';
+
+          return (
+            <TouchableOpacity
+              style={[styles.routeCard, { borderColor: accentColor }]}
+              onPress={() => selectRoute(item)}
+            >
+              <View style={[styles.routeAccentBar, { backgroundColor: accentColor }]} />
+              <View style={styles.routeCardContent}>
+                <Text style={styles.routeNo}>{item.routeNo}번</Text>
+                <Text style={styles.routeInfo}>탑승 정류장: {item.boardingStation.stationName}</Text>
+                <Text style={styles.routeInfo}>하차 정류장: {item.destinationStation.stationName}</Text>
+                {item.totalTime && (
+                  <Text style={styles.routeInfo}>예상 소요 시간: {item.totalTime}분</Text>
+                )}
+                {item.recommendationReason && (
+                  <Text style={[styles.routeReason, { color: accentColor }]}>
+                    {item.recommendationReason}
+                  </Text>
+                )}
+              </View>
+            </TouchableOpacity>
+          );
+        }}
       />
     </View>
   );
@@ -158,55 +171,75 @@ export default function RouteListScreen({ navigation }) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#fff',
+    backgroundColor: '#0A0C10',
     padding: 20,
   },
+
   routeCard: {
-    backgroundColor: '#f5f5f5',
+    flexDirection: 'row',
+    backgroundColor: '#15181F',
+    borderRadius: 18,
+    marginBottom: 16,
+    borderWidth: 2,
+    overflow: 'hidden',
+  },
+
+  // 카드 왼쪽 컬러 바 — 목업의 굵은 좌측 강조선
+  routeAccentBar: {
+    width: 6,
+  },
+
+  routeCardContent: {
+    flex: 1,
     padding: 20,
-    borderRadius: 10,
-    marginBottom: 15,
-    borderLeftWidth: 5,
-    borderLeftColor: '#2196F3',
   },
+
   routeNo: {
-    fontSize: 22,
-    fontWeight: 'bold',
-    marginBottom: 8,
+    fontSize: 24,
+    fontWeight: '800',
+    color: '#FFFFFF',
+    marginBottom: 10,
   },
+
   routeInfo: {
-    fontSize: 14,
-    color: '#555',
+    fontSize: 15,
+    lineHeight: 22,
+    color: '#B8BFC9',
     marginBottom: 4,
   },
+
   routeReason: {
-    fontSize: 13,
-    color: '#2196F3',
+    fontSize: 14,
     marginTop: 8,
+    fontWeight: '700',
     fontStyle: 'italic',
   },
+
   emptyContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#fff',
+    backgroundColor: '#0A0C10',
     padding: 20,
   },
+
   emptyText: {
     fontSize: 18,
-    color: '#555',
+    color: '#B8BFC9',
     marginBottom: 30,
     textAlign: 'center',
   },
+
   backButton: {
-    backgroundColor: '#2196F3',
+    backgroundColor: '#FFC400',
     padding: 15,
-    borderRadius: 10,
+    borderRadius: 12,
     alignItems: 'center',
     width: 200,
   },
+
   backButtonText: {
-    color: '#fff',
+    color: '#111111',
     fontSize: 16,
     fontWeight: 'bold',
   },
