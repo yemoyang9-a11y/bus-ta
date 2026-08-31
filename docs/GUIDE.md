@@ -11,7 +11,7 @@
 
 | 함수명 | 역할 | OpenAI 사용 |
 |---|---|---|
-| selectRouteCandidates | 노선 후보 최대 2개 선택 | X |
+| selectRouteCandidates | 노선 후보를 점수순으로 정렬해 상한까지 반환 | X |
 | generateRouteGuide | 선택된 후보의 안내 문장 생성 | O, 키 없으면 fallback |
 | generateTripStartGuide | 탑승 대기 안내 문장 생성 | O, 키 없으면 fallback |
 | generateMovingGuide | 이동 중 안내 문장 생성 | O, 키 없으면 fallback |
@@ -30,9 +30,24 @@
    - `totalTime` 또는 `intervalTime` 이 없는 후보는 후순위로 보낸다.
      누락 값을 0분으로 보면 정보가 없다는 이유로 오히려 유리해지기 때문이다.
 2. 예상 총 소요시간이 같으면 `totalWalk` 가 짧은 순
-3. 위 순서로 정렬한 뒤에 같은 `routeNo` 를 하나만 남기고, 앞에서부터 최대 2개까지 선택
+3. 위 순서로 정렬한 뒤에 같은 `routeNo` 를 하나만 남기고, 앞에서부터
+   `ROUTE_CANDIDATE_LIMIT`(10) 까지 반환
    - 중복 제거를 정렬보다 먼저 하면, 같은 노선이 여러 경로로 올라올 때 점수 비교도
      받지 못한 채 느린 후보가 남을 수 있으므로 순서를 바꾸지 않는다.
+   - 상위 2개만 남기고 버리지 않는 이유는, 사용자가 "다른 버스 없어요?" 라고 했을 때
+     재검색 없이 다음 순위를 안내해야 하기 때문이다. 중복 제거 후 실제로 남는 노선은
+     대개 상한보다 적다(실측 캡처 수원대→병점은 34·34-1·46·1000 네 개).
+
+## 안내 문장 생성 범위
+
+후보 상한을 늘려도 OpenAI 입력이 그만큼 커지지 않도록, 안내 문장은 상위
+`GUIDE_MESSAGE_LIMIT`(2) 개까지만 만든다. 뒤 순위 후보는 응답의 `routeNo`,
+`totalTime`, `intervalTime` 을 근거로 안내하면 되므로 문장을 미리 만들지 않는다.
+
+> 현재 `generateRouteGuide` 는 전달받은 후보에 대해 내부에서 `selectRouteCandidates`
+> 를 호출하고 상위 `GUIDE_MESSAGE_LIMIT` 개로 자른다. 공개 응답을 상한까지 넓히는
+> 후속 작업에서는 호출측(`search-routes.service.ts`)이 순위 목록을 받아 상위 2개만
+> 넘기고 `candidateId` 로 병합하므로, 이 내부 호출과 절단은 그때 빠진다.
 
 ## 호출 위치
 
