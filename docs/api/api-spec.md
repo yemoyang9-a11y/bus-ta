@@ -27,7 +27,7 @@
 
 ## 상태 전환 규칙
 
-- `tripStatus`: `WAITING_BUS -> ON_BUS -> NEAR_DESTINATION -> TRIP_DONE`
+- `tripStatus`: `WAITING_BUS -> ON_BUS -> NEAR_DESTINATION -> TRIP_DONE`, 또는 사용자 종료 시 `CANCELLED`
 - `bellStatus`: `NOT_REQUESTED -> PENDING -> SUCCESS/FAIL`
 - `GET /api/trips/{tripId}/status`는 조회 전용이며 상태를 바꾸지 않는다.
 - `PATCH /api/trips/{tripId}/status`에서 `remainingStations = 1`이고 `bellStatus = NOT_REQUESTED`이면 백엔드가 `bellRequestId`와 `STOP_REQUEST`를 생성하고 `bellStatus = PENDING`으로 변경한다.

@@ -35,6 +35,8 @@ export type SearchRoutesResult =
   | { httpStatus: 502; body: SearchRoutesErrorBody };
 
 const defaultNow = () => new Date().toISOString();
+const ROUTE_CANDIDATE_LIMIT = 5;
+const GUIDED_ROUTE_LIMIT = 2;
 
 /**
  * 502 로 응답하기 전에 실패 원인을 남긴다.
@@ -53,29 +55,17 @@ function logRouteSearchFailure(error: unknown): void {
 }
 
 function attachGuideMessages(routes: Route[], guideResult: RouteGuideResult): Route[] {
-  const routeById = new Map(routes.map((route) => [route.candidateId, route]));
-  const selectedRoutes = guideResult.selectedCandidates
-    .flatMap((selected): Route[] => {
-      const route = routeById.get(selected.candidateId);
-      if (!route) return [];
-      const { recommendationReason: _recommendationReason, ...routeWithoutReason } = route;
+  const guideByCandidateId = new Map(
+    guideResult.selectedCandidates.map((selected) => [selected.candidateId, selected.guideMessage]),
+  );
 
-      return [
-        {
-          ...routeWithoutReason,
-          guideMessage: selected.guideMessage,
-        },
-      ];
-    })
-    .slice(0, 2);
+  return routes.map((route, index) => {
+    const { recommendationReason: _recommendationReason, guideMessage: _guideMessage, ...routeWithoutGuide } =
+      route;
+    const guideMessage =
+      index < GUIDED_ROUTE_LIMIT ? guideByCandidateId.get(route.candidateId) : undefined;
 
-  if (selectedRoutes.length > 0) {
-    return selectedRoutes;
-  }
-
-  return routes.slice(0, 2).map((route) => {
-    const { recommendationReason: _recommendationReason, ...routeWithoutReason } = route;
-    return routeWithoutReason;
+    return guideMessage ? { ...routeWithoutGuide, guideMessage } : routeWithoutGuide;
   });
 }
 
@@ -121,13 +111,14 @@ export async function searchRoutes(
     };
   }
 
+  const rankedRoutes = routes.slice(0, ROUTE_CANDIDATE_LIMIT);
   const guideRoutes =
-    routes.length > 0
+    rankedRoutes.length > 0
       ? attachGuideMessages(
-          routes,
+          rankedRoutes,
           await (dependencies.generateRouteGuide ?? generateRouteGuide)({
             destination: parsed.data.destination,
-            candidates: routes,
+            candidates: rankedRoutes.slice(0, GUIDED_ROUTE_LIMIT),
           }),
         )
       : [];

@@ -27,42 +27,57 @@ test("returns guided route candidates for a valid request", async () => {
   assert.equal(result.body.success, true);
   assert.deepEqual(
     result.body.routes.map((route) => route.candidateId),
-    [2, 1],
+    [1, 2],
   );
   assert.deepEqual(
     result.body.routes.map((route) => route.guideMessage),
-    ["2번 후보 안내입니다.", "1번 후보 안내입니다."],
+    ["1번 후보 안내입니다.", "2번 후보 안내입니다."],
   );
   assert.equal(result.body.routes[0]?.recommendationReason, undefined);
 });
 
-test("limits guided route candidates to at most 2", async () => {
+test("returns the top 5 routes in ranked order and guides only the top 2", async () => {
   const baseRoutes = await mockSearchRoutes(validRequest);
   const firstRoute = baseRoutes[0];
   assert.ok(firstRoute);
 
-  const routes: Route[] = [
-    ...baseRoutes,
-    { ...firstRoute, candidateId: 3, routeNo: "3" },
-  ];
+  const routes: Route[] = Array.from({ length: 6 }, (_, index) => ({
+    ...firstRoute,
+    candidateId: index + 1,
+    routeNo: String(index + 1),
+    guideMessage: "stale guide should not leak",
+  }));
+  let searchCallCount = 0;
+  let guidedCandidateIds: number[] = [];
 
   const result = await searchRoutes(validRequest, {
-    searchRoutes: async () => routes,
-    generateRouteGuide: async () => ({
-      selectedCandidates: [
-        { candidateId: 1, guideMessage: "1번 후보 안내입니다." },
-        { candidateId: 2, guideMessage: "2번 후보 안내입니다." },
-        { candidateId: 3, guideMessage: "3번 후보 안내입니다." },
-      ],
-    }),
+    searchRoutes: async () => {
+      searchCallCount += 1;
+      return routes;
+    },
+    generateRouteGuide: async ({ candidates }) => {
+      guidedCandidateIds = candidates.map((candidate) => candidate.candidateId);
+      return {
+        selectedCandidates: [
+          { candidateId: 1, guideMessage: "1번 후보 안내입니다." },
+          { candidateId: 2, guideMessage: "2번 후보 안내입니다." },
+        ],
+      };
+    },
   });
 
   assert.equal(result.httpStatus, 200);
   if (result.httpStatus !== 200) return;
-  assert.equal(result.body.routes.length, 2);
+  assert.equal(result.body.routes.length, 5);
   assert.deepEqual(
     result.body.routes.map((route) => route.candidateId),
-    [1, 2],
+    [1, 2, 3, 4, 5],
+  );
+  assert.deepEqual(guidedCandidateIds, [1, 2]);
+  assert.equal(searchCallCount, 1);
+  assert.deepEqual(
+    result.body.routes.map((route) => route.guideMessage),
+    ["1번 후보 안내입니다.", "2번 후보 안내입니다.", undefined, undefined, undefined],
   );
 });
 
