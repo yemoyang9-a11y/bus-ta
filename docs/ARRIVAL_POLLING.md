@@ -108,7 +108,8 @@ GBIS는 요청이 잘못돼도 HTTP 200으로 응답하고 `msgHeader.resultCode
 | 값 | 뜻 | 안내 방향 |
 |---|---|---|
 | `AVAILABLE` | 조회 성공, 안내할 차량 있음 | 도착 시간을 그대로 안내 |
-| `NO_VEHICLE` | 조회 성공, 지금 오는 차 없음 | "지금 오는 차가 없다"고 안내 가능 |
+| `NO_VEHICLE` | 조회 성공, 이 노선 레코드 자체가 없음 | "지금 오는 차가 없다"고 안내 가능 |
+| `NO_PREDICTION` | 레코드는 있는데 예상 도착 시간이 없음 | **차가 없다고 단정하지 않는다.** "도착시간 정보를 확인할 수 없다"로 안내 |
 | `UPSTREAM_ERROR` | 조회 실패 또는 방향 확인 불가 | **차가 없다고 단정하지 않는다.** "지금은 확인이 안 된다"로 안내 |
 
 `occupancy.type`의 `UNAVAILABLE`과는 층이 다르다. 저건 "그 차량의 혼잡도를 모른다"는 뜻이라
@@ -117,8 +118,10 @@ GBIS는 요청이 잘못돼도 HTTP 200으로 응답하고 `msgHeader.resultCode
 ### 어떤 경우가 어떤 값이 되는가
 
 - `AVAILABLE` — 방향까지 확인된 레코드가 있고 `predictTime`이 유효하다.
-- `NO_VEHICLE` — GBIS 응답에 이 노선 레코드가 없거나, 방향은 확정됐는데 그 방향 레코드가 없거나,
-  레코드는 있는데 `predictTime`이 전부 비어 있다.
+- `NO_VEHICLE` — GBIS 응답에 이 노선 레코드가 없거나, 방향은 확정됐는데 그 방향 레코드가 없다.
+- `NO_PREDICTION` — 레코드는 있는데 `predictTime`이 전부 비어 있다. **GBIS 공식 문서에서 빈
+  `predictTime`이 "차량 없음"을 뜻한다고 확인한 적이 없고, 실제 캡처에도 두 순번이 모두 빈 사례가
+  없다.** 확인된 사실은 "도착시간 정보가 없다"까지이므로 `NO_VEHICLE`과 분리한다.
 - `UPSTREAM_ERROR` — GBIS 호출이 실패했거나(네트워크·타임아웃·`resultCode ≠ 0`),
   경유정류소를 확인하지 못해 fail closed 됐거나, 목적지가 노선에 없어 방향을 확정하지 못했다.
 
@@ -129,7 +132,11 @@ GBIS는 요청이 잘못돼도 HTTP 200으로 응답하고 `msgHeader.resultCode
 
 ### 예시 응답 (유나·채린 참고용)
 
-백엔드 연결을 기다리지 않고 먼저 개발할 수 있도록 세 경우의 형태를 적어 둔다.
+백엔드 연결을 기다리지 않고 먼저 개발할 수 있도록 각 경우의 형태를 적어 둔다.
+
+> 아래는 **어댑터 내부 반환 형태**다. 공개 API 필드명과 Zod Schema는 팀 계약 확정 후
+> `packages/shared`에 반영한다. 지금 서버 어댑터에만 있는 `ArrivalStatus`·`ArrivalInfoResult`
+> 타입도 `GET /status` 공개 응답에 연결할 때 함께 옮긴다.
 
 ```jsonc
 // AVAILABLE — 두 번째 차량은 있을 수도, 없을 수도 있다
@@ -141,9 +148,15 @@ GBIS는 요청이 잘못돼도 HTTP 200으로 응답하고 `msgHeader.resultCode
   ]
 }
 
-// NO_VEHICLE — 조회는 됐고 지금 오는 차가 없다
+// NO_VEHICLE — 조회는 됐고 이 노선 레코드가 없다. 지금 오는 차가 없다
 {
   "arrivalStatus": "NO_VEHICLE",
+  "arrivals": []
+}
+
+// NO_PREDICTION — 레코드는 있는데 도착시간이 없다. "차가 없다"고 말하면 안 된다
+{
+  "arrivalStatus": "NO_PREDICTION",
   "arrivals": []
 }
 

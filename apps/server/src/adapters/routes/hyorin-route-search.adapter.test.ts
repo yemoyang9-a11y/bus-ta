@@ -1014,7 +1014,10 @@ test("3번 계약: 조회는 됐는데 이 노선 레코드가 없으면 NO_VEHI
   assert.deepEqual(info.arrivals, []);
 });
 
-test("3번 계약: predictTime 이 전부 비어 있으면 NO_VEHICLE 이다", async (t) => {
+test("3번 계약: 레코드는 있는데 predictTime 이 비면 NO_VEHICLE 이 아니라 NO_PREDICTION 이다", async (t) => {
+  // GBIS 공식 문서에서 빈 predictTime 이 "차량 없음"을 뜻한다고 확인한 적이 없고,
+  // 실제 캡처에도 두 순번이 모두 빈 사례가 없다. 확인된 사실은 "도착시간 정보가
+  // 없다"까지다. 근거 없이 "오는 버스가 없습니다"라고 안내하면 사용자가 정류장을 떠난다.
   stubGbisArrivalItemsAndRoute(t, [
     syntheticArrivalItem({ routeId: 233000281, staOrder: 128, predictTime1: "", predictTime2: "" }),
   ]);
@@ -1024,8 +1027,43 @@ test("3번 계약: predictTime 이 전부 비어 있으면 NO_VEHICLE 이다", a
     destinationStation: DESTINATION_AFTER_TURN_POINT,
   });
 
-  assert.equal(info.arrivalStatus, "NO_VEHICLE");
+  assert.equal(info.arrivalStatus, "NO_PREDICTION");
   assert.deepEqual(info.arrivals, []);
+});
+
+test("3번 계약: 경유정류소 응답이 비어도 UPSTREAM_ERROR 이고 원인이 로그에 남는다", async (t) => {
+  // lookupRouteStations 가 예외를 던지는 경우 말고, 정상 응답인데 목록만 빈 경우다.
+  // 둘 다 "방향을 확인하지 못함"이라 같은 상태여야 한다.
+  const logged: string[] = [];
+  t.mock.method(console, "error", (...args: unknown[]) => {
+    logged.push(args.map((arg) => String(arg)).join(" "));
+  });
+  t.mock.method(axios, "get", async (url: string) => {
+    if (url.includes("busarrivalservice")) return { data: gbisArrivalFixture };
+    if (url.includes("busrouteservice")) {
+      return {
+        data: {
+          response: {
+            msgHeader: { resultCode: 0, resultMessage: "정상적으로 처리되었습니다." },
+            msgBody: {},
+          },
+        },
+      };
+    }
+    throw new Error(`이 테스트에서 예상하지 못한 axios.get 호출: ${url}`);
+  });
+
+  const info = await getArrivalInfo({
+    ...arrivalCandidate("233000281"),
+    destinationStation: DESTINATION_AFTER_TURN_POINT,
+  });
+
+  assert.equal(info.arrivalStatus, "UPSTREAM_ERROR");
+  assert.deepEqual(info.arrivals, []);
+  assert.ok(
+    logged.some((line) => line.includes("경유정류소를 확인하지 못해")),
+    `방향 검증 불가도 원인이 남아야 한다 (관측: ${logged.join(" | ")})`,
+  );
 });
 
 test("3번 계약: 네트워크 오류는 NO_VEHICLE 이 아니라 UPSTREAM_ERROR 다", async (t) => {

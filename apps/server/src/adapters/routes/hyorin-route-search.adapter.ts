@@ -484,8 +484,16 @@ function resolveDirectionalStaOrder(
 export const ARRIVAL_STATUS = {
   /** 조회에 성공했고 안내할 도착 차량이 있다. */
   AVAILABLE: "AVAILABLE",
-  /** 조회에 성공했는데 지금 오는 차가 없다. */
+  /** 조회에 성공했고 이 노선 레코드 자체가 없다 = 지금 오는 차가 없다. */
   NO_VEHICLE: "NO_VEHICLE",
+  /**
+   * 레코드는 있는데 예상 도착 시간이 없다.
+   *
+   * "오는 차가 없다"와 다르다. GBIS 공식 문서에서 빈 predictTime 이 차량 없음을
+   * 뜻한다고 확인한 적이 없고, 실제 캡처에도 두 순번이 모두 빈 사례가 없다.
+   * 근거 없이 "오는 버스가 없습니다"라고 안내하면 사용자가 정류장을 떠난다.
+   */
+  NO_PREDICTION: "NO_PREDICTION",
   /** 조회하지 못했거나 방향을 확인하지 못했다. "차가 없다"고 단정하면 안 된다. */
   UPSTREAM_ERROR: "UPSTREAM_ERROR",
 } as const;
@@ -573,6 +581,10 @@ export async function getArrivalInfo(
     // 반대 방향 도착정보를 그대로 안내하면 사용자가 반대편에서 버스를 기다리게
     // 되므로, 검증 불가 상태는 fail closed 로 처리한다(PR #33 리뷰 P1).
     // 이 경우는 "차가 없다"가 아니라 "확인하지 못했다"이므로 UPSTREAM_ERROR 다.
+    console.error(
+      "[trips/arrival] 경유정류소를 확인하지 못해 방향 검증 없이 안내하지 않는다",
+      `localBusId=${localBusId}`,
+    );
     return {
       gbisStationId,
       localBusId,
@@ -632,7 +644,9 @@ export async function getArrivalInfo(
     gbisStationId,
     localBusId,
     arrivals,
-    // 레코드는 왔는데 predictTime 이 전부 비어 있으면 안내할 차량이 없는 것이다.
-    arrivalStatus: arrivals.length > 0 ? ARRIVAL_STATUS.AVAILABLE : ARRIVAL_STATUS.NO_VEHICLE,
+    // 레코드는 왔는데 predictTime 이 전부 비어 있는 경우다. 차가 없다고 단정하지
+    // 않고 "도착시간 정보가 없다"로 구분한다.
+    arrivalStatus:
+      arrivals.length > 0 ? ARRIVAL_STATUS.AVAILABLE : ARRIVAL_STATUS.NO_PREDICTION,
   };
 }
