@@ -59,8 +59,12 @@ function buildFunctionResponseInstructions(name: RealtimeFunctionName): string {
     return `${common} success가 true인 서버 응답을 받은 경우에만 "탑승이 확인되었습니다. 하차까지 남은 정류장을 안내하겠습니다."라고 안내한다. success가 false이면 탑승이 확인됐다고 말하지 말고 result.message의 확인된 실패 원인만 짧게 안내한 뒤 다시 시도할지 묻는다. boardingMethod, boardingConfirmedAt, tripStatus 같은 내부 필드명은 읽지 않는다.`;
   }
 
+  // 예모님 확정(2026-08-27, 3번 "버스 놓침" 계약):
+  // WAITING_BUS일 때 get_trip_status 응답에 arrivals·arrivalStatus가 포함된다.
+  // arrivalStatus의 각 상태를 서로 다른 의미로 안내해야 하며,
+  // 조회 실패를 "버스가 없다"고 안내해서는 안 된다.
   if (name === "get_trip_status") {
-    return `${common} "버스를 놓쳤다"는 발화 뒤에 이 결과가 오면, 이전에 안내했던 도착 예정 시간을 반복하지 않고 이번 결과만 사용한다. arrivalStatus가 "AVAILABLE"이면 arrivals의 첫 항목으로 다음 차 도착 예정 시간을 안내한다. arrivalStatus가 "NO_VEHICLE"이면 지금은 운행 중인 차량이 없다고 안내하고 숫자를 만들어내지 않는다. arrivalStatus가 "UPSTREAM_ERROR"이면 일시적으로 도착정보를 확인할 수 없다고 안내하고 잠시 후 다시 물어봐 달라고 말한다. 이 발화만으로 운행 자체를 취소하지 않는다.`;
+    return `${common} "버스를 놓쳤다"는 발화 뒤에 이 결과가 오면, 이전에 안내했던 도착 예정 시간이나 앱이 기억하던 값을 반복하지 않고 이번 결과만 사용한다. arrivalStatus가 "AVAILABLE"이면 arrivals의 첫 항목으로 다음 차 도착 예정 시간을 안내한다. arrivalStatus가 "NO_VEHICLE"이면 "지금 이 정류장에 오는 OO번이 없습니다"라고 안내하고, 이때는 다른 노선을 제안해도 된다. arrivalStatus가 "NO_PREDICTION"이면 차량은 확인되지만 도착 예정 시간을 확인할 수 없다고 안내하고 숫자를 만들어내지 않는다. arrivalStatus가 "UPSTREAM_ERROR"이면 "지금은 도착 정보를 확인할 수 없습니다"라고만 안내하고, 이 경우 절대 "버스가 없다"거나 차량이 없다는 취지로 말하지 않는다. 이 발화만으로 운행 자체를 취소하지 않는다.`;
   }
 
   return common;
@@ -221,9 +225,8 @@ async function callBackendFunction(
     }
 
     case "get_trip_status": {
-      // refreshArrivals는 "버스 놓쳤어요" 발화에서만 모델이 붙인다.
-      // 일반 상태 조회에 붙으면 서버가 정한 갱신 주기를 우회하므로,
-      // 값만 검증한 뒤 서버에 그대로 전달한다.
+      // "버스 놓쳤어요"처럼 최신 도착정보가 필요한 경우에는
+      // refreshArrivals=true를 전달한다. 서버의 최소 갱신 간격 정책은 유지된다.
       const refreshArrivals =
         assertRecord(args).refreshArrivals === true;
 
@@ -326,13 +329,9 @@ async function assertRoutesSearchRequest(
 ): Promise<RoutesSearchRequest> {
   const value = assertRecord(args);
 
-  // 좌표는 모델이 지어낼 수 있는 값이라 Function 인자에서 받지 않고,
-  // 화면(GPS)이 갱신해 둔 실제 위치(getCurrentLocation)만 사용한다.
   let currentLocation = context.getCurrentLocation();
 
   if (!currentLocation) {
-    // Realtime 연결이 GPS보다 먼저 완료된 경우,
-    // 검색 시점에 실제 위치를 한 번 더 요청한다.
     await context.refreshCurrentLocation().catch(() => undefined);
     currentLocation = context.getCurrentLocation();
   }
