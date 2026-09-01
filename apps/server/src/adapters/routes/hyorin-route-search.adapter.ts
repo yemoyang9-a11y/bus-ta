@@ -1,5 +1,9 @@
 import axios, { type AxiosRequestConfig } from "axios";
 import type { ArrivalInfo, Occupancy, Route, RoutesSearchRequest } from "@bus-ta/shared";
+import {
+  ARRIVAL_STATUS,
+  type ArrivalStatus,
+} from "../../services/arrival/arrival-status.js";
 
 type UpstreamName = "KAKAO" | "ODSAY";
 
@@ -474,31 +478,6 @@ function resolveDirectionalStaOrder(
 //   arrivals 는 도착 순서대로 최대 2대
 // ─────────────────────────────────────────────
 
-/**
- * 도착정보 "조회 결과"의 상태. 도착 차량의 속성(occupancy.type)과는 다른 층이다.
- *
- * arrivals 가 빈 배열인 이유를 호출부가 구분하지 못하면, GBIS 장애를 "오는 차가
- * 없음"으로 안내하게 된다. 시각장애인 사용자가 그 안내를 듣고 정류장을 떠나면
- * 실제로는 오고 있던 버스를 놓친다. 두 경우는 반드시 다르게 안내해야 한다.
- */
-export const ARRIVAL_STATUS = {
-  /** 조회에 성공했고 안내할 도착 차량이 있다. */
-  AVAILABLE: "AVAILABLE",
-  /** 조회에 성공했고 이 노선 레코드 자체가 없다 = 지금 오는 차가 없다. */
-  NO_VEHICLE: "NO_VEHICLE",
-  /**
-   * 레코드는 있는데 예상 도착 시간이 없다.
-   *
-   * "오는 차가 없다"와 다르다. GBIS 공식 문서에서 빈 predictTime 이 차량 없음을
-   * 뜻한다고 확인한 적이 없고, 실제 캡처에도 두 순번이 모두 빈 사례가 없다.
-   * 근거 없이 "오는 버스가 없습니다"라고 안내하면 사용자가 정류장을 떠난다.
-   */
-  NO_PREDICTION: "NO_PREDICTION",
-  /** 조회하지 못했거나 방향을 확인하지 못했다. "차가 없다"고 단정하면 안 된다. */
-  UPSTREAM_ERROR: "UPSTREAM_ERROR",
-} as const;
-
-export type ArrivalStatus = (typeof ARRIVAL_STATUS)[keyof typeof ARRIVAL_STATUS];
 
 export interface ArrivalInfoResult {
   gbisStationId: string;
@@ -512,6 +491,11 @@ export interface ArrivalInfoResult {
  *
  * 오류 객체를 통째로 찍으면 AxiosError 의 config 에 실린 API 키가 로그로 샌다.
  * 진단에 필요한 값만 골라서 남긴다(searchRoutes 의 logRouteSearchFailure 와 같은 원칙).
+ *
+ * message 는 우리가 만든 오류(GbisResponseError·UpstreamRequestError)이거나 axios 의
+ * 상태 문구라 현재는 키를 담지 않는다. 다만 message 자체를 마스킹하지는 않으므로
+ * "어떤 경우에도 새지 않는다"고까지 보장하지는 않는다. 새 오류 유형을 이 경로로
+ * 흘릴 때는 그 message 에 비밀값이 들어가지 않는지 확인한다.
  */
 function logArrivalLookupFailure(localBusId: string, error: unknown): void {
   const detail = error as { resultCode?: unknown; status?: unknown; message?: unknown };

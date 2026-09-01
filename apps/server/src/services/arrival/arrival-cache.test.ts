@@ -408,3 +408,80 @@ test("차량이 없는 정상 응답은 NO_VEHICLE 로 캐시된다 — 실패�
   assert.equal(snapshot.arrivalStatus, "NO_VEHICLE");
   assert.deepEqual(snapshot.arrivals, [], "조회에 성공했으므로 null 이 아니라 빈 배열이다");
 });
+
+test("NO_PREDICTION 은 상태를 유지하되 최소 간격 뒤에 다시 조회한다", async () => {
+  // 레코드가 있다는 건 차가 배차돼 있다는 뜻이다. 빈 배열이라는 이유로 최대
+  // 간격(5분)을 잡으면, 잠시 뒤 예상 시간이 생겨도 그동안 안내하지 못한다.
+  let clock = 0;
+  let calls = 0;
+  const cache = new ArrivalCache(
+    async () => {
+      calls += 1;
+      return calls === 1
+        ? { arrivals: [], arrivalStatus: "NO_PREDICTION" as const }
+        : { arrivals: [arrival(3)], arrivalStatus: "AVAILABLE" as const };
+    },
+    { now: () => clock },
+  );
+
+  const first = await cache.get(TARGET);
+  assert.equal(first.arrivalStatus, "NO_PREDICTION");
+  assert.deepEqual(first.arrivals, [], "조회는 성공했으므로 null 이 아니라 빈 배열이다");
+  assert.equal(
+    first.nextRefreshInMs,
+    ARRIVAL_POLL_MIN_MS,
+    "최대 간격(5분)이 아니라 최소 간격으로 다시 확인해야 한다",
+  );
+
+  clock += ARRIVAL_POLL_MIN_MS - 1_000;
+  await cache.get(TARGET);
+  assert.equal(calls, 1, "최소 간격 안에는 다시 부르지 않는다");
+
+  clock += 2_000;
+  const recovered = await cache.get(TARGET);
+  assert.equal(calls, 2);
+  assert.equal(recovered.arrivalStatus, "AVAILABLE", "예상 시간이 생기면 바로 되찾는다");
+  assert.equal(recovered.predictedArrivalMinutes, 3);
+});
+
+test("NO_VEHICLE 은 기존대로 최대 간격을 유지한다 — NO_PREDICTION 과 다르다", async () => {
+  // 레코드 자체가 없는 경우는 미운행·심야처럼 한동안 값이 없는 것이 정상이다.
+  let clock = 0;
+  const cache = new ArrivalCache(
+    async () => ({ arrivals: [], arrivalStatus: "NO_VEHICLE" as const }),
+    { now: () => clock },
+  );
+
+  const snapshot = await cache.get(TARGET);
+
+  assert.equal(snapshot.arrivalStatus, "NO_VEHICLE");
+  assert.equal(snapshot.nextRefreshInMs, ARRIVAL_POLL_MAX_MS);
+});
+
+test("직전 값이 NO_VEHICLE 이어도 실패하면 UPSTREAM_ERROR 로 바뀐다", async () => {
+  // 실패 시 낡은 값 유지는 arrivals 가 빈 배열일 때도 적용된다. 그 결과
+  // "arrivalStatus: UPSTREAM_ERROR + arrivals: []" 조합이 나올 수 있다.
+  // 호출부는 배열이 비었는지가 아니라 arrivalStatus 를 보고 안내를 정해야 한다.
+  //
+  // NO_VEHICLE 의 갱신 주기는 최대 간격(5분)이라, 이 조합을 보려면 낡은 값 한도가
+  // 그보다 길어야 한다. 기본값(90초)에서는 한도가 먼저 지나 arrivals 가 null 이 된다.
+  let clock = 0;
+  let calls = 0;
+  const cache = new ArrivalCache(
+    async () => {
+      calls += 1;
+      return calls === 1
+        ? { arrivals: [], arrivalStatus: "NO_VEHICLE" as const }
+        : { arrivals: [], arrivalStatus: "UPSTREAM_ERROR" as const };
+    },
+    { now: () => clock, maxStaleMs: 6 * MINUTE },
+  );
+
+  await cache.get(TARGET);
+  clock += ARRIVAL_POLL_MAX_MS + 1_000; // 갱신 시점은 지났고 낡은 정도는 아직 한도 안이다
+  const failed = await cache.get(TARGET);
+
+  assert.equal(calls, 2);
+  assert.equal(failed.arrivalStatus, "UPSTREAM_ERROR");
+  assert.deepEqual(failed.arrivals, [], "빈 배열만 보고 '차가 없다'로 판단하면 안 된다");
+});

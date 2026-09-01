@@ -181,8 +181,21 @@ GBIS는 요청이 잘못돼도 HTTP 200으로 응답하고 `msgHeader.resultCode
 |---|---|
 | `arrivalStatus: AVAILABLE`, `arrivals: [...]` | 지금 확인한 값 |
 | `arrivalStatus: NO_VEHICLE`, `arrivals: []` | 지금 확인했고 오는 차가 없음 |
+| `arrivalStatus: NO_PREDICTION`, `arrivals: []` | 지금 확인했고 레코드는 있는데 예상 시간이 없음 |
 | `arrivalStatus: UPSTREAM_ERROR`, `arrivals: null` | 확인 못 했고 쓸 만한 직전 값도 없음 |
-| `arrivalStatus: UPSTREAM_ERROR`, `arrivals: [...]` | 확인 못 했지만 90초 안의 직전 값이 있음 |
+| `arrivalStatus: UPSTREAM_ERROR`, `arrivals: [...]` | 확인 못 했지만 `maxStaleMs` 안의 직전 값이 있음 |
+| `arrivalStatus: UPSTREAM_ERROR`, `arrivals: []` | 확인 못 했고 직전 값이 "차 없음"이었음 |
+
+**실패했을 때 `arrivals` 는 `null`·`[]`·기존 목록 어느 쪽도 될 수 있다.** 그러므로 안내 판단은
+배열이 비었는지가 아니라 **`arrivalStatus` 를 기준으로** 한다. 빈 배열을 보고 "오는 차가 없다"고
+안내하면, 실패했는데 직전 값이 없던 경우까지 차량 없음으로 둔갑한다.
+
+**갱신 주기는 상태에 따라 다르다.**
+
+- `NO_PREDICTION` — 최소 간격(20초). 레코드가 있다는 건 차가 배차돼 있다는 뜻이라,
+  잠시 뒤 예상 시간이 생길 수 있다. 빈 배열이라는 이유로 최대 간격을 잡으면 그동안 안내하지 못한다.
+- `NO_VEHICLE` — 최대 간격(5분). 미운행·심야처럼 한동안 값이 없는 것이 정상인 경우다.
+- `UPSTREAM_ERROR` — 최소 간격(20초). 정상 값을 빨리 되찾는 편이 안전하다.
 
 ### 아직 정하지 않은 것
 

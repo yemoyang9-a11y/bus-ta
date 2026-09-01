@@ -1,8 +1,5 @@
 import type { ArrivalInfo } from "@bus-ta/shared";
-import {
-  ARRIVAL_STATUS,
-  type ArrivalStatus,
-} from "../../adapters/routes/hyorin-route-search.adapter.js";
+import { ARRIVAL_STATUS, type ArrivalStatus } from "./arrival-status.js";
 import { ARRIVAL_POLL_MIN_MS, nextArrivalPollDelayMs } from "./arrival-poll-policy.js";
 
 /**
@@ -135,10 +132,19 @@ export class ArrivalCache {
       }
 
       const arrivals = result.arrivals;
+      // NO_PREDICTION 은 "차가 없다"가 아니라 "레코드는 있는데 예상 시간만 비었다"이다.
+      // 빈 배열이라는 이유로 최대 간격(5분)을 잡으면, 잠시 뒤 예상 시간이 생겨도
+      // 그동안 안내하지 못한다. 이 상태만 최소 간격으로 다시 확인한다.
+      // NO_VEHICLE(레코드 자체가 없음)은 기존대로 최대 간격을 유지한다 — 미운행·
+      // 심야처럼 한동안 값이 없는 것이 정상인 경우다.
+      const refreshDelay =
+        result.arrivalStatus === ARRIVAL_STATUS.NO_PREDICTION
+          ? ARRIVAL_POLL_MIN_MS
+          : nextArrivalPollDelayMs(readPredictedArrivalMinutes(arrivals));
       const entry: CacheEntry = {
         arrivals,
         fetchedAt: at,
-        refreshAfter: at + nextArrivalPollDelayMs(readPredictedArrivalMinutes(arrivals)),
+        refreshAfter: at + refreshDelay,
         arrivalStatus: result.arrivalStatus,
       };
 
