@@ -486,3 +486,211 @@ test("직전 값이 NO_VEHICLE 이어도 실패하면 UPSTREAM_ERROR 로 바뀐�
   assert.equal(failed.arrivalStatus, "UPSTREAM_ERROR");
   assert.deepEqual(failed.arrivals, [], "빈 배열만 보고 '차가 없다'로 판단하면 안 된다");
 });
+
+// ─────────────────────────────────────────────
+// 강제 재조회(refresh) — "버스 놓쳤어요"처럼 사용자가 최신 값을 명시적으로
+// 요구한 경우에 쓴다. 갱신 시점 전이라도 다시 조회하되, 남발되면 GBIS 호출이
+// 그대로 늘어나므로 최소 간격은 하한으로 지킨다.
+// ─────────────────────────────────────────────
+
+test("refresh 는 갱신 시점 전이라도 다시 조회한다", async () => {
+  let clock = 0;
+  let calls = 0;
+  const cache = new ArrivalCache(
+    async () => {
+      calls += 1;
+      return { arrivals: [arrival(calls === 1 ? 30 : 8)], arrivalStatus: "AVAILABLE" as const };
+    },
+    { now: () => clock },
+  );
+
+  const first = await cache.get(TARGET);
+  assert.equal(first.predictedArrivalMinutes, 30);
+  // 30분 남은 값의 갱신 주기는 최대 간격(5분)이다. refresh 가 없으면 그때까지 안 부른다.
+  assert.equal(first.nextRefreshInMs, ARRIVAL_POLL_MAX_MS);
+
+  clock += ARRIVAL_POLL_MIN_MS + 1_000;
+  const refreshed = await cache.get(TARGET, { refresh: true });
+
+  assert.equal(calls, 2, "갱신 시점 전이어도 refresh 면 다시 부른다");
+  assert.equal(refreshed.fromCache, false);
+  assert.equal(refreshed.predictedArrivalMinutes, 8);
+});
+
+test("refresh 여도 최소 간격 안에서는 캐시를 그대로 돌려준다", async () => {
+  // 모델이 같은 발화를 여러 번 인식하거나 사용자가 연달아 물어도 GBIS 호출이
+  // 늘어나면 안 된다. 20초 안에서는 값이 거의 바뀌지 않아 캐시로 충분하다.
+  let clock = 0;
+  let calls = 0;
+  const cache = new ArrivalCache(
+    async () => {
+      calls += 1;
+      return { arrivals: [arrival(30)], arrivalStatus: "AVAILABLE" as const };
+    },
+    { now: () => clock },
+  );
+
+  await cache.get(TARGET);
+  assert.equal(calls, 1);
+
+  clock += ARRIVAL_POLL_MIN_MS - 1_000;
+  const throttled = await cache.get(TARGET, { refresh: true });
+
+  assert.equal(calls, 1, "최소 간격 안의 refresh 는 GBIS 를 부르지 않는다");
+  assert.equal(throttled.fromCache, true);
+  assert.equal(throttled.predictedArrivalMinutes, 30);
+});
+
+test("refresh 를 연달아 보내도 최소 간격당 한 번만 부른다", async () => {
+  let clock = 0;
+  let calls = 0;
+  const cache = new ArrivalCache(
+    async () => {
+      calls += 1;
+      return { arrivals: [arrival(30)], arrivalStatus: "AVAILABLE" as const };
+    },
+    { now: () => clock },
+  );
+
+  await cache.get(TARGET);
+
+  // 최소 간격 안에서 다섯 번 연달아 요구해도 추가 호출은 없다.
+  for (let i = 0; i < 5; i += 1) {
+    clock += 1_000;
+    await cache.get(TARGET, { refresh: true });
+  }
+  assert.equal(calls, 1);
+
+  clock += ARRIVAL_POLL_MIN_MS;
+  await cache.get(TARGET, { refresh: true });
+  assert.equal(calls, 2, "최소 간격이 지나면 다시 부른다");
+});
+
+test("한 번도 조회한 적 없으면 refresh 가 곧장 조회한다", async () => {
+  let calls = 0;
+  const cache = new ArrivalCache(
+    async () => {
+      calls += 1;
+      return { arrivals: [arrival(5)], arrivalStatus: "AVAILABLE" as const };
+    },
+    { now: () => 0 },
+  );
+
+  const snapshot = await cache.get(TARGET, { refresh: true });
+
+  assert.equal(calls, 1);
+  assert.equal(snapshot.fromCache, false);
+});
+
+test("실패가 이어져도 강제 재조회는 최소 간격당 한 번만 GBIS 를 부른다", async () => {
+  // 하한을 fetchedAt(마지막 성공)으로 재면, 실패가 이어지는 동안 그 값이 과거에
+  // 머물러 하한이 늘 지나 있는 것으로 보인다. 그러면 refresh 가 올 때마다 GBIS 를
+  // 다시 두드려 호출이 제한 없이 늘어난다. 기준은 lastAttemptAt(마지막 호출)이다.
+  let clock = 0;
+  let calls = 0;
+  const cache = new ArrivalCache(
+    async () => {
+      calls += 1;
+      return calls === 1
+        ? { arrivals: [arrival(1)], arrivalStatus: "AVAILABLE" as const }
+        : { arrivals: [], arrivalStatus: "UPSTREAM_ERROR" as const };
+    },
+    { now: () => clock, maxStaleMs: 90_000 },
+  );
+
+  await cache.get(TARGET);
+  assert.equal(calls, 1);
+
+  clock += 31_000; // 갱신 시점이 지나 다시 부르고, 이번엔 실패한다
+  const failed = await cache.get(TARGET);
+  assert.equal(calls, 2);
+  assert.equal(failed.arrivalStatus, "UPSTREAM_ERROR");
+  assert.equal(failed.predictedArrivalMinutes, 1, "낡은 값은 유지된다");
+
+  clock += 1_000; // 직전 시도로부터 1초뿐이다
+  await cache.get(TARGET, { refresh: true });
+  assert.equal(calls, 2, "실패 직후의 refresh 는 하한에 걸려야 한다");
+
+  clock += ARRIVAL_POLL_MIN_MS;
+  await cache.get(TARGET, { refresh: true });
+  assert.equal(calls, 3, "직전 시도로부터 최소 간격이 지나면 다시 부른다");
+});
+
+test("UPSTREAM_ERROR 가 계속 나와도 refresh 는 최소 간격당 한 번만 부른다", async () => {
+  let clock = 0;
+  let calls = 0;
+  const cache = new ArrivalCache(
+    async () => {
+      calls += 1;
+      return { arrivals: [], arrivalStatus: "UPSTREAM_ERROR" as const };
+    },
+    { now: () => clock },
+  );
+
+  await cache.get(TARGET);
+  assert.equal(calls, 1);
+
+  // 최소 간격 안에서 다섯 번 연달아 요구해도 추가 호출은 없다.
+  for (let i = 0; i < 5; i += 1) {
+    clock += 2_000;
+    await cache.get(TARGET, { refresh: true });
+  }
+  assert.equal(calls, 1, "실패가 이어져도 하한은 지켜져야 한다");
+
+  clock += ARRIVAL_POLL_MIN_MS;
+  await cache.get(TARGET, { refresh: true });
+  assert.equal(calls, 2);
+});
+
+test("예외를 던지는 실패 경로도 같은 하한을 따른다", async () => {
+  // 어댑터가 상태로 올리는 실패와 예외로 던지는 실패는 같은 rememberFailure 를
+  // 지나므로 정책이 갈리면 안 된다.
+  let clock = 0;
+  let calls = 0;
+  const cache = new ArrivalCache(
+    async () => {
+      calls += 1;
+      throw new Error("network error");
+    },
+    { now: () => clock },
+  );
+
+  await cache.get(TARGET);
+  assert.equal(calls, 1);
+
+  clock += 1_000;
+  await cache.get(TARGET, { refresh: true });
+  assert.equal(calls, 1, "예외 실패 직후의 refresh 도 하한에 걸려야 한다");
+
+  clock += ARRIVAL_POLL_MIN_MS;
+  await cache.get(TARGET, { refresh: true });
+  assert.equal(calls, 2);
+});
+
+test("stale 한도를 넘긴 뒤 실패해도 refresh 하한 기록은 유지된다", async () => {
+  // 낡은 arrivals 를 버리는 것과 호출 제한 기록을 버리는 것은 별개다.
+  // 항목째로 지워지면 다음 refresh 가 캐시 미스가 되어 하한이 사라진다.
+  let clock = 0;
+  let calls = 0;
+  const cache = new ArrivalCache(
+    async () => {
+      calls += 1;
+      return calls === 1
+        ? { arrivals: [arrival(1)], arrivalStatus: "AVAILABLE" as const }
+        : { arrivals: [], arrivalStatus: "UPSTREAM_ERROR" as const };
+    },
+    { now: () => clock, maxStaleMs: 1_000 },
+  );
+
+  await cache.get(TARGET);
+
+  clock += 31_000; // 낡은 정도가 한도(1초)를 훌쩍 넘겨 직전 값을 버린다
+  const failed = await cache.get(TARGET);
+  assert.equal(calls, 2);
+  assert.equal(failed.arrivals, null, "한도를 넘긴 낡은 값은 버린다");
+
+  clock += 1_000;
+  await cache.get(TARGET, { refresh: true });
+
+  assert.equal(calls, 2, "stale 값이 폐기돼도 최근 실패 호출의 하한은 남아야 한다");
+});

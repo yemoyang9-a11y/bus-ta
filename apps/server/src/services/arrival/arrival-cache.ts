@@ -53,6 +53,14 @@ interface CacheEntry {
   arrivals: ArrivalInfo[] | null;
   /** arrivals 를 실제로 받아온 시각. 실패해도 갱신하지 않아 낡은 정도를 잰다. */
   fetchedAt: number;
+  /**
+   * 마지막으로 GBIS 를 부른 시각. 성공·실패 모두 갱신한다.
+   *
+   * 강제 재조회 하한은 이 값을 기준으로 잰다. fetchedAt(마지막 성공)으로 재면,
+   * 실패가 이어지는 동안 그 값이 과거에 머물러 하한이 늘 지나 있는 것으로 보이고
+   * refresh 가 올 때마다 GBIS 를 다시 두드리게 된다.
+   */
+  lastAttemptAt: number;
   refreshAfter: number;
   /**
    * 이 항목을 어떻게 안내해야 하는지. 실패 뒤 낡은 값을 유지한 항목은
@@ -60,6 +68,18 @@ interface CacheEntry {
    * "지금 확인한 값"으로 둔갑하지 않는다.
    */
   arrivalStatus: ArrivalStatus;
+}
+
+export interface ArrivalGetOptions {
+  /**
+   * 갱신 시점 전이라도 다시 조회할지.
+   *
+   * "버스 놓쳤어요"처럼 사용자가 최신 값을 명시적으로 요구한 경우에만 쓴다.
+   * 이때도 마지막 GBIS 호출(성공·실패 무관)로부터 `ARRIVAL_POLL_MIN_MS`(20초)가
+   * 지나지 않았으면 캐시를 그대로 돌려준다 — 그 안에서는 값이 거의 바뀌지 않는데
+   * 호출만 늘어난다.
+   */
+  refresh?: boolean;
 }
 
 export interface ArrivalCacheOptions {
@@ -111,13 +131,24 @@ export class ArrivalCache {
    * 갱신에 실패하면 직전 값을 `maxStaleMs` 동안만 더 쓰고, 그 뒤로는
    * `arrivals: null`(조회 실패)로 바꾼다. 호출부는 null 과 빈 배열을 구분해
    * "확인하지 못함"과 "실시간 차량 없음"을 다르게 안내할 수 있다.
+   *
+   * `options.refresh` 는 "버스 놓쳤어요"처럼 사용자가 최신 값을 명시적으로 요구한
+   * 경우에 쓴다. 갱신 시점 전이라도 다시 조회하되, 아래 하한은 그대로 지킨다.
    */
-  async get(target: ArrivalTarget): Promise<ArrivalSnapshot> {
+  async get(target: ArrivalTarget, options: ArrivalGetOptions = {}): Promise<ArrivalSnapshot> {
     const key = `${target.gbisStationId}:${target.localBusId}`;
     const at = this.now();
     const cached = this.entries.get(key);
 
-    if (cached && at < cached.refreshAfter) {
+    // 강제 재조회에도 하한을 둔다. 모델이 refresh 를 남발하면(같은 발화를 여러 번
+    // 인식하거나 사용자가 연달아 물어보면) GBIS 호출이 그대로 늘어난다.
+    // 최소 간격 안에서는 값이 거의 바뀌지 않으므로 캐시를 그대로 돌려줘도
+    // 사용자 경험에 차이가 없다.
+    const withinMinInterval =
+      cached !== undefined && at - cached.lastAttemptAt < ARRIVAL_POLL_MIN_MS;
+    const skipCache = options.refresh === true && !withinMinInterval;
+
+    if (!skipCache && cached && at < cached.refreshAfter) {
       return this.toSnapshot(cached.arrivals, at, cached.refreshAfter, true, cached.arrivalStatus);
     }
 
@@ -145,6 +176,7 @@ export class ArrivalCache {
       const entry: CacheEntry = {
         arrivals,
         fetchedAt: at,
+        lastAttemptAt: at,
         refreshAfter: at + refreshDelay,
         arrivalStatus: result.arrivalStatus,
       };
@@ -185,13 +217,22 @@ export class ArrivalCache {
     const staleFor = cached?.arrivals ? at - cached.fetchedAt : Number.POSITIVE_INFINITY;
     const keepStale = cached?.arrivals != null && staleFor <= this.maxStaleMs;
 
+    // 실패해도 "부르긴 했다"는 사실은 남긴다. lastAttemptAt 을 갱신하지 않으면
+    // 실패가 이어지는 동안 강제 재조회 하한이 늘 지나 있는 것으로 보여 GBIS 호출이
+    // 제한 없이 늘어난다.
     const entry: CacheEntry = keepStale
       ? // 아직 쓸 만한 직전 값이 있으면 유지하되, 그 값이 언제 것인지는 그대로 둔다.
         // fetchedAt 을 갱신하면 낡은 값이 영원히 젊어져 한도가 의미를 잃는다.
-        { ...cached!, refreshAfter, arrivalStatus: ARRIVAL_STATUS.UPSTREAM_ERROR }
+        {
+          ...cached!,
+          refreshAfter,
+          lastAttemptAt: at,
+          arrivalStatus: ARRIVAL_STATUS.UPSTREAM_ERROR,
+        }
       : {
           arrivals: null,
           fetchedAt: cached?.fetchedAt ?? at,
+          lastAttemptAt: at,
           refreshAfter,
           arrivalStatus: ARRIVAL_STATUS.UPSTREAM_ERROR,
         };
@@ -226,6 +267,15 @@ export class ArrivalCache {
    * 지우면 짧은 시간에 새 조합이 몰릴 때 전부 최신이라 하나도 못 지운다.
    *
    * Map 은 삽입 순서를 지키므로 앞쪽이 오래된 항목이다.
+   *
+   * 정리 기준은 `refreshAfter` 다. `fetchedAt`(마지막 성공)으로 재면 방금 실패한
+   * 항목까지 오래된 것으로 보여 지워지고, 그러면 그 항목이 들고 있던 강제 재조회
+   * 하한(`lastAttemptAt`)까지 함께 사라진다. 다음 refresh 가 캐시 미스가 되어
+   * 곧장 GBIS 로 나간다. 방금 실패한 항목은 `refreshAfter` 가 미래라 여기서 걸리지 않는다.
+   *
+   * 다만 아래 두 번째 반복(한도 초과분 정리)은 삽입 순서대로 지우므로 최근 항목도
+   * 지울 수 있다. 항목이 `maxEntries` 를 넘길 때만 도는 경로이고, 메모리 상한을
+   * 지키는 쪽을 택한 것이다. 이 경우 해당 대상의 재조회 하한은 한 번 초기화된다.
    */
   private evictExpired(at: number): void {
     if (this.entries.size <= this.maxEntries) return;
