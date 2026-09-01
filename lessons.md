@@ -606,3 +606,54 @@ git worktree prune -v
 **부수 확인**: auto mode 권한 분류기가 `git worktree prune`, `Remove-Item -Recurse -Force`,
 반복문으로 감싼 삭제를 전부 자동 거부한다. `acceptEdits` 모드로 바꾸면 승인 프롬프트로 바뀐다.
 handoff 8절의 Supabase DELETE 사례와 같은 패턴이다.
+
+---
+
+## 2026-09-01 — 빈 배열 하나로 "없다"와 "확인 못 했다"를 겸하면, fail-closed가 거짓 안내로 바뀐다
+
+**증상**
+예외사항 3번(“버스 놓쳤어요” → `GET /api/trips/{tripId}/status`가 GBIS를 재조회)의 미커밋 구현에서,
+서비스가 `arrivals.length > 0 ? "AVAILABLE" : "NO_VEHICLE"`로 상태를 정하고 있었다. 테스트 207개는
+전부 통과했고 typecheck도 통과했다 — 서비스 단위 테스트가 `getArrivals`를 직접 mock 해서
+"빈 배열 = 차량 없음"이라는 전제를 그대로 재현했기 때문이다.
+
+**원인**
+`getArrivalInfo()`(`apps/server/src/adapters/routes/hyorin-route-search.adapter.ts`)는 서로 다른 세 가지
+이유로 `arrivals: []`를 반환한다.
+
+1. GBIS 정상 응답 + 해당 노선 레코드 없음 → 진짜로 차가 없다
+2. 회차 노선 방향 판별에 필요한 `busrouteservice` 조회 실패·빈 응답 → `lookupRouteStations()`가
+   예외를 **내부에서 삼키고** `{ verified: false }`를 돌려준다 (PR #33의 fail-closed 설계)
+3. 목적지 기준 방향을 확정하지 못함(`matched === undefined`)
+
+2·3번은 "확인하지 못했다"인데 호출자에게는 1번과 똑같이 보인다. 서비스의 `try/catch`는 던져진
+예외만 `UPSTREAM_ERROR`로 접으므로, 삼켜진 실패는 전부 `NO_VEHICLE`이 됐다. 버스를 놓친 사용자에게
+"그 노선은 이제 오지 않는다"로 안내되는 값이다. 공개 계약(`docs/API_SPEC.md`)이 `NO_VEHICLE`을
+"정상 조회되었지만 차량이 없음"으로 정의하고 있으니 계약 위반이기도 하다.
+
+**검증된 해결책**
+어댑터가 판단 근거를 함께 반환하게 했다. `getArrivalInfo()` 반환값에
+`lookupStatus: "AVAILABLE" | "NO_VEHICLE" | "UNVERIFIED"`를 추가하고, 서비스가 `UNVERIFIED`를
+`UPSTREAM_ERROR`로 매핑한다. `arrivals`는 그대로 비워 fail-closed 동작을 유지한다.
+라우트의 wrapper는 `info.arrivals`만 꺼내던 것을 `getArrivalInfo(candidate)` 그대로 넘기도록 줄여,
+분류 판단이 테스트 가능한 서비스 한 곳에만 남게 했다.
+
+TDD로 먼저 실패 테스트 5개(어댑터 4 + 서비스 1)를 작성해 `lookupStatus === undefined`로 실패하는
+것을 확인한 뒤 구현했다. 서버 테스트 213/213 pass, `pnpm typecheck` 3/3 통과.
+
+**같은 작업에서 잡은 두 번째 결함 — 공유 스키마가 두 엔드포인트를 겸한다**
+`TripStatusResponseSchema`에 `arrivals`/`arrivalStatus`를 **필수**로 추가했는데, 앱은
+`GET /status`와 `PATCH /status` 응답을 **같은 `TripStatusResponse` 타입**으로 받는다
+(`apps/mobile/src/api/client.ts`의 `getStatus`/`updateStatus`). PATCH 응답에는 두 필드가 없으므로
+타입이 거짓말을 하게 된다. 런타임 검증이 아니라 제네릭 캐스트라 typecheck는 통과했다 —
+그래서 아무도 못 봤다. `PATCH` 응답 본문을 `TripStatusResponseSchema.parse()`로 검증하는 테스트를
+추가해 실패를 확인한 뒤 두 필드를 `.optional()`로 바꿨다.
+
+**교훈 일반화**
+- 실패를 삼켜 정상값으로 접는 함수는, 접은 사실 자체를 반환값에 남겨야 한다. 그러지 않으면
+  fail-closed 안전장치가 한 단계 위에서 **거짓 사실 안내**로 바뀐다. `catch {}` 문제
+  (2026-08-07 항목)의 반환값 판이다.
+- 의존성을 mock 하는 단위 테스트는 mock에 심은 전제까지 검증해 주지 않는다. mock 하는 함수의
+  실제 반환 경로를 한 번은 읽어야 한다.
+- 여러 엔드포인트가 공유하는 응답 스키마에 필드를 **필수로** 추가하기 전에 그 타입의 소비자를
+  전부 확인한다. 제네릭 캐스트(`request<T>()`)로 소비하는 쪽은 typecheck가 잡아주지 않는다.
