@@ -10,9 +10,14 @@ const validRequest = {
   longitude: 127.03,
 };
 
+async function searchRoutesWithDistinctRouteNos(request: typeof validRequest): Promise<Route[]> {
+  const routes = await mockSearchRoutes(request);
+  return routes.map((route, index) => (index === 1 ? { ...route, routeNo: "700-2" } : route));
+}
+
 test("returns guided route candidates for a valid request", async () => {
   const result = await searchRoutes(validRequest, {
-    searchRoutes: mockSearchRoutes,
+    searchRoutes: searchRoutesWithDistinctRouteNos,
     generateRouteGuide: async () => ({
       selectedCandidates: [
         { candidateId: 2, guideMessage: "2번 후보 안내입니다." },
@@ -41,12 +46,15 @@ test("returns the top 5 routes in ranked order and guides only the top 2", async
   const firstRoute = baseRoutes[0];
   assert.ok(firstRoute);
 
-  const routes: Route[] = Array.from({ length: 6 }, (_, index) => ({
-    ...firstRoute,
-    candidateId: index + 1,
-    routeNo: String(index + 1),
-    guideMessage: "stale guide should not leak",
-  }));
+  const routes: Route[] = [
+    { ...firstRoute, candidateId: 1, routeNo: "34", totalTime: 90, intervalTime: 10, guideMessage: "stale guide should not leak" },
+    { ...firstRoute, candidateId: 2, routeNo: "34", totalTime: 15, intervalTime: 10, guideMessage: "stale guide should not leak" },
+    { ...firstRoute, candidateId: 3, routeNo: "35", totalTime: 30, intervalTime: 10, guideMessage: "stale guide should not leak" },
+    { ...firstRoute, candidateId: 4, routeNo: "36", totalTime: 40, intervalTime: 10, guideMessage: "stale guide should not leak" },
+    { ...firstRoute, candidateId: 5, routeNo: "37", totalTime: 50, intervalTime: 10, guideMessage: "stale guide should not leak" },
+    { ...firstRoute, candidateId: 6, routeNo: "38", totalTime: 60, intervalTime: 10, guideMessage: "stale guide should not leak" },
+    { ...firstRoute, candidateId: 7, routeNo: "39", totalTime: 70, intervalTime: 10, guideMessage: "stale guide should not leak" },
+  ];
   let searchCallCount = 0;
   let guidedCandidateIds: number[] = [];
 
@@ -59,8 +67,8 @@ test("returns the top 5 routes in ranked order and guides only the top 2", async
       guidedCandidateIds = candidates.map((candidate) => candidate.candidateId);
       return {
         selectedCandidates: [
-          { candidateId: 1, guideMessage: "1번 후보 안내입니다." },
           { candidateId: 2, guideMessage: "2번 후보 안내입니다." },
+          { candidateId: 3, guideMessage: "3번 후보 안내입니다." },
         ],
       };
     },
@@ -71,19 +79,19 @@ test("returns the top 5 routes in ranked order and guides only the top 2", async
   assert.equal(result.body.routes.length, 5);
   assert.deepEqual(
     result.body.routes.map((route) => route.candidateId),
-    [1, 2, 3, 4, 5],
+    [2, 3, 4, 5, 6],
   );
-  assert.deepEqual(guidedCandidateIds, [1, 2]);
+  assert.deepEqual(guidedCandidateIds, [2, 3]);
   assert.equal(searchCallCount, 1);
   assert.deepEqual(
     result.body.routes.map((route) => route.guideMessage),
-    ["1번 후보 안내입니다.", "2번 후보 안내입니다.", undefined, undefined, undefined],
+    ["2번 후보 안내입니다.", "3번 후보 안내입니다.", undefined, undefined, undefined],
   );
 });
 
 test("falls back to the first 2 routes when guide selection is empty", async () => {
   const result = await searchRoutes(validRequest, {
-    searchRoutes: mockSearchRoutes,
+    searchRoutes: searchRoutesWithDistinctRouteNos,
     generateRouteGuide: async () => ({ selectedCandidates: [] }),
   });
 
@@ -97,7 +105,7 @@ test("falls back to the first 2 routes when guide selection is empty", async () 
 
 test("falls back when guide returns unknown candidate ids", async () => {
   const result = await searchRoutes(validRequest, {
-    searchRoutes: mockSearchRoutes,
+    searchRoutes: searchRoutesWithDistinctRouteNos,
     generateRouteGuide: async () => ({
       selectedCandidates: [{ candidateId: 999, guideMessage: "없는 후보입니다." }],
     }),

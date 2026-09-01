@@ -1,5 +1,5 @@
 import { RoutesSearchRequestSchema, type Route, type RoutesSearchRequest } from "@bus-ta/shared";
-import { generateRouteGuide, type RouteGuideResult } from "../guide.js";
+import { generateRouteGuide, selectRouteCandidates, type RouteGuideResult } from "../guide.js";
 
 export interface RouteSearchProvider {
   searchRoutes(request: RoutesSearchRequest): Promise<Route[]>;
@@ -111,7 +111,7 @@ export async function searchRoutes(
     };
   }
 
-  const rankedRoutes = routes.slice(0, ROUTE_CANDIDATE_LIMIT);
+  const rankedRoutes = selectRouteCandidates(routes, ROUTE_CANDIDATE_LIMIT);
   const guideRoutes =
     rankedRoutes.length > 0
       ? attachGuideMessages(

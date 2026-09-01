@@ -36,6 +36,12 @@ Function은 사용자 의도를 처리하는 경로다. 자동 GPS·하차벨 �
 | `GET` | `/api/health` | 없음 |
 | `POST` | `/api/realtime/session` | Realtime용 단기 키 발급 |
 
+### `POST /api/routes/search`
+
+검색 결과는 기존 순위·중복 제거 규칙을 적용한 뒤 상위 5개까지 `routes[]`에 담는다. 응답 배열은 순위 순서를 유지하며, `guideMessage`는 상위 2개 후보에만 포함한다. 3위 이후 후보에는 이 필드를 생략한다.
+
+경로 검색 provider는 검색 1회당 한 번만 호출하고, 사용자가 다음 후보를 요청할 때는 앱이 이미 받은 `routes[]`를 재사용한다. 도착정보 조회는 이 API에서 수행하지 않고 사용자가 후보를 선택한 뒤 `POST /api/trips` 내부에서 처리한다.
+
 ## Health 상태 조회
 
 `GET /api/health`는 요청 query/body를 사용하지 않고 서버와 Supabase 연결 상태를 확인한다. 공개 응답은 `packages/shared`의 health Schema를 단일 계약으로 사용하며 `timestamp`는 ISO 8601 문자열이다.
