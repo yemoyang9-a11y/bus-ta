@@ -1,5 +1,9 @@
 import axios, { type AxiosRequestConfig } from "axios";
 import type { ArrivalInfo, Occupancy, Route, RoutesSearchRequest } from "@bus-ta/shared";
+import {
+  ARRIVAL_STATUS,
+  type ArrivalStatus,
+} from "../../services/arrival/arrival-status.js";
 
 type UpstreamName = "KAKAO" | "ODSAY";
 
@@ -470,13 +474,45 @@ function resolveDirectionalStaOrder(
 // ─────────────────────────────────────────────
 // 도착 예정 정보 조회 adapter (효린 담당)
 // selectedCandidate: searchRoutes()가 반환한 Route 객체 중 사용자가 선택한 것
-// 반환: { gbisStationId, localBusId, arrivals } — arrivals 는 도착 순서대로 최대 2대
+// 반환: { gbisStationId, localBusId, arrivals, arrivalStatus }
+//   arrivals 는 도착 순서대로 최대 2대
 // ─────────────────────────────────────────────
+
+
+export interface ArrivalInfoResult {
+  gbisStationId: string;
+  localBusId: string;
+  arrivals: ArrivalInfo[];
+  arrivalStatus: ArrivalStatus;
+}
+
+/**
+ * 조회 실패를 UPSTREAM_ERROR 로 접기 전에 원인을 남긴다.
+ *
+ * 오류 객체를 통째로 찍으면 AxiosError 의 config 에 실린 API 키가 로그로 샌다.
+ * 진단에 필요한 값만 골라서 남긴다(searchRoutes 의 logRouteSearchFailure 와 같은 원칙).
+ *
+ * message 는 우리가 만든 오류(GbisResponseError·UpstreamRequestError)이거나 axios 의
+ * 상태 문구라 현재는 키를 담지 않는다. 다만 message 자체를 마스킹하지는 않으므로
+ * "어떤 경우에도 새지 않는다"고까지 보장하지는 않는다. 새 오류 유형을 이 경로로
+ * 흘릴 때는 그 message 에 비밀값이 들어가지 않는지 확인한다.
+ */
+function logArrivalLookupFailure(localBusId: string, error: unknown): void {
+  const detail = error as { resultCode?: unknown; status?: unknown; message?: unknown };
+  console.error(
+    "[trips/arrival] GBIS 도착정보 조회 실패",
+    `localBusId=${localBusId}`,
+    `resultCode=${typeof detail.resultCode === "string" ? detail.resultCode : "none"}`,
+    `status=${typeof detail.status === "number" ? detail.status : "unknown"}`,
+    `message=${typeof detail.message === "string" ? detail.message : "unknown"}`,
+  );
+}
+
 export async function getArrivalInfo(
   selectedCandidate: Pick<Route, "gbisStationId" | "localBusId"> & {
     destinationStation?: { stationName: string; latitude: number; longitude: number };
   },
-): Promise<{ gbisStationId: string; localBusId: string; arrivals: ArrivalInfo[] }> {
+): Promise<ArrivalInfoResult> {
   const { gbisStationId, localBusId, destinationStation } = selectedCandidate;
 
   // 도착정보 조회와 노선 정류장 목록 조회를 병렬로 시작한다(PR #33 리뷰). 순차
@@ -484,17 +520,38 @@ export async function getArrivalInfo(
   // 응답이 지연된다. 노선 정류장 목록은 destinationStation 이 있을 때만 방향
   // 판별에 쓰이므로 그때만 함께 조회한다.
   // ODsay startLocalStationID = GBIS stationId (테스트로 동일 확인, 역조회 불필요)
-  const [busArrivalList, routeStationsLookup] = await Promise.all([
-    getBusArrivalByStationId(gbisStationId),
-    destinationStation
-      ? lookupRouteStations(localBusId)
-      : Promise.resolve<RouteStationsLookup>({ verified: false }),
-  ]);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let busArrivalList: any[];
+  let routeStationsLookup: RouteStationsLookup;
+  try {
+    [busArrivalList, routeStationsLookup] = await Promise.all([
+      getBusArrivalByStationId(gbisStationId),
+      destinationStation
+        ? lookupRouteStations(localBusId)
+        : Promise.resolve<RouteStationsLookup>({ verified: false }),
+    ]);
+  } catch (error) {
+    // 예외를 그대로 던지면 호출부가 catch 해서 빈 배열로 접고, 그 결과가 "오는
+    // 차가 없음"과 구분되지 않는다. 여기서 상태로 바꿔 위로 올린다.
+    logArrivalLookupFailure(localBusId, error);
+    return {
+      gbisStationId,
+      localBusId,
+      arrivals: [],
+      arrivalStatus: ARRIVAL_STATUS.UPSTREAM_ERROR,
+    };
+  }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const matches = busArrivalList.filter((a: any) => String(a.routeId) === String(localBusId));
   if (matches.length === 0) {
-    return { gbisStationId, localBusId, arrivals: [] };
+    // 조회는 됐는데 이 노선 레코드가 없다 = 지금 오는 차가 없다.
+    return {
+      gbisStationId,
+      localBusId,
+      arrivals: [],
+      arrivalStatus: ARRIVAL_STATUS.NO_VEHICLE,
+    };
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -507,7 +564,17 @@ export async function getArrivalInfo(
     // 목적지가 있는데 경유정류소를 확인하지 못했다면 방향을 검증할 수 없다.
     // 반대 방향 도착정보를 그대로 안내하면 사용자가 반대편에서 버스를 기다리게
     // 되므로, 검증 불가 상태는 fail closed 로 처리한다(PR #33 리뷰 P1).
-    return { gbisStationId, localBusId, arrivals: [] };
+    // 이 경우는 "차가 없다"가 아니라 "확인하지 못했다"이므로 UPSTREAM_ERROR 다.
+    console.error(
+      "[trips/arrival] 경유정류소를 확인하지 못해 방향 검증 없이 안내하지 않는다",
+      `localBusId=${localBusId}`,
+    );
+    return {
+      gbisStationId,
+      localBusId,
+      arrivals: [],
+      arrivalStatus: ARRIVAL_STATUS.UPSTREAM_ERROR,
+    };
   } else {
     const routeStations = routeStationsLookup.stations;
 
@@ -523,16 +590,33 @@ export async function getArrivalInfo(
       matched = matches[0];
     } else {
       const staOrder = resolveDirectionalStaOrder(routeStations, gbisStationId, destinationStation);
-      matched =
-        staOrder === null
-          ? undefined
-          : // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            matches.find((m: any) => readGbisNumber(m.staOrder) === staOrder);
+      if (staOrder === null) {
+        // 목적지가 노선에 없거나 방향이 모호해서 확정하지 못한 경우다.
+        // 차가 없는 것과는 다르므로 UPSTREAM_ERROR 로 구분한다.
+        console.error(
+          "[trips/arrival] 방향을 확정하지 못해 도착정보를 안내하지 않는다",
+          `localBusId=${localBusId}`,
+        );
+        return {
+          gbisStationId,
+          localBusId,
+          arrivals: [],
+          arrivalStatus: ARRIVAL_STATUS.UPSTREAM_ERROR,
+        };
+      }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      matched = matches.find((m: any) => readGbisNumber(m.staOrder) === staOrder);
     }
   }
 
   if (!matched) {
-    return { gbisStationId, localBusId, arrivals: [] };
+    // 방향은 확정됐는데 그 방향으로 오는 차량 레코드가 없다.
+    return {
+      gbisStationId,
+      localBusId,
+      arrivals: [],
+      arrivalStatus: ARRIVAL_STATUS.NO_VEHICLE,
+    };
   }
 
   const arrivals = [
@@ -540,5 +624,13 @@ export async function getArrivalInfo(
     toArrival(matched.predictTime2, matched.routeTypeCd, matched.crowded2, matched.remainSeatCnt2),
   ].filter((arrival): arrival is ArrivalInfo => arrival !== null);
 
-  return { gbisStationId, localBusId, arrivals };
+  return {
+    gbisStationId,
+    localBusId,
+    arrivals,
+    // 레코드는 왔는데 predictTime 이 전부 비어 있는 경우다. 차가 없다고 단정하지
+    // 않고 "도착시간 정보가 없다"로 구분한다.
+    arrivalStatus:
+      arrivals.length > 0 ? ARRIVAL_STATUS.AVAILABLE : ARRIVAL_STATUS.NO_PREDICTION,
+  };
 }

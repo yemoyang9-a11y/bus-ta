@@ -96,3 +96,117 @@ GBIS는 요청이 잘못돼도 HTTP 200으로 응답하고 `msgHeader.resultCode
   현재 스캔 시작 코드는 `RouteListScreen`(화면 터치 경로)에만 있고 `realtime/`(음성 경로)에는 없다.
 - **스캔 시작 시점 5분이 적절한지** — 실측이 4분 창이라 더 긴 구간의 데이터는 없다.
   지팡이가 비콘을 잡는 데 걸리는 실제 시간을 하드웨어 담당과 맞춰 조정할 수 있다.
+
+## `arrivalStatus` — 조회 결과의 상태 (예외상황 3번)
+
+`getArrivalInfo`는 `arrivals`와 함께 `arrivalStatus`를 돌려준다.
+
+`arrivals: []`만으로는 "오는 차가 없음"과 "조회하지 못함"이 구분되지 않는다. 구분하지 않으면 GBIS
+장애를 "다음 버스가 없습니다"로 안내하게 되고, 시각장애인 사용자가 그 말을 듣고 정류장을 떠나면
+실제로는 오고 있던 버스를 놓친다. 두 경우는 반드시 다르게 안내해야 한다.
+
+| 값 | 뜻 | 안내 방향 |
+|---|---|---|
+| `AVAILABLE` | 조회 성공, 안내할 차량 있음 | 도착 시간을 그대로 안내 |
+| `NO_VEHICLE` | 조회 성공, 이 노선 레코드 자체가 없음 | "지금 오는 차가 없다"고 안내 가능 |
+| `NO_PREDICTION` | 레코드는 있는데 예상 도착 시간이 없음 | **차가 없다고 단정하지 않는다.** "도착시간 정보를 확인할 수 없다"로 안내 |
+| `UPSTREAM_ERROR` | 조회 실패 또는 방향 확인 불가 | **차가 없다고 단정하지 않는다.** "지금은 확인이 안 된다"로 안내 |
+
+`occupancy.type`의 `UNAVAILABLE`과는 층이 다르다. 저건 "그 차량의 혼잡도를 모른다"는 뜻이라
+`arrivalStatus: AVAILABLE`과 같은 응답에 함께 나올 수 있다.
+
+### 어떤 경우가 어떤 값이 되는가
+
+- `AVAILABLE` — 방향까지 확인된 레코드가 있고 `predictTime`이 유효하다.
+- `NO_VEHICLE` — GBIS 응답에 이 노선 레코드가 없거나, 방향은 확정됐는데 그 방향 레코드가 없다.
+- `NO_PREDICTION` — 레코드는 있는데 `predictTime`이 전부 비어 있다. **GBIS 공식 문서에서 빈
+  `predictTime`이 "차량 없음"을 뜻한다고 확인한 적이 없고, 실제 캡처에도 두 순번이 모두 빈 사례가
+  없다.** 확인된 사실은 "도착시간 정보가 없다"까지이므로 `NO_VEHICLE`과 분리한다.
+- `UPSTREAM_ERROR` — GBIS 호출이 실패했거나(네트워크·타임아웃·`resultCode ≠ 0`),
+  경유정류소를 확인하지 못해 fail closed 됐거나, 목적지가 노선에 없어 방향을 확정하지 못했다.
+
+방향 확인 실패를 `UPSTREAM_ERROR`로 두는 이유는, 그것이 "차가 없다"가 아니라 "확인하지 못했다"이기
+때문이다. 안내 문구도 조회 실패와 같아야 한다.
+
+`UPSTREAM_ERROR`로 접더라도 원인은 `console.error`로 남긴다. 조용한 실패를 만들지 않는다.
+
+### 예시 응답 (유나·채린 참고용)
+
+백엔드 연결을 기다리지 않고 먼저 개발할 수 있도록 각 경우의 형태를 적어 둔다.
+
+> 아래는 **어댑터 내부 반환 형태**다. 공개 API 필드명과 Zod Schema는 팀 계약 확정 후
+> `packages/shared`에 반영한다. 지금 서버 내부에만 있는 `ArrivalStatus`(어댑터와 캐시가 함께
+> 쓴다)와 어댑터 반환형인 `ArrivalInfoResult`도 `GET /status` 공개 응답에 연결할 때 함께 옮긴다.
+
+```jsonc
+// AVAILABLE — 두 번째 차량은 있을 수도, 없을 수도 있다
+{
+  "arrivalStatus": "AVAILABLE",
+  "arrivals": [
+    { "predictedArrivalMinutes": 6,  "occupancy": { "type": "CONGESTION", "congestionLevel": 3, "remainingSeats": null } },
+    { "predictedArrivalMinutes": 21, "occupancy": { "type": "REMAINING_SEATS", "congestionLevel": null, "remainingSeats": 4 } }
+  ]
+}
+
+// NO_VEHICLE — 조회는 됐고 이 노선 레코드가 없다. 지금 오는 차가 없다
+{
+  "arrivalStatus": "NO_VEHICLE",
+  "arrivals": []
+}
+
+// NO_PREDICTION — 레코드는 있는데 도착시간이 없다. "차가 없다"고 말하면 안 된다
+{
+  "arrivalStatus": "NO_PREDICTION",
+  "arrivals": []
+}
+
+// UPSTREAM_ERROR — 확인하지 못했다. "차가 없다"고 말하면 안 된다
+{
+  "arrivalStatus": "UPSTREAM_ERROR",
+  "arrivals": []
+}
+```
+
+### 캐시를 거칠 때
+
+`ArrivalCache`는 실패를 **예외로만** 판단했었다. 어댑터가 더 이상 던지지 않으므로,
+`arrivalStatus === UPSTREAM_ERROR` 도 실패 경로로 보낸다. 그러지 않으면 조회 실패가
+"차량 없음"으로 캐시에 굳고, 낡은 값 한도(`maxStaleMs`)와 실패 후 20초 재시도가 함께 무력해진다.
+
+`ArrivalSnapshot`과 캐시 항목은 `arrivalStatus`를 함께 들고 다닌다. 실패 뒤 직전 값을
+유지한 항목은 다음 캐시 적중에서도 `UPSTREAM_ERROR`로 남아, 낡은 값이 "지금 확인한 값"으로
+둔갑하지 않는다.
+
+| 스냅샷 | 뜻 |
+|---|---|
+| `arrivalStatus: AVAILABLE`, `arrivals: [...]` | 지금 확인한 값 |
+| `arrivalStatus: NO_VEHICLE`, `arrivals: []` | 지금 확인했고 오는 차가 없음 |
+| `arrivalStatus: NO_PREDICTION`, `arrivals: []` | 지금 확인했고 레코드는 있는데 예상 시간이 없음 |
+| `arrivalStatus: UPSTREAM_ERROR`, `arrivals: null` | 확인 못 했고 쓸 만한 직전 값도 없음 |
+| `arrivalStatus: UPSTREAM_ERROR`, `arrivals: [...]` | 확인 못 했지만 `maxStaleMs` 안의 직전 값이 있음 |
+| `arrivalStatus: UPSTREAM_ERROR`, `arrivals: []` | 확인 못 했고 직전 값이 "차 없음"이었음 |
+
+**실패했을 때 `arrivals` 는 `null`·`[]`·기존 목록 어느 쪽도 될 수 있다.** 그러므로 안내 판단은
+배열이 비었는지가 아니라 **`arrivalStatus` 를 기준으로** 한다. 빈 배열을 보고 "오는 차가 없다"고
+안내하면, 실패했는데 직전 값이 없던 경우까지 차량 없음으로 둔갑한다.
+
+**갱신 주기는 상태에 따라 다르다.**
+
+- `NO_PREDICTION` — 최소 간격(20초). 레코드는 있으나 예상 시간만 비어 있어 일시적인 상태일
+  가능성을 배제할 수 없다. 빈 배열이라는 이유로 최대 간격을 잡으면, 잠시 뒤 예상 시간이 생겨도
+  그동안 안내하지 못한다.
+- `NO_VEHICLE` — 최대 간격(5분). 미운행·심야처럼 한동안 값이 없는 것이 정상인 경우다.
+- `UPSTREAM_ERROR` — 최소 간격(20초). 정상 값을 빨리 되찾는 편이 안전하다.
+
+### 아직 정하지 않은 것
+
+**공개 API에 stale arrivals를 노출할지.** `maxStaleMs` 안이면 `ArrivalCache`가 직전 값을 들고
+있으므로, 내부 스냅샷에서는 `arrivalStatus: UPSTREAM_ERROR`와 비어 있지 않은 `arrivals`가 함께
+나온다. 노출하면 "지금은 확인이 안 되는데 조금 전 정보로는 6분 뒤였어요"까지 안내할 수 있다.
+
+1차평가 범위에서는 넣지 않기로 했고, 공개 응답에 실을지는 평가 이후에 다시 논의한다.
+
+**확정 전에는 내부 `ArrivalSnapshot`의 `arrivals` 형태를 그대로 프론트 계약으로 쓰지 않는다.**
+위 표에서 보듯 실패 시 `arrivals`는 `null`·`[]`·기존 목록 어느 쪽도 될 수 있다.
+`UPSTREAM_ERROR`를 `arrivals: []`로 정규화하기로 한다면, 서비스 층의 변환·Zod Schema·테스트를
+함께 추가한다.
