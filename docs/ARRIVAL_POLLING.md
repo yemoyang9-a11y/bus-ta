@@ -135,8 +135,8 @@ GBIS는 요청이 잘못돼도 HTTP 200으로 응답하고 `msgHeader.resultCode
 백엔드 연결을 기다리지 않고 먼저 개발할 수 있도록 각 경우의 형태를 적어 둔다.
 
 > 아래는 **어댑터 내부 반환 형태**다. 공개 API 필드명과 Zod Schema는 팀 계약 확정 후
-> `packages/shared`에 반영한다. 지금 서버 어댑터에만 있는 `ArrivalStatus`·`ArrivalInfoResult`
-> 타입도 `GET /status` 공개 응답에 연결할 때 함께 옮긴다.
+> `packages/shared`에 반영한다. 지금 서버 내부에만 있는 `ArrivalStatus`(어댑터와 캐시가 함께
+> 쓴다)와 어댑터 반환형인 `ArrivalInfoResult`도 `GET /status` 공개 응답에 연결할 때 함께 옮긴다.
 
 ```jsonc
 // AVAILABLE — 두 번째 차량은 있을 수도, 없을 수도 있다
@@ -192,16 +192,21 @@ GBIS는 요청이 잘못돼도 HTTP 200으로 응답하고 `msgHeader.resultCode
 
 **갱신 주기는 상태에 따라 다르다.**
 
-- `NO_PREDICTION` — 최소 간격(20초). 레코드가 있다는 건 차가 배차돼 있다는 뜻이라,
-  잠시 뒤 예상 시간이 생길 수 있다. 빈 배열이라는 이유로 최대 간격을 잡으면 그동안 안내하지 못한다.
+- `NO_PREDICTION` — 최소 간격(20초). 레코드는 있으나 예상 시간만 비어 있어 일시적인 상태일
+  가능성을 배제할 수 없다. 빈 배열이라는 이유로 최대 간격을 잡으면, 잠시 뒤 예상 시간이 생겨도
+  그동안 안내하지 못한다.
 - `NO_VEHICLE` — 최대 간격(5분). 미운행·심야처럼 한동안 값이 없는 것이 정상인 경우다.
 - `UPSTREAM_ERROR` — 최소 간격(20초). 정상 값을 빨리 되찾는 편이 안전하다.
 
 ### 아직 정하지 않은 것
 
-**`UPSTREAM_ERROR`인데 캐시에 직전 값이 남아 있는 경우.** `maxStaleMs`(90초) 안이면 `ArrivalCache`가
-직전 값을 들고 있으므로, `arrivalStatus: UPSTREAM_ERROR`와 비어 있지 않은 `arrivals`가 함께 나올 수
-있다. 그러면 "지금은 확인이 안 되는데 조금 전 정보로는 6분 뒤였어요"까지 안내할 수 있다.
+**공개 API에 stale arrivals를 노출할지.** `maxStaleMs` 안이면 `ArrivalCache`가 직전 값을 들고
+있으므로, 내부 스냅샷에서는 `arrivalStatus: UPSTREAM_ERROR`와 비어 있지 않은 `arrivals`가 함께
+나온다. 노출하면 "지금은 확인이 안 되는데 조금 전 정보로는 6분 뒤였어요"까지 안내할 수 있다.
 
-1차평가 범위에서는 넣지 않기로 했다. 공개 응답에 실을지는 평가 이후에 다시 논의한다.
-지금은 `UPSTREAM_ERROR`이면 `arrivals`가 비어 있다고 보고 구현해도 된다.
+1차평가 범위에서는 넣지 않기로 했고, 공개 응답에 실을지는 평가 이후에 다시 논의한다.
+
+**확정 전에는 내부 `ArrivalSnapshot`의 `arrivals` 형태를 그대로 프론트 계약으로 쓰지 않는다.**
+위 표에서 보듯 실패 시 `arrivals`는 `null`·`[]`·기존 목록 어느 쪽도 될 수 있다.
+`UPSTREAM_ERROR`를 `arrivals: []`로 정규화하기로 한다면, 서비스 층의 변환·Zod Schema·테스트를
+함께 추가한다.
