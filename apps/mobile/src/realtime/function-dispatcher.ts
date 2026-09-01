@@ -39,6 +39,7 @@ function buildCallKey(
   if (event.name === "confirm_boarding") {
     return `${event.name}:${context.getAppState().tripId ?? "NO_ACTIVE_TRIP"}`;
   }
+
   return `${event.name}:${event.arguments}`;
 }
 
@@ -58,9 +59,6 @@ function buildFunctionResponseInstructions(name: RealtimeFunctionName): string {
     return `${common} success가 true인 서버 응답을 받은 경우에만 "탑승이 확인되었습니다. 하차까지 남은 정류장을 안내하겠습니다."라고 안내한다. success가 false이면 탑승이 확인됐다고 말하지 말고 result.message의 확인된 실패 원인만 짧게 안내한 뒤 다시 시도할지 묻는다. boardingMethod, boardingConfirmedAt, tripStatus 같은 내부 필드명은 읽지 않는다.`;
   }
 
-  // 예모님 확정(2026-08-27, 3번 "버스 놓침" 계약): WAITING_BUS일 때 arrivals·arrivalStatus를
-  // 응답에 포함하기로 계약만 먼저 확정하고, 백엔드는 병렬로 연결 중이다. 아래는 그 계약을
-  // 가정한 mock 기준 지침이며, 실제 필드명이 달라지면 이 문구도 함께 갱신해야 한다.
   if (name === "get_trip_status") {
     return `${common} "버스를 놓쳤다"는 발화 뒤에 이 결과가 오면, 이전에 안내했던 도착 예정 시간을 반복하지 않고 이번 결과만 사용한다. arrivalStatus가 "AVAILABLE"이면 arrivals의 첫 항목으로 다음 차 도착 예정 시간을 안내한다. arrivalStatus가 "NO_VEHICLE"이면 지금은 운행 중인 차량이 없다고 안내하고 숫자를 만들어내지 않는다. arrivalStatus가 "UPSTREAM_ERROR"이면 일시적으로 도착정보를 확인할 수 없다고 안내하고 잠시 후 다시 물어봐 달라고 말한다. 이 발화만으로 운행 자체를 취소하지 않는다.`;
   }
@@ -87,6 +85,7 @@ export async function dispatchRealtimeFunctionCall(
         .finally(() => {
           inFlightCalls.delete(callKey);
         });
+
       inFlightCalls.set(callKey, callPromise);
     }
 
@@ -95,6 +94,7 @@ export async function dispatchRealtimeFunctionCall(
   }
 
   updateContext(event.name, args, result, context);
+
   const modelResult = buildModelFunctionResult(
     event.name,
     args,
@@ -125,9 +125,11 @@ function buildModelFunctionResult(
   args: unknown,
   result: FunctionResult,
   context: RealtimeGuideContext,
-): FunctionResult | (CreateTripResponse & {
-  boardingStation: Route["boardingStation"];
-}) {
+):
+  | FunctionResult
+  | (CreateTripResponse & {
+      boardingStation: Route["boardingStation"];
+    }) {
   if (
     name !== "create_trip" ||
     result.success !== true ||
@@ -137,6 +139,7 @@ function buildModelFunctionResult(
   }
 
   const selectedRoute = findSelectedRoute(args, context);
+
   return selectedRoute
     ? {
         ...result,
@@ -208,6 +211,7 @@ async function callBackendFunction(
 
     case "confirm_boarding": {
       assertEmptyObject(args);
+
       const tripId = assertCurrentTripId(context);
 
       return apiClient.trips.confirmBoarding(tripId, {
@@ -217,8 +221,9 @@ async function callBackendFunction(
     }
 
     case "get_trip_status": {
-      // refreshArrivals 는 "버스 놓쳤어요" 발화에서만 모델이 붙인다. 일반 상태
-      // 조회에 붙으면 서버가 정한 갱신 주기를 우회하므로 그대로 넘기되 값만 검증한다.
+      // refreshArrivals는 "버스 놓쳤어요" 발화에서만 모델이 붙인다.
+      // 일반 상태 조회에 붙으면 서버가 정한 갱신 주기를 우회하므로,
+      // 값만 검증한 뒤 서버에 그대로 전달한다.
       const refreshArrivals =
         assertRecord(args).refreshArrivals === true;
 
@@ -236,7 +241,7 @@ async function callBackendFunction(
 }
 
 // Function 처리 결과를 TripContext(dispatchAppAction)에 반영한다.
-// RealtimeGuideContext는 더 이상 상태를 직접 들고 있지 않으므로, context.xxx = ... 대신
+// RealtimeGuideContext는 더 이상 상태를 직접 들고 있지 않으므로,
 // context.dispatchAppAction({ type: ... })으로만 상태를 바꾼다.
 function updateContext(
   name: RealtimeFunctionName,
@@ -298,15 +303,13 @@ function updateContext(
   }
 
   if (name === "confirm_boarding") {
-    const boardingResult =
-      result as BoardingConfirmationResponse;
+    const boardingResult = result as BoardingConfirmationResponse;
 
     context.dispatchAppAction({
       type: "CONFIRM_BOARDING",
       tripStatus: boardingResult.tripStatus,
       boardingMethod: boardingResult.boardingMethod,
-      boardingConfirmedAt:
-        boardingResult.boardingConfirmedAt,
+      boardingConfirmedAt: boardingResult.boardingConfirmedAt,
     });
 
     return;
@@ -328,8 +331,8 @@ async function assertRoutesSearchRequest(
   let currentLocation = context.getCurrentLocation();
 
   if (!currentLocation) {
-    // Realtime 연결이 GPS보다 먼저 완료된 경우, 검색 시점에 실제 위치를 한 번 더 요청한다.
-    // 위치 실패는 WebRTC 연결을 끊지 않고 이 Function 호출만 오류로 처리한다.
+    // Realtime 연결이 GPS보다 먼저 완료된 경우,
+    // 검색 시점에 실제 위치를 한 번 더 요청한다.
     await context.refreshCurrentLocation().catch(() => undefined);
     currentLocation = context.getCurrentLocation();
   }
@@ -507,8 +510,7 @@ function parseFunctionArguments(
     return {
       success: false,
       errorCode: "INVALID_FUNCTION_ARGUMENTS",
-      message:
-        "Function 인자를 JSON으로 해석할 수 없습니다.",
+      message: "Function 인자를 JSON으로 해석할 수 없습니다.",
       timestamp: new Date().toISOString(),
     };
   }
@@ -555,9 +557,7 @@ function assertRecord(
     typeof value !== "object" ||
     Array.isArray(value)
   ) {
-    throw new Error(
-      "Function 인자는 객체여야 합니다.",
-    );
+    throw new Error("Function 인자는 객체여야 합니다.");
   }
 
   return value as Record<string, unknown>;
@@ -583,9 +583,7 @@ function assertNonEmptyString(
     typeof value !== "string" ||
     value.trim().length === 0
   ) {
-    throw new Error(
-      `${fieldName} 값이 필요합니다.`,
-    );
+    throw new Error(`${fieldName} 값이 필요합니다.`);
   }
 
   return value;
@@ -599,9 +597,7 @@ function assertFiniteNumber(
     typeof value !== "number" ||
     !Number.isFinite(value)
   ) {
-    throw new Error(
-      `${fieldName} 값은 숫자여야 합니다.`,
-    );
+    throw new Error(`${fieldName} 값은 숫자여야 합니다.`);
   }
 
   return value;

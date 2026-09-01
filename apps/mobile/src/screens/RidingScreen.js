@@ -161,12 +161,16 @@ export default function RidingScreen({ route, navigation }) {
     }
   }, [boardingConfirmedAt, state.beaconScanActive]);
 
-  // 예모님·유나님 지적(2026-08-27, P1): 음성 end_trip으로 Context의 tripId가 비워지는
-  // 순간을 감지해서, 다음 PATCH 응답을 기다리지 않고 즉시 GPS 폴링과 BLE 스캔을 멈춘다.
-  // 화면 route param의 tripId는 취소 후에도 그대로 남아있어 GPS interval 자체는 계속
-  // 돌고 있으므로, 이 tripId와 Context의 활성 tripId가 어긋나는 순간을 취소 신호로 본다.
+  // 예모님 재지적(2026-08-27, P1): 기존 코드는 state.tripId && state.tripId !== tripId 였는데,
+  // RESET_TRIP_KEEP_SEARCH가 state.tripId를 null로 만들기 때문에 "state.tripId &&" 조건에서
+  // 걸러져서 정상 취소 시에는 이 로직이 아예 실행되지 않았다.
+  // 이 화면의 tripId(=route.params, 취소돼도 안 바뀜)가 활성 상태인지는
+  // "state.tripId가 이 화면의 tripId와 다르다"가 아니라
+  // "state.tripId가 이 화면의 tripId가 아니게 됐다(null 포함)"로 판단해야 한다.
+  const isThisTripStillActive = state.tripId === tripId;
+
   useEffect(() => {
-    if (state.tripId && state.tripId !== tripId) {
+    if (!isThisTripStillActive) {
       // Context의 활성 운행이 이 화면의 tripId와 달라졌다(취소되었거나 다른 운행으로 바뀜).
       stoppedRef.current = true;
       if (state.beaconScanActive) {
@@ -179,7 +183,7 @@ export default function RidingScreen({ route, navigation }) {
           });
       }
     }
-  }, [state.tripId, tripId, state.beaconScanActive]);
+  }, [isThisTripStillActive, state.beaconScanActive]);
 
   // 1정거장 남았을 때 TTS 출력 후 하차 안내 화면 전환
   useEffect(() => {
@@ -249,6 +253,13 @@ export default function RidingScreen({ route, navigation }) {
         source: 'GPS',
       });
 
+      // 예모님 지적(2026-08-27, P2): await 이후 응답을 반영하기 전에, 그 사이 이 운행이
+      // 취소되거나 다른 운행으로 바뀌지 않았는지 재확인한다. 취소 직전 요청의 늦은 응답이
+      // 취소 후 화면·Context·Realtime 세션에 다시 반영되는 것을 막는다.
+      if (stoppedRef.current || state.tripId !== tripId) {
+        return;
+      }
+
       setStatus(data);
       dispatch({ type: 'UPDATE_TRIP_STATUS', status: data });
       session?.notifyStatusChange({
@@ -269,6 +280,9 @@ export default function RidingScreen({ route, navigation }) {
         dispatch({ type: 'RESET_TRIP_KEEP_SEARCH' });
       }
     } catch (error) {
+      if (stoppedRef.current || state.tripId !== tripId) {
+        return;
+      }
       if (error instanceof ApiError) {
         if (error.errorCode === 'INVALID_TRIP_STATUS') {
           stoppedRef.current = true;
