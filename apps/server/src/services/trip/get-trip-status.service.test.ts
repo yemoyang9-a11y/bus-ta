@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  ArrivalInfo,
   BELL_COMMAND,
   BELL_STATUS,
   BOARDING_METHOD,
   DEMO_ROUTE,
+  TripStatusResponseSchema,
   TRIP_STATUS,
 } from "@bus-ta/shared";
 import { getTripStatus } from "./get-trip-status.service.js";
@@ -48,6 +50,86 @@ test("returns the current trip status without triggering a bell", async () => {
   assert.equal(result.body.shouldTriggerBell, false);
   assert.equal(result.body.command, null);
   assert.equal("bellRequestId" in result.body, false);
+});
+
+test("refreshes arrival information and reports available vehicles", async () => {
+  const arrivals: ArrivalInfo[] = [
+    {
+      predictedArrivalMinutes: 4,
+      occupancy: { type: "UNAVAILABLE", congestionLevel: null, remainingSeats: null },
+    },
+  ];
+
+  const result = await getTripStatus("trip-test-001", {
+    findTripProgressData: async () => ({
+      trip: {
+        ...baseTrip,
+        gbisStationId: "201000166",
+        localBusId: "234000021",
+      },
+      status: baseStatus,
+    }),
+    getArrivals: async (target) => {
+      assert.equal(target.gbisStationId, "201000166");
+      assert.equal(target.localBusId, "234000021");
+      return { arrivals, lookupStatus: "AVAILABLE" };
+    },
+    now: () => "2026-07-01T14:36:00+09:00",
+  });
+
+  assert.equal(result.httpStatus, 200);
+  if (result.httpStatus !== 200) return;
+  assert.deepEqual(result.body.arrivals, arrivals);
+  assert.equal(result.body.arrivalStatus, "AVAILABLE");
+  assert.doesNotThrow(() => TripStatusResponseSchema.parse(result.body));
+});
+
+test("reports no vehicle separately from an upstream arrival lookup failure", async () => {
+  const noVehicle = await getTripStatus("trip-test-001", {
+    findTripProgressData: async () => ({
+      trip: { ...baseTrip, gbisStationId: "201000166", localBusId: "234000021" },
+      status: baseStatus,
+    }),
+    getArrivals: async () => ({ arrivals: [], lookupStatus: "NO_VEHICLE" }),
+    now: () => "2026-07-01T14:36:00+09:00",
+  });
+  const upstreamFailure = await getTripStatus("trip-test-001", {
+    findTripProgressData: async () => ({
+      trip: { ...baseTrip, gbisStationId: "201000166", localBusId: "234000021" },
+      status: baseStatus,
+    }),
+    getArrivals: async () => {
+      throw new Error("GBIS unavailable");
+    },
+    now: () => "2026-07-01T14:36:00+09:00",
+  });
+
+  assert.equal(noVehicle.httpStatus, 200);
+  assert.equal(upstreamFailure.httpStatus, 200);
+  if (noVehicle.httpStatus !== 200 || upstreamFailure.httpStatus !== 200) return;
+  assert.deepEqual(noVehicle.body.arrivals, []);
+  assert.equal(noVehicle.body.arrivalStatus, "NO_VEHICLE");
+  assert.deepEqual(upstreamFailure.body.arrivals, []);
+  assert.equal(upstreamFailure.body.arrivalStatus, "UPSTREAM_ERROR");
+});
+
+// 방향 검증 실패는 fail-closed 로 arrivals 를 비우지만 "차가 없다"는 뜻이 아니다.
+// 두 경우를 합쳐 NO_VEHICLE 로 안내하면 버스를 놓친 사용자가 "이 노선은 이제 안 온다"로
+// 잘못 판단한다.
+test("방향을 확인하지 못한 조회는 NO_VEHICLE 이 아니라 UPSTREAM_ERROR 로 보고한다", async () => {
+  const result = await getTripStatus("trip-test-001", {
+    findTripProgressData: async () => ({
+      trip: { ...baseTrip, gbisStationId: "201000166", localBusId: "234000021" },
+      status: baseStatus,
+    }),
+    getArrivals: async () => ({ arrivals: [], lookupStatus: "UNVERIFIED" }),
+    now: () => "2026-07-01T14:36:00+09:00",
+  });
+
+  assert.equal(result.httpStatus, 200);
+  if (result.httpStatus !== 200) return;
+  assert.deepEqual(result.body.arrivals, []);
+  assert.equal(result.body.arrivalStatus, "UPSTREAM_ERROR");
 });
 
 test("returns bellRequestId and command when a bell request is pending", async () => {

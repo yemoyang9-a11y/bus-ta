@@ -673,6 +673,60 @@ test("중복 routeId: 노선 정류장 목록 조회(GBIS busrouteservice)가 �
   assert.deepEqual(info.arrivals, []);
 });
 
+// 예외사항 3번: `arrivals: []` 하나로는 "이 노선 차가 지금 없다"와 "방향을 확인하지
+// 못해 fail-closed 로 접었다"를 구분할 수 없다. GET /status 는 사용자가 버스를 놓친
+// 직후 호출되므로, 확인 실패를 "차가 없다"로 안내하면 사용자가 잘못된 판단을 한다.
+// lookupStatus 로 두 경우를 갈라 호출자가 서로 다른 안내를 할 수 있게 한다.
+
+test("도착정보에 해당 노선 차량이 실제로 없으면 lookupStatus 는 NO_VEHICLE 이다", async (t) => {
+  stubGbisArrival(t);
+
+  const info = await getArrivalInfo(arrivalCandidate("999999999"));
+
+  assert.deepEqual(info.arrivals, []);
+  assert.equal(info.lookupStatus, "NO_VEHICLE");
+});
+
+test("노선 정류장 목록 조회가 실패해 방향을 못 가리면 lookupStatus 는 UNVERIFIED 다", async (t) => {
+  t.mock.method(axios, "get", async (url: string) => {
+    if (url.includes("busarrivalservice")) return { data: gbisArrivalFixture };
+    if (url.includes("busrouteservice")) throw new Error("network error");
+    throw new Error(`이 테스트에서 예상하지 못한 axios.get 호출: ${url}`);
+  });
+
+  const info = await getArrivalInfo({
+    ...arrivalCandidate("233000281"),
+    destinationStation: DESTINATION_AFTER_TURN_POINT,
+  });
+
+  assert.deepEqual(info.arrivals, []);
+  assert.equal(info.lookupStatus, "UNVERIFIED");
+});
+
+test("목적지가 노선에 없어 방향을 확정하지 못하면 lookupStatus 는 UNVERIFIED 다", async (t) => {
+  stubGbisArrivalAndRoute(t);
+
+  const info = await getArrivalInfo({
+    ...arrivalCandidate("233000281"),
+    destinationStation: { stationName: "존재하지 않는 정류장", latitude: 0, longitude: 0 },
+  });
+
+  assert.deepEqual(info.arrivals, []);
+  assert.equal(info.lookupStatus, "UNVERIFIED");
+});
+
+test("방향이 맞는 도착정보를 찾으면 lookupStatus 는 AVAILABLE 이다", async (t) => {
+  stubGbisArrivalAndRoute(t);
+
+  const info = await getArrivalInfo({
+    ...arrivalCandidate("233000281"),
+    destinationStation: DESTINATION_AFTER_TURN_POINT,
+  });
+
+  assert.deepEqual(info.arrivals.map((a) => a.predictedArrivalMinutes), [15, 88]);
+  assert.equal(info.lookupStatus, "AVAILABLE");
+});
+
 // PR #33 리뷰 지적: 이번 도착정보 응답에 routeId 레코드가 "몇 개 왔는지"만 보고
 // 방향 검증 여부를 정하면, 회차 노선인데 GBIS가 이번엔 반대 방향 레코드를 아예
 // 안 준 경우(레코드 1개) 그 1개를 검증 없이 그대로 써버려 반대 방향을 안내할 수

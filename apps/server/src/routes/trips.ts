@@ -105,7 +105,13 @@ tripsRouter.get("/:tripId/status", async (req, res) => {
     return;
   }
 
-  const result = await getTripStatus(req.params.tripId ?? "", repository);
+  const result = await getTripStatus(req.params.tripId ?? "", {
+    findTripProgressData: (tripId) => repository.findTripProgressData(tripId),
+    // get_trip_status 는 사용자가 버스를 놓쳤다고 말한 직후 호출되는 경로다.
+    // 캐시/기존 predictedArrivalMinutes를 거치지 않고 GBIS를 새로 조회한다.
+    // arrivals 가 비어 있는 이유(차량 없음 / 방향 확인 불가) 판단은 service 가 한다.
+    getArrivals: (candidate) => getArrivalInfo(candidate),
+  });
   res.status(result.httpStatus).json(result.body);
 });
 

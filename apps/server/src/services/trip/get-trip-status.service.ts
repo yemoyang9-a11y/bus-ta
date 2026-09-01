@@ -1,4 +1,4 @@
-import { TRIP_STATUS } from "@bus-ta/shared";
+import { TRIP_STATUS, type ArrivalInfo } from "@bus-ta/shared";
 import type { TripProgressData } from "./update-trip-status.service.js";
 import { buildGuideMessage } from "./guide-message.js";
 
@@ -7,6 +7,18 @@ export interface GetTripStatusRepository {
 }
 
 export interface GetTripStatusDependencies extends GetTripStatusRepository {
+  /**
+   * 도착정보를 새로 조회한다. `arrivals` 가 비어 있는 이유가 "차량 없음"인지
+   * "방향을 확인하지 못함"인지는 `lookupStatus` 로만 구분할 수 있다.
+   */
+  getArrivals?: (target: {
+    gbisStationId: string;
+    localBusId: string;
+    destinationStation?: Station;
+  }) => Promise<{
+    arrivals: ArrivalInfo[];
+    lookupStatus: "AVAILABLE" | "NO_VEHICLE" | "UNVERIFIED";
+  }>;
   now?: () => string;
 }
 
@@ -17,6 +29,8 @@ type GetTripStatusSuccessBody = {
   tripId: string;
   destination: string;
   routeNo: string;
+  arrivals: ArrivalInfo[];
+  arrivalStatus: "AVAILABLE" | "NO_VEHICLE" | "UPSTREAM_ERROR";
   currentStation: Station | null;
   nextStation: Station | null;
   remainingStations: number;
@@ -85,11 +99,14 @@ export async function getTripStatus(
   }
 
   const status = progressData.status;
+  const arrivalResult = await refreshArrivals(progressData, dependencies.getArrivals);
   const body: GetTripStatusSuccessBody = {
     success: true,
     tripId: progressData.trip.tripId,
     destination: progressData.trip.destination,
     routeNo: progressData.trip.routeNo,
+    arrivals: arrivalResult.arrivals,
+    arrivalStatus: arrivalResult.arrivalStatus,
     currentStation: status.currentStation,
     nextStation: status.nextStation,
     remainingStations: status.remainingStations,
@@ -115,4 +132,38 @@ export async function getTripStatus(
   }
 
   return { httpStatus: 200, body };
+}
+
+async function refreshArrivals(
+  progressData: TripProgressData,
+  getArrivals: GetTripStatusDependencies["getArrivals"],
+): Promise<{
+  arrivals: ArrivalInfo[];
+  arrivalStatus: GetTripStatusSuccessBody["arrivalStatus"];
+}> {
+  const { gbisStationId, localBusId } = progressData.trip;
+  if (!getArrivals || !gbisStationId || !localBusId) {
+    return { arrivals: [], arrivalStatus: "UPSTREAM_ERROR" };
+  }
+
+  try {
+    const destinationStation =
+      progressData.trip.destinationStation ??
+      progressData.trip.stationList[progressData.trip.stationList.length - 1];
+    const lookup = await getArrivals({
+      gbisStationId,
+      localBusId,
+      ...(destinationStation ? { destinationStation } : {}),
+    });
+    return {
+      arrivals: lookup.arrivals,
+      // 방향을 확인하지 못해 접은 결과를 NO_VEHICLE 로 내보내면 "이 노선은 이제
+      // 안 온다"로 안내된다. 확인하지 못한 것과 차가 없는 것은 다르게 다룬다.
+      arrivalStatus: lookup.lookupStatus === "UNVERIFIED" ? "UPSTREAM_ERROR" : lookup.lookupStatus,
+    };
+  } catch {
+    // 재조회 실패는 운행 상태 오류가 아니다. 이전 도착시간을 재사용하지 않고
+    // 빈 배열과 별도 상태로 반환해 Dispatcher가 추측 안내를 하지 않게 한다.
+    return { arrivals: [], arrivalStatus: "UPSTREAM_ERROR" };
+  }
 }

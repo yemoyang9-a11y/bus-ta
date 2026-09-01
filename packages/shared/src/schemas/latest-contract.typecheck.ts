@@ -156,6 +156,13 @@ const boardingConfirmationResponse: BoardingConfirmationResponse = {
 const tripStatusResponse: TripStatusResponse = {
   success: true,
   tripId: "trip-001",
+  arrivals: [
+    {
+      predictedArrivalMinutes: 4,
+      occupancy: { type: "UNAVAILABLE", congestionLevel: null, remainingSeats: null },
+    },
+  ],
+  arrivalStatus: "AVAILABLE",
   currentStation: stationList[0]!,
   nextStation: stationList[1]!,
   remainingStations: 1,

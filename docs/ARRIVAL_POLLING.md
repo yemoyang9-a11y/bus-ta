@@ -3,12 +3,16 @@
 버스 도착 예정 시간을 언제 다시 조회할지, 스마트지팡이 비콘 스캔을 언제 켤지 정하는 정책이다.
 
 - 코드: `apps/server/src/services/arrival/arrival-poll-policy.ts`, `arrival-cache.ts`
-- 상태: **정책과 캐시만 구현됨. 아직 어떤 API에도 연결되어 있지 않다.** 연결에는 아래 "남은 작업"의 협의가 필요하다.
+- 상태: 적응형 정책과 캐시는 구현되어 있으며, 예외사항 3번의 `GET /api/trips/{tripId}/status`
+  재조회 경로는 캐시를 우회해 항상 GBIS의 최신 값을 확인한다. 앱의 주기적 상태 polling에
+  캐시를 연결하는 작업은 별도 범위로 남아 있다.
 
 ## 왜 필요한가
 
-현재 `getArrivalInfo`는 `POST /api/trips`에서 한 번만 호출된다. `PATCH /api/trips/{tripId}/status`에는
-GBIS 호출이 없어서, 사용자가 정류장에서 기다리는 동안 "약 3분 후 도착"이 갱신되지 않는다.
+현재 `getArrivalInfo`는 `POST /api/trips`에서 최초 호출되고, 사용자가 버스를 놓쳤다고 말해
+`GET /api/trips/{tripId}/status`가 호출되면 선택 노선 기준으로 다시 호출된다.
+`PATCH /api/trips/{tripId}/status`에는 GBIS 호출이 없어서 일반 GPS 업데이트마다 외부 API를
+호출하지 않는다.
 
 그렇다고 앱의 3초 주기에 맞춰 GBIS를 부를 수는 없다. 그래서 호출 시점을 앱이 아니라 서버가 정한다.
 
@@ -88,7 +92,7 @@ GBIS는 요청이 잘못돼도 HTTP 200으로 응답하고 `msgHeader.resultCode
 
 ## 남은 작업 (협의 필요)
 
-이 정책을 실제로 태우려면 다른 파트와 맞춰야 한다.
+적응형 캐시 정책을 일반 polling에 실제로 연결하려면 다른 파트와 맞춰야 한다.
 
 - **`PATCH /status` 응답에 도착정보·스캔 신호를 실을지** — 응답 구조가 바뀌므로
   `docs/API_SPEC.md`, `docs/MODULE_CONTRACTS.md` 동기화와 예모·채린 확인이 필요하다.
