@@ -72,7 +72,7 @@ test("refreshes arrival information and reports available vehicles", async () =>
     getArrivals: async (target) => {
       assert.equal(target.gbisStationId, "201000166");
       assert.equal(target.localBusId, "234000021");
-      return { arrivals, lookupStatus: "AVAILABLE" };
+      return { arrivals, arrivalStatus: "AVAILABLE" };
     },
     now: () => "2026-07-01T14:36:00+09:00",
   });
@@ -90,7 +90,7 @@ test("reports no vehicle separately from an upstream arrival lookup failure", as
       trip: { ...baseTrip, gbisStationId: "201000166", localBusId: "234000021" },
       status: baseStatus,
     }),
-    getArrivals: async () => ({ arrivals: [], lookupStatus: "NO_VEHICLE" }),
+    getArrivals: async () => ({ arrivals: [], arrivalStatus: "NO_VEHICLE" }),
     now: () => "2026-07-01T14:36:00+09:00",
   });
   const upstreamFailure = await getTripStatus("trip-test-001", {
@@ -122,7 +122,7 @@ test("방향을 확인하지 못한 조회는 NO_VEHICLE 이 아니라 UPSTREAM_
       trip: { ...baseTrip, gbisStationId: "201000166", localBusId: "234000021" },
       status: baseStatus,
     }),
-    getArrivals: async () => ({ arrivals: [], lookupStatus: "UNVERIFIED" }),
+    getArrivals: async () => ({ arrivals: [], arrivalStatus: "UPSTREAM_ERROR" }),
     now: () => "2026-07-01T14:36:00+09:00",
   });
 

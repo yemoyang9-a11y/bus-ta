@@ -9,7 +9,7 @@ export interface GetTripStatusRepository {
 export interface GetTripStatusDependencies extends GetTripStatusRepository {
   /**
    * 도착정보를 새로 조회한다. `arrivals` 가 비어 있는 이유가 "차량 없음"인지
-   * "방향을 확인하지 못함"인지는 `lookupStatus` 로만 구분할 수 있다.
+   * 도착정보 조회 결과의 성격은 `arrivalStatus` 로 구분한다.
    */
   getArrivals?: (target: {
     gbisStationId: string;
@@ -17,7 +17,7 @@ export interface GetTripStatusDependencies extends GetTripStatusRepository {
     destinationStation?: Station;
   }) => Promise<{
     arrivals: ArrivalInfo[];
-    lookupStatus: "AVAILABLE" | "NO_VEHICLE" | "UNVERIFIED";
+    arrivalStatus: "AVAILABLE" | "NO_VEHICLE" | "NO_PREDICTION" | "UPSTREAM_ERROR";
   }>;
   now?: () => string;
 }
@@ -30,7 +30,7 @@ type GetTripStatusSuccessBody = {
   destination: string;
   routeNo: string;
   arrivals: ArrivalInfo[];
-  arrivalStatus: "AVAILABLE" | "NO_VEHICLE" | "UPSTREAM_ERROR";
+  arrivalStatus: "AVAILABLE" | "NO_VEHICLE" | "NO_PREDICTION" | "UPSTREAM_ERROR";
   currentStation: Station | null;
   nextStation: Station | null;
   remainingStations: number;
@@ -157,9 +157,7 @@ async function refreshArrivals(
     });
     return {
       arrivals: lookup.arrivals,
-      // 방향을 확인하지 못해 접은 결과를 NO_VEHICLE 로 내보내면 "이 노선은 이제
-      // 안 온다"로 안내된다. 확인하지 못한 것과 차가 없는 것은 다르게 다룬다.
-      arrivalStatus: lookup.lookupStatus === "UNVERIFIED" ? "UPSTREAM_ERROR" : lookup.lookupStatus,
+      arrivalStatus: lookup.arrivalStatus,
     };
   } catch {
     // 재조회 실패는 운행 상태 오류가 아니다. 이전 도착시간을 재사용하지 않고
