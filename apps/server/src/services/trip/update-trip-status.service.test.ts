@@ -47,6 +47,9 @@ const baseStatus: TripProgressData["status"] = {
   lastRequestId: null,
   locationSource: null,
   recordedAt: null,
+  lastLatitude: null,
+  lastLongitude: null,
+  locationChangedAt: null,
   updatedAt: "2026-07-01T14:31:00+09:00",
 };
 
@@ -134,6 +137,9 @@ test("updates current station, next station, remainingStations, and tripStatus f
       lastRequestId: "loc-001",
       locationSource: "MOCK",
       recordedAt: "2026-07-01T14:35:00+09:00",
+      lastLatitude: TEST_ROUTE.stationList[1]!.latitude,
+      lastLongitude: TEST_ROUTE.stationList[1]!.longitude,
+      locationChangedAt: "2026-07-01T14:35:00+09:00",
       updatedAt: "2026-07-01T14:35:01+09:00",
     },
     locationLog: {
@@ -563,6 +569,120 @@ test("clamps a multi-station forward jump to one station", async () => {
   }
   assert.equal(result.body.currentStation?.stationName, TEST_ROUTE.stationList[1]!.stationName);
   assert.equal((saved[0] as { locationLog: { reason: string } }).locationLog.reason, "FORWARD_JUMP_CLAMPED");
+});
+
+test("recovers a multi-station jump after a stale location gap", async () => {
+  const saved: unknown[] = [];
+
+  const result = await updateTripStatus(
+    "trip-test-001",
+    {
+      requestId: "loc-stale-recovery",
+      latitude: TEST_ROUTE.stationList[3]!.latitude,
+      longitude: TEST_ROUTE.stationList[3]!.longitude,
+      recordedAt: "2026-07-01T14:45:00.000Z",
+      source: "GPS",
+    },
+    {
+      findTripProgressData: async () => ({
+        trip: baseTrip,
+        status: {
+          ...baseStatus,
+          currentStation: TEST_ROUTE.stationList[0]!,
+          nextStation: TEST_ROUTE.stationList[1]!,
+          recordedAt: "2026-07-01T14:35:00.000Z",
+        },
+      }),
+      findLocationLogByRequestId: async () => null,
+      saveStatusAndLocation: async (data) => {
+        saved.push(data);
+      },
+      now: () => "2026-07-01T14:45:01.000Z",
+    },
+  );
+
+  if (result.httpStatus !== 200) {
+    throw new Error("expected successful status update");
+  }
+
+  assert.equal(result.body.currentStation?.stationName, "T3");
+  assert.equal(result.body.remainingStations, 0);
+  assert.equal(result.body.locationStatus, "STALE");
+  assert.equal(result.body.locationGapSeconds, 600);
+  assert.equal((saved[0] as { locationLog: { reason: string } }).locationLog.reason, "FORWARD_GAP_RECOVERED");
+});
+
+test("does not mark a normal location interval as stale", async () => {
+  const result = await updateTripStatus(
+    "trip-test-001",
+    {
+      requestId: "loc-active",
+      latitude: TEST_ROUTE.stationList[1]!.latitude,
+      longitude: TEST_ROUTE.stationList[1]!.longitude,
+      recordedAt: "2026-07-01T14:35:03.000Z",
+      source: "GPS",
+    },
+    {
+      findTripProgressData: async () => ({
+        trip: baseTrip,
+        status: {
+          ...baseStatus,
+          currentStation: TEST_ROUTE.stationList[0]!,
+          nextStation: TEST_ROUTE.stationList[1]!,
+          recordedAt: "2026-07-01T14:35:00.000Z",
+        },
+      }),
+      findLocationLogByRequestId: async () => null,
+      saveStatusAndLocation: async () => {},
+      now: () => "2026-07-01T14:35:04.000Z",
+    },
+  );
+
+  if (result.httpStatus !== 200) {
+    throw new Error("expected successful status update");
+  }
+
+  assert.equal("locationStatus" in result.body, false);
+  assert.equal("locationGapSeconds" in result.body, false);
+});
+
+test("marks repeated cached coordinates as stale after the coordinate has not changed", async () => {
+  const result = await updateTripStatus(
+    "trip-test-001",
+    {
+      requestId: "loc-frozen",
+      latitude: TEST_ROUTE.stationList[0]!.latitude,
+      longitude: TEST_ROUTE.stationList[0]!.longitude,
+      recordedAt: "2026-07-01T14:45:00.000Z",
+      source: "GPS",
+    },
+    {
+      findTripProgressData: async () => ({
+        trip: baseTrip,
+        status: {
+          ...baseStatus,
+          currentStation: TEST_ROUTE.stationList[0]!,
+          nextStation: TEST_ROUTE.stationList[1]!,
+          recordedAt: "2026-07-01T14:44:00.000Z",
+          lastLatitude: TEST_ROUTE.stationList[0]!.latitude,
+          lastLongitude: TEST_ROUTE.stationList[0]!.longitude,
+          locationChangedAt: "2026-07-01T14:35:00.000Z",
+        },
+      }),
+      findLocationLogByRequestId: async () => null,
+      saveStatusAndLocation: async () => {},
+      now: () => "2026-07-01T14:45:01.000Z",
+    },
+  );
+
+  if (result.httpStatus !== 200) {
+    throw new Error("expected successful status update");
+  }
+
+  assert.equal(result.body.locationStatus, "STALE");
+  assert.equal(result.body.locationGapSeconds, 600);
+  assert.equal(result.body.locationWarning, "위치 정보 업데이트가 지연되었습니다. 현재 위치를 다시 확인합니다.");
+  assert.equal(result.body.currentStation?.stationName, "T0");
 });
 
 test("auto-generates a bell request when remainingStations becomes 1 and bell is NOT_REQUESTED", async () => {

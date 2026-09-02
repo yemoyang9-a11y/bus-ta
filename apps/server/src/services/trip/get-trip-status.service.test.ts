@@ -33,6 +33,9 @@ const baseStatus: TripProgressData["status"] = {
   lastRequestId: "loc-010",
   locationSource: "MOCK",
   recordedAt: "2026-07-01T14:35:00+09:00",
+  lastLatitude: 37.49,
+  lastLongitude: 127.03,
+  locationChangedAt: "2026-07-01T14:35:00+09:00",
   updatedAt: "2026-07-01T14:35:01+09:00",
 };
 

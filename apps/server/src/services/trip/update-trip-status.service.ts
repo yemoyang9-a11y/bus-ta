@@ -36,6 +36,9 @@ export interface TripProgressData {
     lastRequestId: string | null;
     locationSource: string | null;
     recordedAt: string | null;
+    lastLatitude: number | null;
+    lastLongitude: number | null;
+    locationChangedAt: string | null;
     updatedAt: string;
   };
 }
@@ -55,6 +58,9 @@ export interface TripStatusUpdateRecord {
   lastRequestId: string;
   locationSource: UpdateTripStatusRequest["source"];
   recordedAt: string;
+  lastLatitude: number;
+  lastLongitude: number;
+  locationChangedAt: string;
   updatedAt: string;
 }
 
@@ -68,7 +74,11 @@ export interface LocationLogCreateRecord {
   currentStation: Station | null;
   remainingStations: number;
   locationAccepted: boolean;
-  reason: "BACKWARD_STATION_IGNORED" | "FORWARD_JUMP_CLAMPED" | null;
+  reason:
+    | "BACKWARD_STATION_IGNORED"
+    | "FORWARD_JUMP_CLAMPED"
+    | "FORWARD_GAP_RECOVERED"
+    | null;
 }
 
 export interface BellRequestCreateRecord {
@@ -152,6 +162,9 @@ type UpdateTripStatusSuccessBody = {
   bellRequestId?: string;
   command: typeof BELL_COMMAND.STOP_REQUEST | null;
   guideMessage: string;
+  locationStatus?: "STALE";
+  locationGapSeconds?: number;
+  locationWarning?: string;
   source?: UpdateTripStatusRequest["source"];
   message: string;
   timestamp: string;
@@ -178,6 +191,7 @@ export type UpdateTripStatusResult =
 
 const defaultNow = () => new Date().toISOString();
 const defaultGenerateBellRequestId = () => `bell-${randomUUID()}`;
+const STALE_LOCATION_GAP_MS = 60_000;
 
 export async function updateTripStatus(
   tripId: string,
@@ -281,7 +295,8 @@ export async function updateTripStatus(
   }
 
   const boardingConfirmed = hasConfirmedBoarding(progressData);
-  const calculatedProgress = calculateProgress(progressData, parsed.data);
+  const locationStale = isLocationStale(progressData.status, parsed.data);
+  const calculatedProgress = calculateProgress(progressData, parsed.data, locationStale.isStale);
   const progress = {
     ...calculatedProgress,
     tripStatus: boardingConfirmed
@@ -326,6 +341,11 @@ export async function updateTripStatus(
     lastRequestId: parsed.data.requestId,
     locationSource: parsed.data.source,
     recordedAt: parsed.data.recordedAt,
+    lastLatitude: parsed.data.latitude,
+    lastLongitude: parsed.data.longitude,
+    locationChangedAt: locationStale.sameAsLast
+      ? progressData.status.locationChangedAt ?? parsed.data.recordedAt
+      : parsed.data.recordedAt,
     updatedAt: timestamp,
   };
 
@@ -479,12 +499,19 @@ export async function updateTripStatus(
         source: parsed.data.source,
         timestamp,
         shouldTriggerBell,
+        ...(locationStale.isStale
+          ? { locationStatus: "STALE" as const, locationGapSeconds: locationStale.staleSeconds }
+          : {}),
       },
     ),
   };
 }
 
-function calculateProgress(progressData: TripProgressData, location: UpdateTripStatusRequest) {
+function calculateProgress(
+  progressData: TripProgressData,
+  location: UpdateTripStatusRequest,
+  isStale: boolean,
+) {
   const stationList = progressData.trip.stationList;
   const nearestIndex = findNearestStationIndex(stationList, location.latitude, location.longitude);
   const previousIndex = findStationIndex(stationList, progressData.status.currentStation);
@@ -496,6 +523,8 @@ function calculateProgress(progressData: TripProgressData, location: UpdateTripS
     acceptedIndex = previousIndex;
     locationAccepted = false;
     reason = "BACKWARD_STATION_IGNORED";
+  } else if (previousIndex >= 0 && nearestIndex > previousIndex + 1 && isStale) {
+    reason = "FORWARD_GAP_RECOVERED";
   } else if (previousIndex >= 0 && nearestIndex > previousIndex + 1) {
     acceptedIndex = previousIndex + 1;
     reason = "FORWARD_JUMP_CLAMPED";
@@ -522,6 +551,8 @@ function toResponseBody(
     timestamp: string;
     source?: UpdateTripStatusRequest["source"];
     shouldTriggerBell?: boolean;
+    locationStatus?: "STALE";
+    locationGapSeconds?: number;
   },
 ): UpdateTripStatusSuccessBody {
   const shouldTriggerBell = options.shouldTriggerBell ?? false;
@@ -557,6 +588,13 @@ function toResponseBody(
   if (options.source) {
     body.source = options.source;
   }
+  if (options.locationStatus) {
+    body.locationStatus = options.locationStatus;
+    if (options.locationGapSeconds !== undefined) {
+      body.locationGapSeconds = options.locationGapSeconds;
+    }
+    body.locationWarning = "위치 정보 업데이트가 지연되었습니다. 현재 위치를 다시 확인합니다.";
+  }
 
   return body;
 }
@@ -587,7 +625,7 @@ function findNearestStationIndex(stationList: Station[], latitude: number, longi
   let nearestDistance = Number.POSITIVE_INFINITY;
 
   stationList.forEach((station, index) => {
-    const distance = Math.hypot(station.latitude - latitude, station.longitude - longitude);
+    const distance = haversineKm(latitude, longitude, station.latitude, station.longitude);
     if (distance < nearestDistance) {
       nearestDistance = distance;
       nearestIndex = index;
@@ -595,6 +633,46 @@ function findNearestStationIndex(stationList: Station[], latitude: number, longi
   });
 
   return nearestIndex;
+}
+
+function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number) {
+  const earthRadiusKm = 6371;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const lat1Radians = (lat1 * Math.PI) / 180;
+  const lat2Radians = (lat2 * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1Radians) * Math.cos(lat2Radians) * Math.sin(dLon / 2) ** 2;
+  return earthRadiusKm * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function getPositiveGapSeconds(previousRecordedAt: string | null, recordedAt: string) {
+  if (!previousRecordedAt) return null;
+  const previousMs = Date.parse(previousRecordedAt);
+  const currentMs = Date.parse(recordedAt);
+  if (!Number.isFinite(previousMs) || !Number.isFinite(currentMs) || currentMs <= previousMs) {
+    return null;
+  }
+  return Math.floor((currentMs - previousMs) / 1000);
+}
+
+function isLocationStale(
+  status: TripProgressData["status"],
+  location: UpdateTripStatusRequest,
+) {
+  const sameAsLast =
+    status.lastLatitude === location.latitude && status.lastLongitude === location.longitude;
+  const unchangedSince = status.locationChangedAt ?? status.recordedAt;
+  const unchangedSeconds = getPositiveGapSeconds(unchangedSince, location.recordedAt);
+  const requestGapSeconds = getPositiveGapSeconds(status.recordedAt, location.recordedAt);
+  const staleSeconds = Math.max(unchangedSeconds ?? 0, requestGapSeconds ?? 0);
+
+  return {
+    sameAsLast,
+    isStale: staleSeconds * 1000 > STALE_LOCATION_GAP_MS,
+    staleSeconds,
+  };
 }
 
 function findStationIndex(stationList: Station[], station: Station | null) {
