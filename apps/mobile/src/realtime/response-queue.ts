@@ -4,6 +4,12 @@ export type PendingResponse = {
   eventId: string;
   instructions: string;
   precedingEvents: unknown[];
+
+  // 예외상황 1번:
+  // 이 응답이 정상적으로 완료됐을 때
+  // MARK_CANDIDATES_ANNOUNCED로 기록할 candidateId 목록.
+  // 일반 응답이나 상태 안내에는 없거나 빈 배열이다.
+  candidateIdsToMark?: number[];
 };
 
 type DurablePendingResponse = PendingResponse & {
@@ -11,18 +17,34 @@ type DurablePendingResponse = PendingResponse & {
   tripId?: string | null;
 };
 
-function getCriticalStatusKey(event: TripStatusChangedEvent): string | null {
-  if (event.tripStatus === "TRIP_DONE") return "trip-done";
-  if (event.bellStatus === "SUCCESS" || event.bellStatus === "FAIL") {
+function getCriticalStatusKey(
+  event: TripStatusChangedEvent,
+): string | null {
+  if (event.tripStatus === "TRIP_DONE") {
+    return "trip-done";
+  }
+
+  if (
+    event.bellStatus === "SUCCESS" ||
+    event.bellStatus === "FAIL"
+  ) {
     return `bell-${event.bellStatus}`;
   }
-  if (event.remainingStations === 1) return "remaining-1";
-  if (event.remainingStations === 2) return "remaining-2";
+
+  if (event.remainingStations === 1) {
+    return "remaining-1";
+  }
+
+  if (event.remainingStations === 2) {
+    return "remaining-2";
+  }
+
   return null;
 }
 
 /**
- * Function 응답과 중요한 운행 안내는 순서를 보존하고, 일반 운행 상태는 최신 한 건만 유지한다.
+ * Function 응답과 중요한 운행 안내는 순서를 보존하고,
+ * 일반 운행 상태는 최신 한 건만 유지한다.
  */
 export class RealtimeResponseQueue {
   private durableResponses: DurablePendingResponse[] = [];
@@ -42,6 +64,7 @@ export class RealtimeResponseQueue {
     this.syncTrip(tripId);
 
     const criticalKey = getCriticalStatusKey(event);
+
     if (!criticalKey) {
       this.latestStatusResponse = response;
       return;
@@ -50,12 +73,19 @@ export class RealtimeResponseQueue {
     // 중요한 안내가 도착했다면 그보다 오래된 일반 상태 안내는 더 이상 말하지 않는다.
     this.latestStatusResponse = null;
 
-    const scopedKey = `${tripId ?? "no-trip"}:${criticalKey}`;
-    if (this.announcedCriticalKeys.has(scopedKey)) return;
+    const scopedKey =
+      `${tripId ?? "no-trip"}:${criticalKey}`;
 
-    const queuedIndex = this.durableResponses.findIndex(
-      (queued) => queued.criticalKey === scopedKey,
-    );
+    if (this.announcedCriticalKeys.has(scopedKey)) {
+      return;
+    }
+
+    const queuedIndex =
+      this.durableResponses.findIndex(
+        (queued) =>
+          queued.criticalKey === scopedKey,
+      );
+
     const criticalResponse: DurablePendingResponse = {
       ...response,
       criticalKey: scopedKey,
@@ -64,35 +94,51 @@ export class RealtimeResponseQueue {
 
     if (queuedIndex >= 0) {
       // 아직 안내되지 않은 같은 중요 이벤트는 최신 서버 상태로 교체한다.
-      this.durableResponses[queuedIndex] = criticalResponse;
+      this.durableResponses[queuedIndex] =
+        criticalResponse;
       return;
     }
 
-    this.durableResponses.push(criticalResponse);
+    this.durableResponses.push(
+      criticalResponse,
+    );
   }
 
   dequeue(): PendingResponse | undefined {
-    const durable = this.durableResponses.shift();
+    const durable =
+      this.durableResponses.shift();
+
     if (durable) {
       if (durable.criticalKey) {
-        this.announcedCriticalKeys.add(durable.criticalKey);
+        this.announcedCriticalKeys.add(
+          durable.criticalKey,
+        );
       }
+
       return durable;
     }
 
-    const latestStatus = this.latestStatusResponse;
+    const latestStatus =
+      this.latestStatusResponse;
+
     this.latestStatusResponse = null;
+
     return latestStatus ?? undefined;
   }
 
   private syncTrip(tripId: string | null) {
-    if (this.currentTripId === tripId) return;
+    if (this.currentTripId === tripId) {
+      return;
+    }
 
     this.currentTripId = tripId;
     this.latestStatusResponse = null;
     this.announcedCriticalKeys.clear();
-    this.durableResponses = this.durableResponses.filter(
-      (queued) => queued.criticalKey === undefined,
-    );
+
+    this.durableResponses =
+      this.durableResponses.filter(
+        (queued) =>
+          queued.criticalKey === undefined,
+      );
   }
 }

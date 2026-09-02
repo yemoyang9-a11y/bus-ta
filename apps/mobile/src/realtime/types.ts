@@ -7,6 +7,7 @@ import type {
 
 export type RealtimeFunctionName =
   | "search_routes"
+  | "get_next_route_candidates"
   | "create_trip"
   | "confirm_boarding"
   | "get_trip_status"
@@ -50,6 +51,11 @@ export type TripStatusChangedEvent = {
 export type AppTripState = {
   destination: string | null;
   routeCandidates: Route[] | null;
+
+  // 예외상황 1번:
+  // AI가 이미 안내한 노선 후보의 candidateId를 기록한다.
+  announcedCandidateIds: number[];
+
   selectedRoute: Route | null;
   tripId: string | null;
   tripStatus: string | null;
@@ -67,7 +73,17 @@ export type AppTripState = {
 };
 
 export type AppAction =
-  | { type: "SET_DESTINATION_AND_ROUTES"; destination: string; routes: Route[] }
+  | {
+      type: "SET_DESTINATION_AND_ROUTES";
+      destination: string;
+      routes: Route[];
+    }
+  | {
+      // 예외상황 1번:
+      // 실제 음성 안내가 완료된 후보만 기록한다.
+      type: "MARK_CANDIDATES_ANNOUNCED";
+      candidateIds: number[];
+    }
   | { type: "SELECT_ROUTE"; route: Route }
   | { type: "START_TRIP"; tripId: string }
   | {
@@ -103,6 +119,11 @@ export type RealtimeClientEvent =
       response?: {
         instructions?: string;
       };
+
+      // 앱 내부 메타데이터.
+      // OpenAI 서버로 그대로 보내는 값이 아니라 session.ts가 PendingResponse에
+      // 옮겨 담고, 해당 음성 응답이 성공적으로 끝났을 때 안내 완료 처리에 사용한다.
+      candidateIdsToMark?: number[];
     };
 
 export type ApiErrorResult = {

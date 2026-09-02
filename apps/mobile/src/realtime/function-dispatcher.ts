@@ -20,13 +20,24 @@ import type {
   RealtimeFunctionName,
 } from "./types";
 
+type NextRouteCandidatesResult = {
+  success: true;
+  routes: Route[];
+  exhausted: boolean;
+  remainingCount: number;
+};
+
 type FunctionResult =
   | RoutesSearchResponse
+  | NextRouteCandidatesResult
   | BoardingConfirmationResponse
   | TripStatusResponse
   | CreateTripResponse
   | EndTripResponse
   | ApiErrorResult;
+
+// 한 번의 음성 안내에서 노선 후보는 최대 두 개만 노출한다.
+const ROUTE_ANNOUNCEMENT_BATCH_SIZE = 2;
 
 // 동일 함수+인자 조합의 병렬 재호출 방지 (create_trip은 선택당 1회만 등)
 const inFlightCalls = new Map<string, Promise<FunctionResult>>();
@@ -43,12 +54,18 @@ function buildCallKey(
   return `${event.name}:${event.arguments}`;
 }
 
-function buildFunctionResponseInstructions(name: RealtimeFunctionName): string {
+function buildFunctionResponseInstructions(
+  name: RealtimeFunctionName,
+): string {
   const common =
     "방금 전달된 Function 결과만 근거로 사용자에게 짧고 명확한 한국어 음성 안내를 생성한다. Function 결과가 오기 전의 추측은 사용하지 않는다. 내부 식별자와 오류 코드는 그대로 읽지 않는다. routeNo의 숫자 부분이 네 자리 이상이면 각 숫자를 한 자리씩 읽고, 세 자리 이하면 일반적인 한국어 수 읽기 방식으로 읽는다. 알파벳, 하이픈 뒤 숫자, 괄호 안 표시는 생략하지 않는다. 숫자-숫자 형태의 routeNo를 말할 때 하이픈(-)은 반드시 '다시'라고 읽고, '대시'나 '하이픈'이라고 읽거나 생략하지 않는다.";
 
   if (name === "search_routes") {
-    return `${common} success가 true이고 routes가 빈 배열일 때만 조건에 맞는 노선 후보가 없다고 안내한다. success가 false이면 result.message의 원인을 바꾸어 말하지 않고, 위치 확인 실패나 API 오류를 노선 없음으로 안내하지 않는다. 후보가 있으면 각 후보의 routeNo, totalTime, intervalTime을 사용해 "OO번은 예상 소요시간이 N분이고 배차 간격은 M분입니다" 형식으로 최대 두 개를 모두 설명하고, 마지막에 반드시 "어떤 버스를 선택하시겠어요?"라고 묻는다. 값이 없는 시간은 추측하지 말고 확인할 수 없다고 말한다.`;
+    return `${common} success가 true이고 routes가 빈 배열일 때만 조건에 맞는 노선 후보가 없다고 안내한다. success가 false이면 result.message의 원인을 바꾸어 말하지 않고, 위치 확인 실패나 API 오류를 노선 없음으로 안내하지 않는다. 후보가 있으면 전달된 routes의 후보를 빠짐없이 설명한다. 각 후보의 routeNo, totalTime, intervalTime을 사용해 "OO번은 예상 소요시간이 N분이고 배차 간격은 M분입니다" 형식으로 안내하고, 마지막에 반드시 "어떤 버스를 선택하시겠어요?"라고 묻는다. 값이 없는 시간은 추측하지 말고 확인할 수 없다고 말한다.`;
+  }
+
+  if (name === "get_next_route_candidates") {
+    return `${common} 이 결과는 새로운 경로 검색 결과가 아니라 이전 search_routes 결과 중 아직 사용자에게 안내하지 않은 다음 후보들이다. routes에 후보가 있으면 전달된 후보만 빠짐없이 설명한다. 각 후보의 routeNo, totalTime, intervalTime을 사용해 "OO번은 예상 소요시간이 N분이고 배차 간격은 M분입니다" 형식으로 안내하고, 마지막에 반드시 "어떤 버스를 선택하시겠어요?"라고 묻는다. 이미 안내한 후보를 다시 말하지 않는다. routes가 빈 배열이고 exhausted가 true이면 "더 이상 안내할 다른 버스 후보가 없습니다."라고 안내한다. 이 경우 이전 후보를 임의로 반복하거나 새 경로 검색을 하지 않는다. 값이 없는 시간은 추측하지 말고 확인할 수 없다고 말한다.`;
   }
 
   if (name === "create_trip") {
@@ -59,10 +76,6 @@ function buildFunctionResponseInstructions(name: RealtimeFunctionName): string {
     return `${common} success가 true인 서버 응답을 받은 경우에만 "탑승이 확인되었습니다. 하차까지 남은 정류장을 안내하겠습니다."라고 안내한다. success가 false이면 탑승이 확인됐다고 말하지 말고 result.message의 확인된 실패 원인만 짧게 안내한 뒤 다시 시도할지 묻는다. boardingMethod, boardingConfirmedAt, tripStatus 같은 내부 필드명은 읽지 않는다.`;
   }
 
-  // 예모님 확정(2026-08-27, 3번 "버스 놓침" 계약):
-  // WAITING_BUS일 때 get_trip_status 응답에 arrivals·arrivalStatus가 포함된다.
-  // arrivalStatus의 각 상태를 서로 다른 의미로 안내해야 하며,
-  // 조회 실패를 "버스가 없다"고 안내해서는 안 된다.
   if (name === "get_trip_status") {
     return `${common} "버스를 놓쳤다"는 발화 뒤에 이 결과가 오면, 이전에 안내했던 도착 예정 시간이나 앱이 기억하던 값을 반복하지 않고 이번 결과만 사용한다. arrivalStatus가 "AVAILABLE"이면 arrivals의 첫 항목으로 다음 차 도착 예정 시간을 안내한다. arrivalStatus가 "NO_VEHICLE"이면 "지금 이 정류장에 오는 OO번이 없습니다"라고 안내하고, 이때는 다른 노선을 제안해도 된다. arrivalStatus가 "NO_PREDICTION"이면 차량은 확인되지만 도착 예정 시간을 확인할 수 없다고 안내하고 숫자를 만들어내지 않는다. arrivalStatus가 "UPSTREAM_ERROR"이면 "지금은 도착 정보를 확인할 수 없습니다"라고만 안내하고, 이 경우 절대 "버스가 없다"거나 차량이 없다는 취지로 말하지 않는다. 이 발화만으로 운행 자체를 취소하지 않는다.`;
   }
@@ -84,7 +97,7 @@ export async function dispatchRealtimeFunctionCall(
     let callPromise = inFlightCalls.get(callKey);
 
     if (!callPromise) {
-      callPromise = callBackendFunction(event.name, args, context)
+      callPromise = callFunction(event.name, args, context)
         .catch(toApiErrorResult)
         .finally(() => {
           inFlightCalls.delete(callKey);
@@ -94,16 +107,30 @@ export async function dispatchRealtimeFunctionCall(
     }
 
     result = await callPromise;
-    result = rejectStaleTripResult(event.name, result, context);
+    result = rejectStaleTripResult(
+      event.name,
+      result,
+      context,
+    );
   }
 
-  updateContext(event.name, args, result, context);
+  updateContext(
+    event.name,
+    args,
+    result,
+    context,
+  );
 
   const modelResult = buildModelFunctionResult(
     event.name,
     args,
     result,
     context,
+  );
+
+  const candidateIdsToMark = getCandidateIdsToMark(
+    event.name,
+    modelResult,
   );
 
   return [
@@ -118,8 +145,13 @@ export async function dispatchRealtimeFunctionCall(
     {
       type: "response.create",
       response: {
-        instructions: buildFunctionResponseInstructions(event.name),
+        instructions:
+          buildFunctionResponseInstructions(event.name),
       },
+
+      // 실제 음성 응답이 완료된 뒤 session.ts가 이 값을 이용해
+      // MARK_CANDIDATES_ANNOUNCED를 dispatch한다.
+      candidateIdsToMark,
     },
   ];
 }
@@ -134,6 +166,25 @@ function buildModelFunctionResult(
   | (CreateTripResponse & {
       boardingStation: Route["boardingStation"];
     }) {
+  // 전체 후보는 TripContext에 보관하되,
+  // 최초 음성 응답에는 상위 두 후보만 노출한다.
+  if (
+    name === "search_routes" &&
+    result.success === true &&
+    "routes" in result
+  ) {
+    const searchResult =
+      result as RoutesSearchResponse;
+
+    return {
+      ...searchResult,
+      routes: searchResult.routes.slice(
+        0,
+        ROUTE_ANNOUNCEMENT_BATCH_SIZE,
+      ),
+    };
+  }
+
   if (
     name !== "create_trip" ||
     result.success !== true ||
@@ -142,14 +193,44 @@ function buildModelFunctionResult(
     return result;
   }
 
-  const selectedRoute = findSelectedRoute(args, context);
+  const selectedRoute =
+    findSelectedRoute(args, context);
 
   return selectedRoute
     ? {
         ...result,
-        boardingStation: selectedRoute.boardingStation,
+        boardingStation:
+          selectedRoute.boardingStation,
       }
     : result;
+}
+
+function getCandidateIdsToMark(
+  name: RealtimeFunctionName,
+  result:
+    | FunctionResult
+    | (CreateTripResponse & {
+        boardingStation: Route["boardingStation"];
+      }),
+): number[] {
+  if (
+    name !== "search_routes" &&
+    name !== "get_next_route_candidates"
+  ) {
+    return [];
+  }
+
+  if (
+    result.success !== true ||
+    !("routes" in result) ||
+    !Array.isArray(result.routes)
+  ) {
+    return [];
+  }
+
+  return result.routes.map(
+    (route) => route.candidateId,
+  );
 }
 
 function rejectStaleTripResult(
@@ -157,20 +238,28 @@ function rejectStaleTripResult(
   result: FunctionResult,
   context: RealtimeGuideContext,
 ): FunctionResult {
-  if (name !== "confirm_boarding" || result.success !== true) {
+  if (
+    name !== "confirm_boarding" ||
+    result.success !== true
+  ) {
     return result;
   }
 
-  const boardingResult = result as BoardingConfirmationResponse;
+  const boardingResult =
+    result as BoardingConfirmationResponse;
 
-  if (boardingResult.tripId === context.getAppState().tripId) {
+  if (
+    boardingResult.tripId ===
+    context.getAppState().tripId
+  ) {
     return result;
   }
 
   return {
     success: false,
     errorCode: "STALE_TRIP_CONTEXT",
-    message: "활성 운행이 변경되어 이전 탑승확정 응답을 적용하지 않았습니다.",
+    message:
+      "활성 운행이 변경되어 이전 탑승확정 응답을 적용하지 않았습니다.",
     timestamp: new Date().toISOString(),
   };
 }
@@ -178,17 +267,25 @@ function rejectStaleTripResult(
 export function isRealtimeFunctionCallEvent(
   event: unknown,
 ): event is RealtimeFunctionCallEvent {
-  if (event == null || typeof event !== "object") return false;
+  if (
+    event == null ||
+    typeof event !== "object"
+  ) {
+    return false;
+  }
 
-  const value = event as Record<string, unknown>;
+  const value =
+    event as Record<string, unknown>;
 
   return (
-    value.type === "response.function_call_arguments.done" &&
+    value.type ===
+      "response.function_call_arguments.done" &&
     typeof value.call_id === "string" &&
     typeof value.name === "string" &&
     typeof value.arguments === "string" &&
     [
       "search_routes",
+      "get_next_route_candidates",
       "create_trip",
       "confirm_boarding",
       "get_trip_status",
@@ -197,7 +294,7 @@ export function isRealtimeFunctionCallEvent(
   );
 }
 
-async function callBackendFunction(
+async function callFunction(
   name: RealtimeFunctionName,
   args: unknown,
   context: RealtimeGuideContext,
@@ -205,30 +302,53 @@ async function callBackendFunction(
   switch (name) {
     case "search_routes":
       return apiClient.routes.search(
-        await assertRoutesSearchRequest(args, context),
+        await assertRoutesSearchRequest(
+          args,
+          context,
+        ),
       );
+
+    case "get_next_route_candidates":
+      assertEmptyObject(
+        args,
+        "get_next_route_candidates",
+      );
+      return getNextRouteCandidates(context);
 
     case "create_trip":
       return apiClient.trips.create(
-        assertCreateTripRequest(args, context),
+        assertCreateTripRequest(
+          args,
+          context,
+        ),
       );
 
     case "confirm_boarding": {
-      assertEmptyObject(args);
+      assertEmptyObject(
+        args,
+        "confirm_boarding",
+      );
 
-      const tripId = assertCurrentTripId(context);
+      const tripId =
+        assertCurrentTripId(context);
 
-      return apiClient.trips.confirmBoarding(tripId, {
-        requestId: createBoardingRequestId(tripId),
-        boardingMethod: "USER_CONFIRMED",
-      });
+      return apiClient.trips.confirmBoarding(
+        tripId,
+        {
+          requestId:
+            createBoardingRequestId(tripId),
+          boardingMethod:
+            "USER_CONFIRMED",
+        },
+      );
     }
 
     case "get_trip_status": {
-      // "버스 놓쳤어요"처럼 최신 도착정보가 필요한 경우에는
-      // refreshArrivals=true를 전달한다. 서버의 최소 갱신 간격 정책은 유지된다.
+      // "버스 놓쳤어요"처럼 최신 도착정보가 필요한 경우
+      // refreshArrivals=true를 전달한다.
       const refreshArrivals =
-        assertRecord(args).refreshArrivals === true;
+        assertRecord(args).refreshArrivals ===
+        true;
 
       return apiClient.trips.getStatus(
         assertTripId(args, context),
@@ -237,40 +357,105 @@ async function callBackendFunction(
     }
 
     case "end_trip": {
-      const { tripId, body } = assertEndTripRequest(args, context);
-      return apiClient.trips.end(tripId, body);
+      const { tripId, body } =
+        assertEndTripRequest(args, context);
+
+      return apiClient.trips.end(
+        tripId,
+        body,
+      );
     }
   }
 }
 
-// Function 처리 결과를 TripContext(dispatchAppAction)에 반영한다.
-// RealtimeGuideContext는 더 이상 상태를 직접 들고 있지 않으므로,
-// context.dispatchAppAction({ type: ... })으로만 상태를 바꾼다.
+function getNextRouteCandidates(
+  context: RealtimeGuideContext,
+): NextRouteCandidatesResult {
+  const appState =
+    context.getAppState();
+
+  const routeCandidates =
+    appState.routeCandidates ?? [];
+
+  const announcedCandidateIds =
+    new Set(
+      appState.announcedCandidateIds,
+    );
+
+  const remainingRoutes =
+    routeCandidates.filter(
+      (route) =>
+        !announcedCandidateIds.has(
+          route.candidateId,
+        ),
+    );
+
+  const nextRoutes =
+    remainingRoutes.slice(
+      0,
+      ROUTE_ANNOUNCEMENT_BATCH_SIZE,
+    );
+
+  return {
+    success: true,
+    routes: nextRoutes,
+    exhausted:
+      nextRoutes.length === 0,
+    remainingCount: Math.max(
+      0,
+      remainingRoutes.length -
+        nextRoutes.length,
+    ),
+  };
+}
+
 function updateContext(
   name: RealtimeFunctionName,
   args: unknown,
   result: FunctionResult,
   context: RealtimeGuideContext,
 ) {
-  context.lastFunctionResult = result;
+  context.lastFunctionResult =
+    result;
 
-  if (result.success !== true) return;
+  if (result.success !== true) {
+    return;
+  }
 
   if (name === "search_routes") {
-    const searchResult = result as RoutesSearchResponse;
+    const searchResult =
+      result as RoutesSearchResponse;
 
+    // 전체 후보는 그대로 보관한다.
     context.dispatchAppAction({
       type: "SET_DESTINATION_AND_ROUTES",
-      destination: searchResult.destination,
-      routes: searchResult.routes as Route[],
+      destination:
+        searchResult.destination,
+      routes:
+        searchResult.routes as Route[],
     });
 
     return;
   }
 
+  if (
+    name ===
+    "get_next_route_candidates"
+  ) {
+    // 실제 안내 완료 시점에 session.ts에서
+    // MARK_CANDIDATES_ANNOUNCED 처리.
+    return;
+  }
+
   if (name === "create_trip") {
-    const createResult = result as CreateTripResponse;
-    const selectedRoute = findSelectedRoute(args, context);
+    const createResult =
+      result as CreateTripResponse;
+
+    const selectedRoute =
+      findSelectedRoute(
+        args,
+        context,
+      );
 
     if (selectedRoute) {
       context.dispatchAppAction({
@@ -288,7 +473,8 @@ function updateContext(
   }
 
   if (name === "get_trip_status") {
-    const statusResult = result as TripStatusResponse;
+    const statusResult =
+      result as TripStatusResponse;
 
     context.dispatchAppAction({
       type: "UPDATE_TRIP_STATUS",
@@ -296,8 +482,10 @@ function updateContext(
     });
 
     if (
-      statusResult.tripStatus === "CANCELLED" ||
-      statusResult.tripStatus === "TRIP_DONE"
+      statusResult.tripStatus ===
+        "CANCELLED" ||
+      statusResult.tripStatus ===
+        "TRIP_DONE"
     ) {
       clearActiveTripContext(context);
     }
@@ -306,13 +494,17 @@ function updateContext(
   }
 
   if (name === "confirm_boarding") {
-    const boardingResult = result as BoardingConfirmationResponse;
+    const boardingResult =
+      result as BoardingConfirmationResponse;
 
     context.dispatchAppAction({
       type: "CONFIRM_BOARDING",
-      tripStatus: boardingResult.tripStatus,
-      boardingMethod: boardingResult.boardingMethod,
-      boardingConfirmedAt: boardingResult.boardingConfirmedAt,
+      tripStatus:
+        boardingResult.tripStatus,
+      boardingMethod:
+        boardingResult.boardingMethod,
+      boardingConfirmedAt:
+        boardingResult.boardingConfirmedAt,
     });
 
     return;
@@ -329,24 +521,34 @@ async function assertRoutesSearchRequest(
 ): Promise<RoutesSearchRequest> {
   const value = assertRecord(args);
 
-  let currentLocation = context.getCurrentLocation();
+  let currentLocation =
+    context.getCurrentLocation();
 
   if (!currentLocation) {
-    await context.refreshCurrentLocation().catch(() => undefined);
-    currentLocation = context.getCurrentLocation();
+    await context
+      .refreshCurrentLocation()
+      .catch(() => undefined);
+
+    currentLocation =
+      context.getCurrentLocation();
   }
 
   if (!currentLocation) {
-    throw new Error("현재 위치를 확인할 수 없습니다.");
+    throw new Error(
+      "현재 위치를 확인할 수 없습니다.",
+    );
   }
 
   return {
-    destination: assertNonEmptyString(
-      value.destination,
-      "destination",
-    ),
-    latitude: currentLocation.latitude,
-    longitude: currentLocation.longitude,
+    destination:
+      assertNonEmptyString(
+        value.destination,
+        "destination",
+      ),
+    latitude:
+      currentLocation.latitude,
+    longitude:
+      currentLocation.longitude,
   };
 }
 
@@ -356,17 +558,23 @@ function findSelectedRoute(
 ): Route | undefined {
   const value = assertRecord(args);
 
-  const candidateId = assertPositiveInteger(
-    value.candidateId,
-    "candidateId",
-  );
+  const candidateId =
+    assertPositiveInteger(
+      value.candidateId,
+      "candidateId",
+    );
 
-  const appState = context.getAppState();
+  const appState =
+    context.getAppState();
+
   const routeCandidates =
-    (appState.routeCandidates ?? []) as Route[];
+    (appState.routeCandidates ??
+      []) as Route[];
 
   return routeCandidates.find(
-    (route) => route.candidateId === candidateId,
+    (route) =>
+      route.candidateId ===
+      candidateId,
   );
 }
 
@@ -375,7 +583,12 @@ function assertCreateTripRequest(
   context: RealtimeGuideContext,
 ): CreateTripRequest {
   const value = assertRecord(args);
-  const selectedRoute = findSelectedRoute(args, context);
+
+  const selectedRoute =
+    findSelectedRoute(
+      args,
+      context,
+    );
 
   if (selectedRoute == null) {
     throw new Error(
@@ -383,12 +596,14 @@ function assertCreateTripRequest(
     );
   }
 
-  const appState = context.getAppState();
+  const appState =
+    context.getAppState();
 
   return toCreateTripRequest(
     selectedRoute,
     assertNonEmptyString(
-      value.destination ?? appState.destination,
+      value.destination ??
+        appState.destination,
       "destination",
     ),
   );
@@ -400,41 +615,76 @@ function toCreateTripRequest(
 ): CreateTripRequest {
   const request: CreateTripRequest = {
     destination,
-    candidateId: selectedRoute.candidateId,
-    routeNo: selectedRoute.routeNo,
-    localBusId: selectedRoute.localBusId,
-    gbisStationId: selectedRoute.gbisStationId,
-    boardingStation: selectedRoute.boardingStation,
-    destinationStation: selectedRoute.destinationStation,
-    stationList: selectedRoute.stationList,
+    candidateId:
+      selectedRoute.candidateId,
+    routeNo:
+      selectedRoute.routeNo,
+    localBusId:
+      selectedRoute.localBusId,
+    gbisStationId:
+      selectedRoute.gbisStationId,
+    boardingStation:
+      selectedRoute.boardingStation,
+    destinationStation:
+      selectedRoute.destinationStation,
+    stationList:
+      selectedRoute.stationList,
   };
 
-  if (selectedRoute.totalTime !== undefined) {
-    request.totalTime = selectedRoute.totalTime;
+  if (
+    selectedRoute.totalTime !==
+    undefined
+  ) {
+    request.totalTime =
+      selectedRoute.totalTime;
   }
 
-  if (selectedRoute.totalWalk !== undefined) {
-    request.totalWalk = selectedRoute.totalWalk;
+  if (
+    selectedRoute.totalWalk !==
+    undefined
+  ) {
+    request.totalWalk =
+      selectedRoute.totalWalk;
   }
 
-  if (selectedRoute.payment !== undefined) {
-    request.payment = selectedRoute.payment;
+  if (
+    selectedRoute.payment !==
+    undefined
+  ) {
+    request.payment =
+      selectedRoute.payment;
   }
 
-  if (selectedRoute.busTransitCount !== undefined) {
-    request.busTransitCount = selectedRoute.busTransitCount;
+  if (
+    selectedRoute.busTransitCount !==
+    undefined
+  ) {
+    request.busTransitCount =
+      selectedRoute.busTransitCount;
   }
 
-  if (selectedRoute.busStationCount !== undefined) {
-    request.busStationCount = selectedRoute.busStationCount;
+  if (
+    selectedRoute.busStationCount !==
+    undefined
+  ) {
+    request.busStationCount =
+      selectedRoute.busStationCount;
   }
 
-  if (selectedRoute.totalDistance !== undefined) {
-    request.totalDistance = selectedRoute.totalDistance;
+  if (
+    selectedRoute.totalDistance !==
+    undefined
+  ) {
+    request.totalDistance =
+      selectedRoute.totalDistance;
   }
 
-  if (selectedRoute.intervalTime !== undefined) {
-    request.intervalTime = selectedRoute.intervalTime;
+  if (
+    selectedRoute.intervalTime !==
+    undefined
+  ) {
+    request.intervalTime =
+      selectedRoute.intervalTime;
   }
 
   return request;
@@ -455,7 +705,8 @@ function assertTripId(
 function assertCurrentTripId(
   context: RealtimeGuideContext,
 ): string {
-  const activeTripId = context.getAppState().tripId;
+  const activeTripId =
+    context.getAppState().tripId;
 
   return assertActiveTripId(
     activeTripId,
@@ -480,10 +731,11 @@ function assertEndTripRequest(
 } {
   const value = assertRecord(args);
 
-  const action = assertNonEmptyString(
-    value.action,
-    "action",
-  );
+  const action =
+    assertNonEmptyString(
+      value.action,
+      "action",
+    );
 
   if (action !== "CANCEL") {
     throw new Error(
@@ -508,9 +760,12 @@ function parseFunctionArguments(
   } catch {
     return {
       success: false,
-      errorCode: "INVALID_FUNCTION_ARGUMENTS",
-      message: "Function 인자를 JSON으로 해석할 수 없습니다.",
-      timestamp: new Date().toISOString(),
+      errorCode:
+        "INVALID_FUNCTION_ARGUMENTS",
+      message:
+        "Function 인자를 JSON으로 해석할 수 없습니다.",
+      timestamp:
+        new Date().toISOString(),
     };
   }
 }
@@ -521,20 +776,25 @@ function toApiErrorResult(
   if (error instanceof ApiError) {
     return {
       success: false,
-      errorCode: error.errorCode,
-      message: error.message,
-      timestamp: new Date().toISOString(),
+      errorCode:
+        error.errorCode,
+      message:
+        error.message,
+      timestamp:
+        new Date().toISOString(),
     };
   }
 
   return {
     success: false,
-    errorCode: "FUNCTION_DISPATCH_FAILED",
+    errorCode:
+      "FUNCTION_DISPATCH_FAILED",
     message:
       error instanceof Error
         ? error.message
         : "Function 처리 중 오류가 발생했습니다.",
-    timestamp: new Date().toISOString(),
+    timestamp:
+      new Date().toISOString(),
   };
 }
 
@@ -544,7 +804,12 @@ function isApiErrorResult(
   return (
     value != null &&
     typeof value === "object" &&
-    (value as Record<string, unknown>).success === false
+    (
+      value as Record<
+        string,
+        unknown
+      >
+    ).success === false
   );
 }
 
@@ -556,20 +821,29 @@ function assertRecord(
     typeof value !== "object" ||
     Array.isArray(value)
   ) {
-    throw new Error("Function 인자는 객체여야 합니다.");
+    throw new Error(
+      "Function 인자는 객체여야 합니다.",
+    );
   }
 
-  return value as Record<string, unknown>;
+  return value as Record<
+    string,
+    unknown
+  >;
 }
 
 function assertEmptyObject(
   value: unknown,
+  functionName: string,
 ): void {
-  const record = assertRecord(value);
+  const record =
+    assertRecord(value);
 
-  if (Object.keys(record).length > 0) {
+  if (
+    Object.keys(record).length > 0
+  ) {
     throw new Error(
-      "confirm_boarding Function 인자는 빈 객체여야 합니다.",
+      `${functionName} Function 인자는 빈 객체여야 합니다.`,
     );
   }
 }
@@ -582,7 +856,9 @@ function assertNonEmptyString(
     typeof value !== "string" ||
     value.trim().length === 0
   ) {
-    throw new Error(`${fieldName} 값이 필요합니다.`);
+    throw new Error(
+      `${fieldName} 값이 필요합니다.`,
+    );
   }
 
   return value;
@@ -596,7 +872,9 @@ function assertFiniteNumber(
     typeof value !== "number" ||
     !Number.isFinite(value)
   ) {
-    throw new Error(`${fieldName} 값은 숫자여야 합니다.`);
+    throw new Error(
+      `${fieldName} 값은 숫자여야 합니다.`,
+    );
   }
 
   return value;
@@ -606,13 +884,16 @@ function assertPositiveInteger(
   value: unknown,
   fieldName: string,
 ): number {
-  const numberValue = assertFiniteNumber(
-    value,
-    fieldName,
-  );
+  const numberValue =
+    assertFiniteNumber(
+      value,
+      fieldName,
+    );
 
   if (
-    !Number.isInteger(numberValue) ||
+    !Number.isInteger(
+      numberValue,
+    ) ||
     numberValue <= 0
   ) {
     throw new Error(
