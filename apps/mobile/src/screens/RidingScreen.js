@@ -161,25 +161,23 @@ export default function RidingScreen({ route, navigation }) {
     }
   }, [boardingConfirmedAt, state.beaconScanActive]);
 
-  // 예모님 재지적(2026-08-27, P1): 기존 코드는 state.tripId && state.tripId !== tripId 였는데,
-  // RESET_TRIP_KEEP_SEARCH가 state.tripId를 null로 만들기 때문에 "state.tripId &&" 조건에서
-  // 걸러져서 정상 취소 시에는 이 로직이 아예 실행되지 않았다.
-  // 이 화면의 tripId(=route.params, 취소돼도 안 바뀜)가 활성 상태인지는
-  // "state.tripId가 이 화면의 tripId와 다르다"가 아니라
-  // "state.tripId가 이 화면의 tripId가 아니게 됐다(null 포함)"로 판단해야 한다.
+  // 예모님 지적(2026-08-27, P1) + 유나님 지적(2026-08-28): 취소 감지 시 GPS/BLE를 즉시 중지한다.
   const isThisTripStillActive = state.tripId === tripId;
 
   useEffect(() => {
     if (!isThisTripStillActive) {
-      // Context의 활성 운행이 이 화면의 tripId와 달라졌다(취소되었거나 다른 운행으로 바뀜).
       stoppedRef.current = true;
-      if (state.beaconScanActive) {
+      if (state.beaconScanActive && !stoppingBeaconScanRef.current) {
+        stoppingBeaconScanRef.current = true;
         stopBeaconScan()
           .then(() => {
             dispatch({ type: 'SET_BEACON_SCAN_ACTIVE', active: false });
           })
           .catch((error) => {
             console.log('취소 후 비콘 스캔 중지 실패:', error);
+          })
+          .finally(() => {
+            stoppingBeaconScanRef.current = false;
           });
       }
     }
@@ -212,7 +210,10 @@ export default function RidingScreen({ route, navigation }) {
     }
   }, [status, isConnected]);
 
-  // 실제 GPS로 3초 간격 PATCH /status 전송
+  // 실제 GPS로 2초 간격 PATCH /status 전송
+  // 채린님 확인(2026-08-28): 버스 탑승 실기기 테스트에서 3초 간격으로는 버스 이동 속도 대비
+  // 정류장 판정을 놓치는 경우가 있어 2초로 단축. 정류장 판정 로직(반경 등) 자체의
+  // 정확도 문제일 수도 있어 백엔드와 별도로 확인이 필요하다.
   useEffect(() => {
     let interval;
     let isMounted = true;
@@ -229,7 +230,7 @@ export default function RidingScreen({ route, navigation }) {
         if (!isMounted || stoppedRef.current) return;
         if (patchInFlightRef.current) return;
         await patchStatus();
-      }, 3000);
+      }, 2000);
     })();
 
     return () => {
@@ -253,9 +254,6 @@ export default function RidingScreen({ route, navigation }) {
         source: 'GPS',
       });
 
-      // 예모님 지적(2026-08-27, P2): await 이후 응답을 반영하기 전에, 그 사이 이 운행이
-      // 취소되거나 다른 운행으로 바뀌지 않았는지 재확인한다. 취소 직전 요청의 늦은 응답이
-      // 취소 후 화면·Context·Realtime 세션에 다시 반영되는 것을 막는다.
       if (stoppedRef.current || state.tripId !== tripId) {
         return;
       }

@@ -189,31 +189,40 @@ export default function AlightScreen({ route, navigation }) {
 
   return (
     <View style={styles.container}>
-      <Text style={styles.emoji}>🚨</Text>
-      <Text style={styles.title}>하차 안내</Text>
-      <Text style={styles.message}>
-        하차벨을 요청했습니다. 안전하게 하차하세요.
-      </Text>
+      <View style={styles.topSection}>
+        <Text style={styles.title}>하차 안내</Text>
 
-      <View style={styles.infoBox}>
-        {bellOutcome === 'waiting' && (
-          <>
-            <ActivityIndicator size="small" color="#fff" style={{ marginBottom: 8 }} />
-            <Text style={styles.infoText}>{BELL_OUTCOME_TEXT.waiting}</Text>
-          </>
-        )}
-        {bellOutcome !== 'waiting' && (
-          <Text style={styles.infoText}>{BELL_OUTCOME_TEXT[bellOutcome]}</Text>
-        )}
-        <Text style={styles.infoSubText}>안전하게 하차 준비를 해주세요.</Text>
+        <View style={styles.messageBox}>
+          <Text style={styles.messageIcon}>⚠️</Text>
+          <Text style={styles.message}>
+            하차벨을 요청했습니다. 안전하게 하차하세요.
+          </Text>
+        </View>
+
+        <View style={styles.infoBox}>
+          {bellOutcome === 'waiting' && (
+            <>
+              <ActivityIndicator size="small" color="#2F8FFF" style={{ marginBottom: 8 }} />
+              <Text style={styles.infoText}>{BELL_OUTCOME_TEXT.waiting}</Text>
+            </>
+          )}
+          {bellOutcome !== 'waiting' && (
+            <Text style={styles.infoText}>{BELL_OUTCOME_TEXT[bellOutcome]}</Text>
+          )}
+          <Text style={styles.infoSubText}>안전하게 하차 준비를 해주세요.</Text>
+        </View>
       </View>
 
-      <TouchableOpacity
-        style={styles.button}
-        onPress={handleGoHome}
-      >
-        <Text style={styles.buttonText}>처음으로 돌아가기</Text>
-      </TouchableOpacity>
+      {/* 처음으로 돌아가기 — 위 박스들과 간격을 두고 화면 아래쪽에 고정 */}
+      <View style={styles.bottomSection}>
+        <TouchableOpacity
+          style={styles.button}
+          onPress={handleGoHome}
+        >
+          <Text style={styles.buttonIcon}>🏠</Text>
+          <Text style={styles.buttonText}>처음으로 돌아가기</Text>
+        </TouchableOpacity>
+      </View>
     </View>
   );
 }
@@ -221,55 +230,95 @@ export default function AlightScreen({ route, navigation }) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: '#FF5252',
+    justifyContent: 'space-between',
+    backgroundColor: '#0A0C10',
     padding: 20,
+    paddingTop: 40,
   },
-  emoji: {
-    fontSize: 80,
-    marginBottom: 20,
-  },
+
+  topSection: {},
+
   title: {
-    fontSize: 32,
-    fontWeight: 'bold',
-    color: '#fff',
+    fontSize: 30,
+    fontWeight: '800',
+    color: '#FFD400',
     marginBottom: 20,
   },
+
+  // 경고 메시지 박스
+  messageBox: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    backgroundColor: '#15181F',
+    borderWidth: 1,
+    borderColor: '#2A2E37',
+    borderRadius: 16,
+    padding: 18,
+    marginBottom: 16,
+  },
+
+  messageIcon: {
+    fontSize: 18,
+    marginRight: 10,
+  },
+
   message: {
-    fontSize: 22,
-    color: '#fff',
-    marginBottom: 30,
+    flex: 1,
+    fontSize: 18,
+    lineHeight: 26,
+    fontWeight: '600',
+    color: '#FFFFFF',
+  },
+
+  // 하차벨 응답 대기/결과 박스 — 파란 테두리로 강조
+  infoBox: {
+    backgroundColor: '#15181F',
+    borderWidth: 1.5,
+    borderColor: '#2F8FFF',
+    padding: 20,
+    borderRadius: 16,
+    alignItems: 'center',
+  },
+
+  infoText: {
+    fontSize: 17,
+    color: '#FFFFFF',
+    fontWeight: '700',
+    marginBottom: 8,
     textAlign: 'center',
   },
-  infoBox: {
-    backgroundColor: 'rgba(255,255,255,0.2)',
-    padding: 20,
-    borderRadius: 12,
-    alignItems: 'center',
-    marginBottom: 40,
-    width: '100%',
-  },
-  infoText: {
-    fontSize: 16,
-    color: '#fff',
-    fontWeight: 'bold',
-    marginBottom: 8,
-  },
+
   infoSubText: {
     fontSize: 14,
-    color: '#fff',
+    color: '#9CA3AF',
+    textAlign: 'center',
   },
+
+  // 하단 액션 영역 — 위 박스들과 확실히 떨어지도록 별도 섹션으로 분리
+  bottomSection: {
+    width: '100%',
+  },
+
   button: {
-    backgroundColor: '#fff',
-    padding: 15,
-    borderRadius: 10,
-    width: 200,
+    flexDirection: 'row',
+    backgroundColor: '#FFC400',
+    minHeight: 76,
+    borderRadius: 18,
+    borderWidth: 3,
+    borderColor: '#FFFFFF',
+    justifyContent: 'center',
     alignItems: 'center',
+    width: '100%',
   },
+
+  buttonIcon: {
+    fontSize: 18,
+    marginRight: 8,
+  },
+
   buttonText: {
-    color: '#FF5252',
-    fontSize: 16,
-    fontWeight: 'bold',
+    color: '#111111',
+    fontSize: 20,
+    fontWeight: '800',
   },
 });
