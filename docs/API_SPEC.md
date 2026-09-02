@@ -39,8 +39,13 @@ Function은 사용자 의도를 처리하는 경로다. 자동 GPS·하차벨 �
 ### `GET /api/trips/{tripId}/status`
 
 기본 운행 상태를 반환하면서, `tripStatus`가 `WAITING_BUS`일 때 GBIS 도착정보를 선택 노선
-기준으로 조회한다. 이 API는 DB의 운행·하차벨 상태를 변경하지 않으며, 생성 시 저장한
-`predictedArrivalMinutes` 또는 이전 응답의 도착정보를 재사용하지 않는다.
+기준으로 조회한다. 이 API는 DB의 운행·하차벨 상태를 변경하지 않는다.
+
+생성 시 DB에 저장한 `predictedArrivalMinutes`나 앱·모델이 보관한 이전 안내값을 직접
+재사용하지 않고, 서버의 `ArrivalCache`를 통해 선택 노선의 도착정보 스냅샷을 반환한다.
+캐시 갱신 시점 전에는 서버가 보관한 스냅샷을 재사용하며, 갱신 시점 이후에만 GBIS를 다시
+호출한다. 금지되는 것은 앱·모델이 과거 안내값을 자체적으로 재사용하는 것이지, 서버 정책에
+따른 캐시 재사용이 아니다.
 
 탑승이 확정된 뒤에는 이 값을 쓸 곳이 없으므로 조회하지 않는다. 상태와 무관하게 매번
 조회하면 운행 내내 GBIS 호출이 이어진다.
@@ -115,7 +120,8 @@ Function은 사용자 의도를 처리하는 경로다. 자동 GPS·하차벨 �
 확인된 사실은 "도착시간 정보가 없다"까지이므로 "오는 버스가 없습니다"라고 안내하면 안 된다.
 
 `arrivals`, `arrivalStatus`, `nextArrivalRefreshInMs`, `shouldScanBeacon`은 이 GET 응답의
-`WAITING_BUS` 상태에만 있다. `PATCH /api/trips/{tripId}/status` 응답에는 포함되지 않으므로
+`WAITING_BUS` 상태에만 있다. 넷 다 같은 조건으로 실리고 빠진다 — 하나만 남겨 두면
+"왜 이건 오고 저건 안 오는지"로 계약이 헷갈린다. `PATCH /api/trips/{tripId}/status` 응답에는 포함되지 않으므로
 공유 스키마에서 네 필드 모두 선택 필드다.
 
 ### `POST /api/routes/search`

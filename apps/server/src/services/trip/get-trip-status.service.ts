@@ -60,7 +60,7 @@ type GetTripStatusSuccessBody = {
    * 앞차가 떠나면 도착 예정 시간이 다시 늘어나는데, 그때 끄면 정작 버스가 눈앞에
    * 왔을 때 스캔이 꺼져 있다.
    */
-  shouldScanBeacon: boolean;
+  shouldScanBeacon?: boolean;
   currentStation: Station | null;
   nextStation: Station | null;
   remainingStations: number;
@@ -144,10 +144,6 @@ export async function getTripStatus(
     tripId: progressData.trip.tripId,
     destination: progressData.trip.destination,
     routeNo: progressData.trip.routeNo,
-    // 탑승 확정 전에만 스캔 신호를 준다. 탑승한 뒤에는 비콘을 더 찾을 이유가 없다.
-    shouldScanBeacon:
-      arrivalResult !== null &&
-      shouldStartBeaconScan(arrivalResult.arrivalStatus, arrivalResult.arrivals),
     currentStation: status.currentStation,
     nextStation: status.nextStation,
     remainingStations: status.remainingStations,
@@ -172,9 +168,16 @@ export async function getTripStatus(
     body.bellRequestId = status.bellRequestId;
   }
 
+  // 도착정보 관련 네 필드는 대기 중에만 싣는다. 탑승한 뒤에는 쓸 곳이 없는데,
+  // 하나만 남겨 두면 "왜 이건 오고 저건 안 오지"로 계약이 헷갈린다.
   if (arrivalResult !== null) {
     body.arrivals = arrivalResult.arrivals;
     body.arrivalStatus = arrivalResult.arrivalStatus;
+    // 탑승 확정 전에만 스캔 신호를 준다. 탑승한 뒤에는 비콘을 더 찾을 이유가 없다.
+    body.shouldScanBeacon = shouldStartBeaconScan(
+      arrivalResult.arrivalStatus,
+      arrivalResult.arrivals,
+    );
     if (arrivalResult.nextRefreshInMs !== undefined) {
       body.nextArrivalRefreshInMs = arrivalResult.nextRefreshInMs;
     }

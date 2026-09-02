@@ -318,11 +318,11 @@ test("탑승이 확정된 뒤에는 도착정보를 아예 조회하지 않는�
   });
 
   assert.equal(calls, 0, "WAITING_BUS 가 아니면 GBIS 를 부르지 않는다");
+  // 도착정보 관련 네 필드는 대기 중에만 싣는다.
   const body = result.body as Record<string, unknown>;
-  assert.equal(body.shouldScanBeacon, false);
-  assert.equal(body.nextArrivalRefreshInMs, undefined);
-  assert.equal("arrivals" in body, false, "쓸 곳이 없는 값은 싣지 않는다");
-  assert.equal("arrivalStatus" in body, false);
+  for (const field of ["arrivals", "arrivalStatus", "nextArrivalRefreshInMs", "shouldScanBeacon"]) {
+    assert.equal(field in body, false, `${field} 는 쓸 곳이 없으므로 싣지 않는다`);
+  }
 });
 
 test("대기 중 조회에는 목적지 정류장이 함께 전달된다", async () => {
@@ -402,4 +402,15 @@ test("탑승 뒤 응답도 공유 스키마를 통과한다 — 네 필드는 �
     true,
     parsed.success ? "" : JSON.stringify(parsed.error.issues),
   );
+
+  // safeParse 성공만 보면 네 필드가 실수로 실려도 통과한다. Zod 는 optional 을
+  // "있어도 되고 없어도 된다"로 보기 때문이다. 실제로 빠졌는지 따로 확인한다.
+  for (const field of [
+    "arrivals",
+    "arrivalStatus",
+    "nextArrivalRefreshInMs",
+    "shouldScanBeacon",
+  ]) {
+    assert.equal(field in result.body, false, `${field} 는 대기 중에만 실려야 한다`);
+  }
 });
