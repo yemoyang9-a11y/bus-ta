@@ -16,7 +16,7 @@
 | `search_routes` | `POST /api/routes/search` | 목적지와 위치로 후보 경로 조회 |
 | `create_trip` | `POST /api/trips` | 사용자가 선택한 후보로 운행 생성 |
 | `confirm_boarding` | `POST /api/trips/{tripId}/boarding/confirm` | 사용자의 명시적 탑승 발화를 `USER_CONFIRMED`로 저장 |
-| `get_trip_status` | `GET /api/trips/{tripId}/status` | 저장된 운행 상태 조회 |
+| `get_trip_status` | `GET /api/trips/{tripId}/status` | 운행 상태 조회 및 선택 노선 도착정보 재조회 |
 | `end_trip` | `PATCH /api/trips/{tripId}` | 명시적 사용자 취소·종료 처리 |
 
 Function은 사용자 의도를 처리하는 경로다. 자동 GPS·하차벨 처리는 아래 REST API를 앱이 직접 호출하고, 변화가 있을 때 Event Dispatcher가 세션에 알린다.
@@ -35,6 +35,56 @@ Function은 사용자 의도를 처리하는 경로다. 자동 GPS·하차벨 �
 | `GET` | `/api/beacons?routeNo=` | 없음 |
 | `GET` | `/api/health` | 없음 |
 | `POST` | `/api/realtime/session` | Realtime용 단기 키 발급 |
+
+### `GET /api/trips/{tripId}/status`
+
+기본 운행 상태를 반환하면서, 요청 시점의 GBIS 도착정보를 선택 노선 기준으로 새로 조회한다.
+이 API는 DB의 운행·하차벨 상태를 변경하지 않으며, 생성 시 저장한
+`predictedArrivalMinutes` 또는 이전 응답의 도착정보를 재사용하지 않는다.
+
+성공 응답에는 다음 필드가 추가된다.
+
+```json
+{
+  "arrivals": [
+    {
+      "predictedArrivalMinutes": 4,
+      "occupancy": {
+        "type": "UNAVAILABLE",
+        "congestionLevel": null,
+        "remainingSeats": null
+      }
+    }
+  ],
+  "arrivalStatus": "AVAILABLE"
+}
+```
+
+`arrivalStatus`는 도착정보 재조회 결과를 구분한다.
+
+| 값 | 의미 | `arrivals` |
+| --- | --- | --- |
+| `AVAILABLE` | 정상 조회되었고 선택 노선 차량이 있음 | 1~2개 |
+| `NO_VEHICLE` | 정상 조회되었지만 선택 노선 차량이 없음 | `[]` |
+| `UPSTREAM_ERROR` | GBIS 네트워크·HTTP·응답 오류, 또는 방향을 확인하지 못해 조회 결과를 신뢰할 수 없음 | `[]` |
+
+`NO_VEHICLE`은 GBIS가 정상 응답했고 그 정류장에 해당 노선 차량이 실제로 없을 때만
+쓴다. 회차 노선의 방향 판별에 필요한 노선 경유정류소 조회가 실패하거나 목적지 기준
+방향을 확정하지 못하면, 잘못된 방향 안내를 막기 위해 `arrivals`를 비우되
+`UPSTREAM_ERROR`로 보고한다. 두 경우를 합치면 "확인하지 못했다"가 "그 버스는 이제
+오지 않는다"로 안내된다.
+
+`UPSTREAM_ERROR`에서도 운행 상태는 취소·종료되지 않는다. 사용자는 새 Function
+호출 결과만 근거로 안내받으며, 조회 전의 도착 예정 시간을 반복해서 안내하지 않는다.
+
+`arrivals`와 `arrivalStatus`는 이 GET 응답에만 있다. `PATCH /api/trips/{tripId}/status`
+응답에는 포함되지 않으므로 공유 스키마에서 두 필드는 선택 필드다.
+
+### `POST /api/routes/search`
+
+검색 결과는 기존 순위·중복 제거 규칙을 적용한 뒤 상위 5개까지 `routes[]`에 담는다. 응답 배열은 순위 순서를 유지하며, `guideMessage`는 상위 2개 후보에만 포함한다. 3위 이후 후보에는 이 필드를 생략한다.
+
+경로 검색 provider는 검색 1회당 한 번만 호출하고, 사용자가 다음 후보를 요청할 때는 앱이 이미 받은 `routes[]`를 재사용한다. 도착정보는 사용자가 후보를 선택한 뒤 `POST /api/trips`에서 최초 조회하고, 버스를 놓친 뒤 `get_trip_status`가 호출되면 `GET /api/trips/{tripId}/status`에서 선택 노선을 기준으로 새로 조회한다.
 
 ## Health 상태 조회
 

@@ -84,12 +84,17 @@ export class SupabaseTripRepository
     );
     const bell = bellRows[0];
 
+    const destinationStation = readNullableObject(trip, "destination_station");
+
     return {
       trip: {
         tripId: readString(trip, "trip_id"),
         destination: readString(trip, "destination"),
         routeNo: readString(trip, "route_no"),
+        localBusId: readString(trip, "local_bus_id"),
+        gbisStationId: readString(trip, "gbis_station_id"),
         stationList: readArray(trip, "station_list"),
+        ...(destinationStation ? { destinationStation } : {}),
       },
       status: {
         tripId: readString(status, "trip_id"),

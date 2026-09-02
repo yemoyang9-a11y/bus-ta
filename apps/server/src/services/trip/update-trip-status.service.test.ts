@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { BELL_COMMAND, BELL_STATUS, BOARDING_METHOD, TRIP_STATUS } from "@bus-ta/shared";
+import {
+  BELL_COMMAND,
+  BELL_STATUS,
+  BOARDING_METHOD,
+  TripStatusResponseSchema,
+  TRIP_STATUS,
+} from "@bus-ta/shared";
 import {
   DuplicateLocationRequestError,
   TripCancelledDuringUpdateError,
@@ -48,6 +54,31 @@ const confirmedBoarding = {
   boardingMethod: BOARDING_METHOD.USER_CONFIRMED,
   boardingConfirmedAt: "2026-07-01T14:34:00+09:00",
 } as const;
+
+// 앱은 GET /status 와 PATCH /status 응답을 같은 TripStatusResponse 로 다룬다
+// (apps/mobile/src/api/client.ts). GET 에만 있는 도착정보 필드를 필수로 만들면
+// 이 계약이 PATCH 응답에 대해 거짓말을 한다.
+test("PATCH 상태 갱신 응답도 공개 계약(TripStatusResponseSchema)을 만족한다", async () => {
+  const result = await updateTripStatus(
+    "trip-test-001",
+    {
+      requestId: "loc-001",
+      latitude: TEST_ROUTE.stationList[1]!.latitude,
+      longitude: TEST_ROUTE.stationList[1]!.longitude,
+      recordedAt: "2026-07-01T14:35:00+09:00",
+      source: "MOCK",
+    },
+    {
+      findTripProgressData: async () => ({ trip: baseTrip, status: baseStatus }),
+      findLocationLogByRequestId: async () => null,
+      saveStatusAndLocation: async () => {},
+      now: () => "2026-07-01T14:35:01+09:00",
+    },
+  );
+
+  assert.equal(result.httpStatus, 200);
+  assert.doesNotThrow(() => TripStatusResponseSchema.parse(result.body));
+});
 
 test("updates current station, next station, remainingStations, and tripStatus from a new location", async () => {
   const saved: unknown[] = [];

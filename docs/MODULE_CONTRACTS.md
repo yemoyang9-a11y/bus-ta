@@ -17,6 +17,8 @@
 
 서버는 경로 검색에서 후보를 검증하고, 사용자가 선택한 후보 하나를 `POST /api/trips` 안에서 도착정보 조회에 사용한다. 후보에는 `candidateId`, `routeNo`, `localBusId`, `gbisStationId`, 정류장 목록과 좌표가 포함된다. 정류장 객체에 구버전 `stationId`, `routeDirection`, `endStationName`을 공개 계약으로 추가하지 않는다.
 
+사용자가 버스를 놓쳤다고 말하면 Dispatcher는 `GET /api/trips/{tripId}/status`를 새로 호출한다. 서버는 저장된 선택 노선 식별자로 GBIS를 재조회하고 `arrivals`와 `arrivalStatus`를 반환한다. `AVAILABLE`, `NO_VEHICLE`, `UPSTREAM_ERROR`를 구분하며, 이전 도착시간을 재사용하지 않는다. 방향 판별에 실패해 fail-closed로 접은 결과는 `NO_VEHICLE`이 아니라 `UPSTREAM_ERROR`다. 이 조회는 운행·하차벨 상태를 변경하지 않는다.
+
 ## Realtime 연동
 
 1. 백엔드는 단기 키만 발급한다.

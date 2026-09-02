@@ -17,6 +17,10 @@ export interface TripProgressData {
     destination: string;
     routeNo: string;
     stationList: Station[];
+    /** 도착정보 재조회에 필요한 선택 노선 식별자. 기존 소비자는 생략할 수 있다. */
+    localBusId?: string;
+    gbisStationId?: string;
+    destinationStation?: Station;
   };
   status: {
     tripId: string;

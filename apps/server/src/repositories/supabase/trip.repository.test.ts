@@ -98,6 +98,72 @@ test("saves status, location, and bell request through the atomic RPC", async ()
   });
 });
 
+test("restores arrival lookup identifiers from the stored trip", async () => {
+  const requests: string[] = [];
+  const repository = new SupabaseTripRepository(
+    { url: "https://supabase.example", apiKey: "service-key" },
+    async (url) => {
+      requests.push(String(url));
+      if (String(url).includes("/trips?")) {
+        return new Response(
+          JSON.stringify([
+            {
+              trip_id: "trip-test-001",
+              destination: "도착정류장",
+              route_no: "700-2",
+              local_bus_id: "234000021",
+              gbis_station_id: "201000166",
+              destination_station: {
+                stationName: "도착정류장",
+                latitude: 37.21,
+                longitude: 126.97,
+              },
+              station_list: [
+                { stationName: "출발", latitude: 37.2, longitude: 126.9, sequence: 0 },
+                { stationName: "도착정류장", latitude: 37.21, longitude: 126.97, sequence: 1 },
+              ],
+            },
+          ]),
+          { status: 200 },
+        );
+      }
+      if (String(url).includes("trip_status")) {
+        return new Response(
+          JSON.stringify([
+            {
+              trip_id: "trip-test-001",
+              current_station: null,
+              next_station: null,
+              remaining_stations: 1,
+              trip_status: TRIP_STATUS.WAITING_BUS,
+              boarding_method: null,
+              boarding_confirmed_at: null,
+              bell_status: BELL_STATUS.NOT_REQUESTED,
+              last_request_id: null,
+              location_source: null,
+              recorded_at: null,
+              updated_at: "2026-07-25T12:00:00.000Z",
+            },
+          ]),
+          { status: 200 },
+        );
+      }
+      return new Response("[]", { status: 200 });
+    },
+  );
+
+  const result = await repository.findTripProgressData("trip-test-001");
+
+  assert.equal(result?.trip.localBusId, "234000021");
+  assert.equal(result?.trip.gbisStationId, "201000166");
+  assert.deepEqual(result?.trip.destinationStation, {
+    stationName: "도착정류장",
+    latitude: 37.21,
+    longitude: 126.97,
+  });
+  assert.equal(requests.length, 3);
+});
+
 test("reports cancellation when the atomic RPC sees a cancelled trip", async () => {
   const repository = new SupabaseTripRepository(
     { url: "https://supabase.example", apiKey: "service-key" },

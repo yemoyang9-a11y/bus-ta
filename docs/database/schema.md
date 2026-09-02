@@ -88,7 +88,7 @@ trip_id                 string      FK -> trips.trip_id, 운행당 1개 상태 �
 current_station         json        nullable, 현재 정류장 객체
 next_station            json        nullable, 다음 정류장 객체. 도착 시 null
 remaining_stations      integer     남은 정류장 수, 최소 0
-trip_status             string      WAITING_BUS | ON_BUS | NEAR_DESTINATION | TRIP_DONE | ERROR
+trip_status             string      WAITING_BUS | ON_BUS | NEAR_DESTINATION | TRIP_DONE | CANCELLED | ERROR
 bell_status             string      NOT_REQUESTED | PENDING | SUCCESS | FAIL
 last_request_id         string      nullable, 최근 위치 업데이트 요청 식별자
 location_source         string      nullable, GPS | MOCK | MANUAL

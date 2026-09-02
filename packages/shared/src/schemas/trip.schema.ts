@@ -108,6 +108,9 @@ export const ArrivalInfoSchema = z.object({
 });
 export type ArrivalInfo = z.infer<typeof ArrivalInfoSchema>;
 
+export const ArrivalStatusSchema = z.enum(["AVAILABLE", "NO_VEHICLE", "UPSTREAM_ERROR"]);
+export type ArrivalStatus = z.infer<typeof ArrivalStatusSchema>;
+
 export const CreateTripResponseSchema = z.object({
   success: z.literal(true),
   tripId: z.string().min(1),
@@ -181,6 +184,10 @@ export const TripStatusResponseSchema = z.object({
   tripId: z.string(),
   destination: z.string().optional(),
   routeNo: z.string().optional(),
+  // 도착정보 재조회는 GET /status 에만 있다. PATCH /status 응답도 같은 타입으로
+  // 다루므로(apps/mobile/src/api/client.ts) 필수로 두면 계약이 거짓이 된다.
+  arrivals: z.array(ArrivalInfoSchema).optional(),
+  arrivalStatus: ArrivalStatusSchema.optional(),
   currentStation: StationSchema.nullable().optional(),
   nextStation: StationSchema.nullable().optional(),
   remainingStations: z.number().int().nonnegative(),
