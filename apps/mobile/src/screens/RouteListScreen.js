@@ -1,7 +1,15 @@
 import React, { useState } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, FlatList, ActivityIndicator } from 'react-native';
+import * as Speech from 'expo-speech';
 import { apiClient, ApiError } from '../api/client';
 import { useTrip } from '../state/TripContext';
+import { useRealtime } from '../realtime/RealtimeProvider';
+import {
+  createAssistDeviceConnectionFailureEvents,
+  createAssistDeviceStatusEvent,
+  createBeaconLookupFailureEvent,
+  getAssistDeviceFallbackMessage,
+} from '../realtime/assist-device-status';
 import { connectAll, setTargetBeacon, startBeaconScan } from '../ble/bleManager';
 
 // 예모님 확정(2026-08-28): 후보 유효시간 5분. TripContext.js와 동일한 값을 써야 하므로
@@ -17,6 +25,7 @@ export default function RouteListScreen({ navigation }) {
   // 예모님 확인(2026-08-15): ConfirmScreen 삭제에 따라 route.params 대신 TripContext에서 값을 가져온다.
   // destination, routeCandidates는 function-dispatcher.ts의 search_routes 처리 결과로 채워진다.
   const { state, dispatch } = useTrip();
+  const { session } = useRealtime();
   const { destination, routeCandidates, routeCandidatesExpiresAt } = state;
 
   const [loading, setLoading] = useState(false);
@@ -43,25 +52,40 @@ export default function RouteListScreen({ navigation }) {
   // 기록해야, RidingScreen이 stopBeaconScan()을 정확한 시점에만 시도할 수 있다.
   // setTargetBeacon·startBeaconScan까지 전부 성공했을 때만 beaconScanActive: true로 표시한다.
   //
+  const announceAssistDeviceFailure = (event) => {
+    const deliveredToRealtime = session?.notifyAssistDeviceStatusChange(event) ?? false;
+    if (!deliveredToRealtime) {
+      Speech.speak(getAssistDeviceFallbackMessage(event), { language: 'ko' });
+    }
+  };
+
   // @returns {boolean} 하차벨(비콘 겸용) 연결 성공 여부 — TripContext에 전달할 isMock 판단에 사용
   const setupBle = async (targetBeaconId) => {
     const connected = await connectAll();
+    const caneConnected = connected.has('White_cane');
+    const bellConnected = connected.has('BUS_1551_001');
 
-    if (connected.has('White_cane')) {
+    for (const event of createAssistDeviceConnectionFailureEvents(
+      caneConnected,
+      bellConnected,
+    )) {
+      announceAssistDeviceFailure(event);
+    }
+
+    if (caneConnected && targetBeaconId) {
       try {
         await setTargetBeacon(targetBeaconId);
         await startBeaconScan();
         dispatch({ type: 'SET_BEACON_SCAN_ACTIVE', active: true });
       } catch (error) {
         console.log('스마트지팡이 명령 전송 실패:', error);
+        announceAssistDeviceFailure(createAssistDeviceStatusEvent({
+          device: 'CANE',
+          reason: 'COMMAND_FAILED',
+          attempted: true,
+          retryable: true,
+        }));
       }
-    } else {
-      console.log('스마트지팡이 연결 실패');
-    }
-
-    const bellConnected = connected.has('BUS_1551_001');
-    if (!bellConnected) {
-      console.log('하차벨 연결 실패');
     }
 
     return bellConnected;
@@ -110,19 +134,35 @@ export default function RouteListScreen({ navigation }) {
       // 예모님 코멘트 5번 반영: BLE 연결은 화면 전환을 기다리지 않는다.
       // 예모님 코멘트 2번 반영: 서버가 알려준 isMock을 보존해서, 실제 BLE 교신 여부와
       // 무관하게 무조건 isMock: false로 기록되던 문제를 해결한다.
-      apiClient.beacons
-        .list(selectedRoute.routeNo)
-        .then(async (beaconData) => {
-          const bleConnected = await setupBle(beaconData.targetBeaconId);
+      // 노선 비콘 조회는 지팡이 접근 진동에만 필요하다. 조회가 실패해도
+      // 하차벨은 기기 이름으로 직접 연결할 수 있으므로 connectAll()은 계속 실행한다.
+      void (async () => {
+        let beaconData = null;
+        try {
+          beaconData = await apiClient.beacons.list(selectedRoute.routeNo);
+        } catch (beaconError) {
+          console.log('비콘 조회 실패:', beaconError);
+          announceAssistDeviceFailure(createBeaconLookupFailureEvent(
+            beaconError instanceof ApiError
+              ? beaconError.errorCode
+              : undefined,
+          ));
+        }
+
+        try {
+          const bleConnected = await setupBle(beaconData?.targetBeaconId);
           dispatch({
             type: 'SET_BLE_MOCK_STATUS',
-            isMock: beaconData.isMock || !bleConnected,
+            isMock: (beaconData?.isMock ?? false) || !bleConnected,
           });
-        })
-        .catch((beaconError) => {
-          console.log('비콘 조회 실패:', beaconError);
+        } catch (bleError) {
+          console.log('보조기기 연결 준비 실패:', bleError);
           dispatch({ type: 'SET_BLE_MOCK_STATUS', isMock: true });
-        });
+          for (const event of createAssistDeviceConnectionFailureEvents(false, false)) {
+            announceAssistDeviceFailure(event);
+          }
+        }
+      })();
 
       navigation.navigate('Riding', { tripId: data.tripId, selectedRoute });
     } catch (error) {

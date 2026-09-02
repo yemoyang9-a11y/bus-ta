@@ -4,9 +4,18 @@ import { RealtimeResponseQueue } from '../apps/mobile/src/realtime/response-queu
 import { getRealtimeErrorDetails } from '../apps/mobile/src/realtime/server-event.ts';
 import {
   HANEUM_REALTIME_READY_INSTRUCTIONS,
+  HANEUM_REALTIME_INSTRUCTIONS,
   createRealtimeReadyResponseEvent,
   createRealtimeSessionUpdateEvent,
 } from '../apps/mobile/src/realtime/guide.ts';
+import {
+  ASSIST_DEVICE_RESPONSE_INSTRUCTIONS,
+  createAssistDeviceConnectionFailureEvents,
+  createAssistDeviceStatusEvent,
+  createBeaconLookupFailureEvent,
+  getAssistDeviceFallbackMessage,
+  getAssistDeviceEventKey,
+} from '../apps/mobile/src/realtime/assist-device-status.ts';
 import {
   RealtimeConnectionTimeoutError,
   runWithRealtimeConnectionTimeout,
@@ -149,6 +158,60 @@ test('연결 성공 안내는 Realtime 응답 한 건으로 생성한다', () =>
   });
   assert.match(HANEUM_REALTIME_READY_INSTRUCTIONS, /버스 도우미 앱입니다/);
   assert.match(HANEUM_REALTIME_READY_INSTRUCTIONS, /어디로 가실 건가요/);
+});
+
+test('버스를 놓친 발화는 도착정보 강제 갱신으로 보내고 운행을 종료하지 않는다', () => {
+  assert.match(HANEUM_REALTIME_INSTRUCTIONS, /버스 놓쳤어요/);
+  assert.match(HANEUM_REALTIME_INSTRUCTIONS, /refreshArrivals를 true/);
+  assert.match(HANEUM_REALTIME_INSTRUCTIONS, /end_trip을 호출하지 않는다/);
+  assert.match(HANEUM_REALTIME_INSTRUCTIONS, /일반 도착 질문에서는 refreshArrivals를 생략하거나 false/);
+});
+
+test('보조기기 실패 이벤트는 시도 여부와 재시도 가능 여부를 보존한다', () => {
+  const event = createAssistDeviceStatusEvent({
+    device: 'BOTH',
+    reason: 'BEACON_NOT_REGISTERED',
+    attempted: false,
+    retryable: false,
+  });
+
+  assert.deepEqual(event, {
+    type: 'assist_device_status_changed',
+    device: 'BOTH',
+    status: 'UNAVAILABLE',
+    reason: 'BEACON_NOT_REGISTERED',
+    attempted: false,
+    retryable: false,
+  });
+  assert.equal(
+    getAssistDeviceEventKey('trip-1', event),
+    'trip-1:BOTH:UNAVAILABLE:BEACON_NOT_REGISTERED:false:false',
+  );
+  assert.match(ASSIST_DEVICE_RESPONSE_INSTRUCTIONS, /attempted가 false/);
+  assert.match(ASSIST_DEVICE_RESPONSE_INSTRUCTIONS, /retryable이 false/);
+  assert.match(ASSIST_DEVICE_RESPONSE_INSTRUCTIONS, /기사님께 직접 말씀/);
+});
+
+test('비콘 미등록과 일시적 조회 실패를 재시도 가능 여부로 구분한다', () => {
+  const notRegistered = createBeaconLookupFailureEvent('BEACON_NOT_FOUND');
+  const lookupFailed = createBeaconLookupFailureEvent('DB_ERROR');
+
+  assert.equal(notRegistered.reason, 'BEACON_NOT_REGISTERED');
+  assert.equal(notRegistered.device, 'CANE');
+  assert.equal(notRegistered.attempted, false);
+  assert.equal(notRegistered.retryable, false);
+  assert.equal(lookupFailed.reason, 'BEACON_LOOKUP_FAILED');
+  assert.equal(lookupFailed.device, 'CANE');
+  assert.equal(lookupFailed.attempted, false);
+  assert.equal(lookupFailed.retryable, true);
+  assert.doesNotMatch(getAssistDeviceFallbackMessage(notRegistered), /전원/);
+});
+
+test('지팡이와 하차벨 연결 결과를 개별 또는 BOTH 이벤트로 만든다', () => {
+  assert.deepEqual(createAssistDeviceConnectionFailureEvents(true, true), []);
+  assert.equal(createAssistDeviceConnectionFailureEvents(false, false)[0]?.device, 'BOTH');
+  assert.equal(createAssistDeviceConnectionFailureEvents(false, true)[0]?.device, 'CANE');
+  assert.equal(createAssistDeviceConnectionFailureEvents(true, false)[0]?.device, 'BELL');
 });
 
 test('전체 연결 제한 시간이 지나면 작업을 중단하고 재시도 가능한 오류를 반환한다', async () => {

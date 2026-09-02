@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { HaneumRealtimeSession } from "../apps/mobile/src/realtime/session.js";
+import { createAssistDeviceStatusEvent } from "../apps/mobile/src/realtime/assist-device-status.js";
 import type {
   AppAction,
   AppTripState,
@@ -73,11 +74,35 @@ function createSessionHarness() {
   return {
     actions,
     queueCandidateResponse,
+    sentEvents,
     session,
     state,
     transport,
   };
 }
+
+test("보조기기 실패를 Realtime 응답 대기열에 한 번만 주입한다", () => {
+  const { sentEvents, session } = createSessionHarness();
+  const event = createAssistDeviceStatusEvent({
+    device: "BELL",
+    reason: "NOT_CONNECTED",
+    attempted: true,
+    retryable: true,
+  });
+
+  assert.equal(session.notifyAssistDeviceStatusChange(event), true);
+  assert.equal(session.notifyAssistDeviceStatusChange(event), true);
+  assert.equal(sentEvents.length, 2);
+  assert.deepEqual(sentEvents[0], {
+    type: "conversation.item.create",
+    item: {
+      type: "message",
+      role: "system",
+      content: [{ type: "input_text", text: JSON.stringify(event) }],
+    },
+  });
+  assert.equal((sentEvents[1] as { type?: string }).type, "response.create");
+});
 
 function markedCandidateActions(actions: AppAction[]) {
   return actions.filter(

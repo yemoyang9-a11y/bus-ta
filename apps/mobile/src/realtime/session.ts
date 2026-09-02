@@ -26,6 +26,11 @@ import {
   runWithRealtimeConnectionTimeout,
 } from "./connection-timeout";
 import { CandidateAnnouncementTracker } from "./candidate-announcement-tracker";
+import {
+  ASSIST_DEVICE_RESPONSE_INSTRUCTIONS,
+  getAssistDeviceEventKey,
+} from "./assist-device-status";
+import type { AssistDeviceStatusChangedEvent } from "./types";
 
 // OpenAI Realtime은 동시에 하나의 active response만 허용한다.
 const RESPONSE_CREATE_EVENT_TYPE = "response.create";
@@ -78,6 +83,7 @@ export class HaneumRealtimeSession {
     new CandidateAnnouncementTracker();
   private eventIdCounter = 0;
   private hasSentReadyResponse = false;
+  private queuedAssistDeviceEventKeys = new Set<string>();
 
   // context는 RealtimeProvider가 TripContext와 연결해서 만든 것을 그대로 받는다.
   // (2026-08-12, 예모님 확정 구조: TripContext를 운행 상태의 유일한 원본으로 사용)
@@ -554,5 +560,55 @@ export class HaneumRealtimeSession {
         this.flushPendingResponse();
       },
     );
+  }
+
+  /**
+   * 지팡이·하차벨 준비 실패를 Realtime 대화에 시스템 이벤트로 넣고
+   * 모델의 음성 안내를 생성한다. 같은 운행의 같은 실패는 한 번만 큐에 넣는다.
+   *
+   * @returns Realtime 연결에 전달했거나 이미 처리한 이벤트면 true.
+   * 연결 전이면 false이며 호출부가 로컬 TTS로 대체한다.
+   */
+  notifyAssistDeviceStatusChange(
+    event: AssistDeviceStatusChangedEvent,
+  ): boolean {
+    if (!this.transport) {
+      return false;
+    }
+
+    const eventKey = getAssistDeviceEventKey(
+      this.context.getAppState().tripId,
+      event,
+    );
+
+    if (this.queuedAssistDeviceEventKeys.has(eventKey)) {
+      return true;
+    }
+
+    this.queuedAssistDeviceEventKeys.add(eventKey);
+
+    const statusEvent = {
+      type: "conversation.item.create",
+      item: {
+        type: "message",
+        role: "system",
+        content: [
+          {
+            type: "input_text",
+            text: JSON.stringify(event),
+          },
+        ],
+      },
+    };
+
+    this.responseQueue.enqueueDirect(
+      this.createPendingResponse(
+        ASSIST_DEVICE_RESPONSE_INSTRUCTIONS,
+        [statusEvent],
+      ),
+    );
+    this.flushPendingResponse();
+
+    return true;
   }
 }
