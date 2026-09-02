@@ -6,7 +6,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import { apiClient, ApiError } from '../api/client';
 import { useTrip } from '../state/TripContext';
 import { useRealtime } from '../realtime/RealtimeProvider';
-import { stopBeaconScan } from '../ble/bleManager';
+import { startBeaconScan, stopBeaconScan } from '../ble/bleManager';
 
 const INITIAL_STATUS = {
   currentStation: null,
@@ -28,6 +28,9 @@ export default function RidingScreen({ route, navigation }) {
   const bellHandledRef = useRef(false);
   const requestCounterRef = useRef(0);
   const stoppedRef = useRef(false);
+  // 통신이 실패하면 서버 상태를 알 수 없다. 마지막으로 확인된 상태를 들고 있다가
+  // 대기 중이었을 때만 연결 복구를 재시도한다 — 탑승 뒤에는 폴링할 이유가 없다.
+  const lastKnownStatusRef = useRef('WAITING_BUS');
   const stoppingBeaconScanRef = useRef(false); // 예모님 P0-2: 중복 재시도 방지용 진행중 플래그
   const patchInFlightRef = useRef(false);
   const { state, dispatch } = useTrip();
@@ -80,6 +83,66 @@ export default function RidingScreen({ route, navigation }) {
       return () => clearTimeout(timer);
     }
   }, [status.guideMessage, status.remainingStations, isConnected]);
+
+  // ── 도착정보 반복 조회 + 비콘 스캔 시작 ─────────────────────────────
+  // 지금까지 GET /status 를 부르는 곳은 사용자가 "몇 분 남았어?"라고 물었을 때뿐이라,
+  // 가만히 기다리는 동안에는 도착 예정 시간이 갱신되지 않았다. 서버가 응답에
+  // nextArrivalRefreshInMs 로 "다음엔 언제 물어봐"를 알려주므로 그 주기로 다시 부른다.
+  // 주기를 앱이 스스로 정하지 않는 이유는 서버의 호출 정책과 어긋나지 않게 하기 위함이다.
+  useEffect(() => {
+    if (!tripId) return;
+    let timer;
+    let cancelled = false;
+
+    const pollArrival = async () => {
+      if (cancelled || stoppedRef.current) return;
+      try {
+        const latest = await apiClient.trips.getStatus(tripId);
+        if (cancelled) return;
+        lastKnownStatusRef.current = latest.tripStatus;
+        setStatus(latest);
+        dispatch({ type: 'UPDATE_TRIP_STATUS', status: latest });
+
+        // 서버가 "지금 켜라"고 할 때만 켠다. 한 번 켜면 끄지 않는다 — 앞차가 떠나면
+        // 도착 예정 시간이 다시 늘어나는데, 그때 끄면 정작 버스가 눈앞에 왔을 때
+        // 스캔이 꺼져 있다. 끄는 것은 탑승 확정 시점의 아래 useEffect 가 맡는다.
+        if (latest.shouldScanBeacon && !state.beaconScanActive) {
+          try {
+            await startBeaconScan();
+            if (!cancelled) dispatch({ type: 'SET_BEACON_SCAN_ACTIVE', active: true });
+          } catch (error) {
+            console.log('비콘 스캔 시작 실패, 다음 주기에 재시도:', error);
+          }
+        }
+
+        // 서버가 주기를 알려주지 않으면 반복하지 않는다. 앱이 임의 주기를 만들면
+        // GBIS 호출 정책이 앱 쪽에서 깨진다. 서버는 WAITING_BUS 일 때만 주기를 주므로,
+        // 탑승이 확정되면 이 폴링은 자연히 멈춘다.
+        if (
+          !cancelled &&
+          latest.tripStatus === 'WAITING_BUS' &&
+          typeof latest.nextArrivalRefreshInMs === 'number'
+        ) {
+          timer = setTimeout(pollArrival, Math.max(1000, latest.nextArrivalRefreshInMs));
+        }
+      } catch (error) {
+        // 통신 실패라 서버가 준 주기를 알 수 없다. 이건 도착정보 갱신 주기가 아니라
+        // 연결 복구용 재시도다. 최소 간격(20초)을 그대로 써서 실패 중에도 호출이
+        // 늘어나지 않게 한다. 마지막으로 확인된 상태가 대기 중일 때만 재시도한다.
+        console.log('도착정보 조회 실패, 연결 복구용으로 20초 뒤 재시도:', error);
+        if (!cancelled && lastKnownStatusRef.current === 'WAITING_BUS') {
+          timer = setTimeout(pollArrival, 20000);
+        }
+      }
+    };
+
+    pollArrival();
+
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [tripId, state.beaconScanActive]);
 
   // 정민님 확인(2026-08-12): 탑승 완료 시 비콘 스캔 중지
   // 예모님 확정(2026-08-24): "탑승 완료"는 boardingConfirmedAt이 존재하는 시점이다.

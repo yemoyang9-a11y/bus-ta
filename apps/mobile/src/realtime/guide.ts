@@ -155,7 +155,7 @@ export const HANEUM_REALTIME_TOOLS = [
     type: "function",
     name: "get_trip_status",
     description:
-      "진행 중인 운행의 최신 상태를 조회한다. 사용자가 현재 정류장, 다음 정류장, 남은 정류장 수, 하차 준비 여부를 물을 때 사용한다. 조회 전용이며 하차벨 요청을 만들지 않는다.",
+      "진행 중인 운행의 최신 상태를 조회한다. 사용자가 현재 정류장, 다음 정류장, 남은 정류장 수, 하차 준비 여부, 도착 예정 시간을 물을 때 사용한다. 조회 전용이며 하차벨 요청을 만들지 않는다.",
     parameters: {
       type: "object",
       additionalProperties: false,
@@ -163,6 +163,11 @@ export const HANEUM_REALTIME_TOOLS = [
         tripId: {
           type: "string",
           description: "create_trip 성공 응답에서 백엔드가 발급한 운행 식별자.",
+        },
+        refreshArrivals: {
+          type: "boolean",
+          description:
+            "사용자가 '버스 놓쳤어요', '버스 지나갔어요'처럼 버스를 놓쳤다고 말한 경우에만 true 로 보낸다. '몇 분 남았어요?' 같은 일반 질문에는 넣지 않는다. true 로 보내면 서버가 저장해 둔 값 대신 도착정보를 새로 조회한다.",
         },
       },
       required: ["tripId"],

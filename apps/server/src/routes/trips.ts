@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { getArrivalInfo } from "../adapters/routes/hyorin-route-search.adapter.js";
+import { ArrivalCache } from "../services/arrival/arrival-cache.js";
 import { createSupabaseTripRepositoryFromEnv } from "../repositories/supabase/trip.repository.js";
 import { createTrip } from "../services/trip/create-trip.service.js";
 import { getTripStatus } from "../services/trip/get-trip-status.service.js";
@@ -11,6 +12,18 @@ import { confirmBoarding } from "../services/trip/confirm-boarding.service.js";
 export const tripsRouter = Router();
 
 // POST /api/trips
+/**
+ * 도착정보 조회는 이 캐시를 거친다.
+ *
+ * GET /status 는 앱이 대기 중 반복 호출하고 사용자가 물을 때마다 또 불린다. 그때마다
+ * GBIS 를 직접 부르면 호출량이 사용자 수 × 조회 빈도로 그대로 늘어난다. 캐시가 남은
+ * 시간에 맞춰 주기를 정하고(최소 20초·최대 5분), 같은 대상에 동시 요청이 와도 한 번만
+ * 부른다. 조회 실패는 상태로 구분해 "차량 없음"으로 굳지 않게 한다.
+ *
+ * 프로세스 전역이라 도착정보만 담는다. 비콘 스캔 여부처럼 운행마다 다른 값은 넣지 않는다.
+ */
+const arrivalCache = new ArrivalCache((target) => getArrivalInfo(target));
+
 tripsRouter.post("/", async (req, res) => {
   const repository = createSupabaseTripRepositoryFromEnv();
 
@@ -27,7 +40,10 @@ tripsRouter.post("/", async (req, res) => {
   const result = await createTrip(req.body, {
     createTripWithStatus: (data) => repository.createTripWithStatus(data),
     getArrivals: async (candidate) => {
-      const info = await getArrivalInfo(candidate);
+      // create_trip 은 arrivals 만 쓴다. 조회 실패(null)는 빈 배열로 접어 기존
+      // 동작을 유지한다 — 실패와 차량없음 구분은 GET /status 의 arrivalStatus 가 한다.
+      const snapshot = await arrivalCache.get(candidate);
+      const info = { arrivals: snapshot.arrivals ?? [] };
       return info.arrivals;
     },
   });
@@ -105,12 +121,25 @@ tripsRouter.get("/:tripId/status", async (req, res) => {
     return;
   }
 
+  // "버스 놓쳤어요" 처럼 사용자가 최신 값을 명시적으로 요구한 경우에만 참으로 온다.
+  // 캐시가 마지막 GBIS 호출로부터 20초 하한은 그대로 지키므로 남발돼도 호출은 안 늘어난다.
+  const refreshArrivals = req.query.refreshArrivals === "true";
+
   const result = await getTripStatus(req.params.tripId ?? "", {
     findTripProgressData: (tripId) => repository.findTripProgressData(tripId),
-    // get_trip_status 는 사용자가 버스를 놓쳤다고 말한 직후 호출되는 경로다.
-    // 캐시/기존 predictedArrivalMinutes를 거치지 않고 GBIS를 새로 조회한다.
-    // arrivals 가 비어 있는 이유(차량 없음 / 방향 확인 불가) 판단은 service 가 한다.
-    getArrivals: (candidate) => getArrivalInfo(candidate),
+    refreshArrivals,
+    // get_trip_status 는 앱의 반복 조회와 사용자 질문이 함께 들어오는 경로다.
+    // 캐시를 거쳐 GBIS 호출 빈도를 정책대로 묶고, 다음 조회까지 남은 시간을 함께 돌려준다.
+    // arrivals 가 비어 있는 이유(차량 없음 / 예상시간 없음 / 확인 불가)는 arrivalStatus 로 구분한다.
+    getArrivals: async (candidate) => {
+      const { refresh, ...target } = candidate;
+      const snapshot = await arrivalCache.get(target, refresh ? { refresh: true } : {});
+      return {
+        arrivals: snapshot.arrivals ?? [],
+        arrivalStatus: snapshot.arrivalStatus,
+        nextRefreshInMs: snapshot.nextRefreshInMs,
+      };
+    },
   });
   res.status(result.httpStatus).json(result.body);
 });

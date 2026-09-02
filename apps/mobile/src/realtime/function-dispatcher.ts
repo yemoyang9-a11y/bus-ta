@@ -175,8 +175,12 @@ async function callBackendFunction(
         boardingMethod: "USER_CONFIRMED",
       });
     }
-    case "get_trip_status":
-      return apiClient.trips.getStatus(assertTripId(args, context));
+    case "get_trip_status": {
+      // refreshArrivals 는 "버스 놓쳤어요" 발화에서만 모델이 붙인다. 일반 상태
+      // 조회에 붙으면 서버가 정한 갱신 주기를 우회하므로 그대로 넘기되 값만 검증한다.
+      const refreshArrivals = assertRecord(args).refreshArrivals === true;
+      return apiClient.trips.getStatus(assertTripId(args, context), { refreshArrivals });
+    }
     case "end_trip": {
       const { tripId, body } = assertEndTripRequest(args, context);
       return apiClient.trips.end(tripId, body);
