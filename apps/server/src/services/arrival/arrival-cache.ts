@@ -18,15 +18,27 @@ import { ARRIVAL_POLL_MIN_MS, nextArrivalPollDelayMs } from "./arrival-poll-poli
  * `shouldScanBeacon` 을 직접 호출한다.
  */
 
-export type ArrivalLookup = (target: {
-  gbisStationId: string;
-  localBusId: string;
-}) => Promise<{ arrivals: ArrivalInfo[]; arrivalStatus: ArrivalStatus }>;
+export interface ArrivalStation {
+  stationName: string;
+  latitude: number;
+  longitude: number;
+}
 
 export interface ArrivalTarget {
   gbisStationId: string;
   localBusId: string;
+  /**
+   * 목적지 정류장. 회차 노선에서 어느 방향 차량을 볼지 가르는 값이라 캐시 키에 넣는다.
+   *
+   * 같은 정류장·같은 노선이어도 목적지가 다르면 방향 판별 결과가 달라진다. 키에서
+   * 빼면 반대 방향으로 가는 다른 사용자의 도착정보가 그대로 새어 나간다.
+   */
+  destinationStation?: ArrivalStation;
 }
+
+export type ArrivalLookup = (
+  target: ArrivalTarget,
+) => Promise<{ arrivals: ArrivalInfo[]; arrivalStatus: ArrivalStatus }>;
 
 export interface ArrivalSnapshot {
   /** 조회에 성공했으면 도착 차량 배열(없으면 빈 배열), 실패했으면 null. */
@@ -53,6 +65,14 @@ interface CacheEntry {
   arrivals: ArrivalInfo[] | null;
   /** arrivals 를 실제로 받아온 시각. 실패해도 갱신하지 않아 낡은 정도를 잰다. */
   fetchedAt: number;
+  /**
+   * 마지막으로 GBIS 를 부른 시각. 성공·실패 모두 갱신한다.
+   *
+   * 강제 재조회 하한은 이 값을 기준으로 잰다. fetchedAt(마지막 성공)으로 재면,
+   * 실패가 이어지는 동안 그 값이 과거에 머물러 하한이 늘 지나 있는 것으로 보이고
+   * refresh 가 올 때마다 GBIS 를 다시 두드리게 된다.
+   */
+  lastAttemptAt: number;
   refreshAfter: number;
   /**
    * 이 항목을 어떻게 안내해야 하는지. 실패 뒤 낡은 값을 유지한 항목은
@@ -60,6 +80,18 @@ interface CacheEntry {
    * "지금 확인한 값"으로 둔갑하지 않는다.
    */
   arrivalStatus: ArrivalStatus;
+}
+
+export interface ArrivalGetOptions {
+  /**
+   * 갱신 시점 전이라도 다시 조회할지.
+   *
+   * "버스 놓쳤어요"처럼 사용자가 최신 값을 명시적으로 요구한 경우에만 쓴다.
+   * 이때도 마지막 GBIS 호출(성공·실패 무관)로부터 `ARRIVAL_POLL_MIN_MS`(20초)가
+   * 지나지 않았으면 캐시를 그대로 돌려준다 — 그 안에서는 값이 거의 바뀌지 않는데
+   * 호출만 늘어난다.
+   */
+  refresh?: boolean;
 }
 
 export interface ArrivalCacheOptions {
@@ -79,6 +111,16 @@ export interface ArrivalCacheOptions {
 
 const DEFAULT_MAX_STALE_MS = 90_000;
 const DEFAULT_MAX_ENTRIES = 500;
+
+/**
+ * 정류장·노선에 더해 목적지까지 키에 넣는다. 회차 노선은 목적지에 따라 방향 판별
+ * 결과가 갈리므로, 목적지를 빼면 반대 방향 값이 다른 사용자에게 새어 나간다.
+ */
+function cacheKey(target: ArrivalTarget): string {
+  const dest = target.destinationStation;
+  const destKey = dest ? `${dest.stationName}@${dest.latitude},${dest.longitude}` : "";
+  return `${target.gbisStationId}:${target.localBusId}:${destKey}`;
+}
 
 function readPredictedArrivalMinutes(arrivals: ArrivalInfo[]): number | null {
   const first = arrivals[0]?.predictedArrivalMinutes;
@@ -112,12 +154,19 @@ export class ArrivalCache {
    * `arrivals: null`(조회 실패)로 바꾼다. 호출부는 null 과 빈 배열을 구분해
    * "확인하지 못함"과 "실시간 차량 없음"을 다르게 안내할 수 있다.
    */
-  async get(target: ArrivalTarget): Promise<ArrivalSnapshot> {
-    const key = `${target.gbisStationId}:${target.localBusId}`;
+  async get(target: ArrivalTarget, options: ArrivalGetOptions = {}): Promise<ArrivalSnapshot> {
+    const key = cacheKey(target);
     const at = this.now();
     const cached = this.entries.get(key);
 
-    if (cached && at < cached.refreshAfter) {
+    // 강제 재조회에도 하한을 둔다. 모델이 같은 발화를 여러 번 인식하거나 사용자가
+    // 연달아 물으면 refresh 가 남발되는데, 그때마다 GBIS 를 부르면 호출량이 그대로
+    // 늘어난다. 최소 간격 안에서는 값이 거의 바뀌지 않아 캐시로 충분하다.
+    const withinMinInterval =
+      cached !== undefined && at - cached.lastAttemptAt < ARRIVAL_POLL_MIN_MS;
+    const skipCache = options.refresh === true && !withinMinInterval;
+
+    if (!skipCache && cached && at < cached.refreshAfter) {
       return this.toSnapshot(cached.arrivals, at, cached.refreshAfter, true, cached.arrivalStatus);
     }
 
@@ -145,6 +194,7 @@ export class ArrivalCache {
       const entry: CacheEntry = {
         arrivals,
         fetchedAt: at,
+        lastAttemptAt: at,
         refreshAfter: at + refreshDelay,
         arrivalStatus: result.arrivalStatus,
       };
@@ -185,13 +235,22 @@ export class ArrivalCache {
     const staleFor = cached?.arrivals ? at - cached.fetchedAt : Number.POSITIVE_INFINITY;
     const keepStale = cached?.arrivals != null && staleFor <= this.maxStaleMs;
 
+    // 실패해도 "부르긴 했다"는 사실은 남긴다. lastAttemptAt 을 갱신하지 않으면
+    // 실패가 이어지는 동안 강제 재조회 하한이 늘 지나 있는 것으로 보여 GBIS 호출이
+    // 제한 없이 늘어난다.
     const entry: CacheEntry = keepStale
       ? // 아직 쓸 만한 직전 값이 있으면 유지하되, 그 값이 언제 것인지는 그대로 둔다.
         // fetchedAt 을 갱신하면 낡은 값이 영원히 젊어져 한도가 의미를 잃는다.
-        { ...cached!, refreshAfter, arrivalStatus: ARRIVAL_STATUS.UPSTREAM_ERROR }
+        {
+          ...cached!,
+          refreshAfter,
+          lastAttemptAt: at,
+          arrivalStatus: ARRIVAL_STATUS.UPSTREAM_ERROR,
+        }
       : {
           arrivals: null,
           fetchedAt: cached?.fetchedAt ?? at,
+          lastAttemptAt: at,
           refreshAfter,
           arrivalStatus: ARRIVAL_STATUS.UPSTREAM_ERROR,
         };
@@ -244,7 +303,7 @@ export class ArrivalCache {
 
   /** 특정 대상의 캐시를 비운다. 테스트와 운행 종료 정리에 쓴다. */
   clear(target: ArrivalTarget): void {
-    const key = `${target.gbisStationId}:${target.localBusId}`;
+    const key = cacheKey(target);
     this.entries.delete(key);
   }
 

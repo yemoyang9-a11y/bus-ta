@@ -20,11 +20,24 @@ export const ARRIVAL_POLL_MAX_MS = 5 * 60_000;
 /** 이 시간 이내로 들어오면 비콘 스캔을 시작한다. */
 export const BEACON_SCAN_TRIGGER_MINUTES = 5;
 
+/** 이 시간 이내면 1분마다 확인한다. */
+export const ARRIVAL_POLL_NEAR_MINUTES = 5;
+/** 이 시간 이내면 30초마다 확인한다. */
+export const ARRIVAL_POLL_IMMINENT_MINUTES = 4;
+
+const ONE_MINUTE_MS = 60_000;
+const THIRTY_SECONDS_MS = 30_000;
+
 /**
  * 다음 재조회까지 기다릴 시간.
  *
- * 남은 시간의 절반을 기다린다. 예측값이 최대 1.5배 속도로 줄어들어도
- * 다음 조회 시점에 남은 시간의 25%가 남으므로 도착을 건너뛰지 않는다.
+ * 도착이 가까울수록 촘촘하게 확인한다. 버스를 놓치는 건 대부분 막판이라, 남은
+ * 시간이 짧은 구간에 조회를 몰아준다.
+ *
+ * - 4분 이하  : 30초마다. 이 구간에서 한 번 놓치면 버스가 그냥 지나간다.
+ * - 5분 이하  : 1분마다. 비콘 스캔이 켜지는 시점(BEACON_SCAN_TRIGGER_MINUTES)과 같다.
+ * - 그보다 멀면: 남은 시간의 절반. 실측상 예측값은 최대 1.5배 속도로 줄어들어,
+ *   절반을 기다려도 다음 조회 시점에 25%가 남는다. 최대 5분을 넘기지 않는다.
  *
  * 도착정보가 없으면(심야·미운행·GBIS 미수록 노선) 최대 간격으로 재시도한다.
  * 값이 없다고 조회를 멈추면 나중에 운행이 시작돼도 알아채지 못한다.
@@ -34,7 +47,12 @@ export function nextArrivalPollDelayMs(predictedArrivalMinutes: number | null): 
     return ARRIVAL_POLL_MAX_MS;
   }
 
-  const halfRemainingMs = (Math.max(0, predictedArrivalMinutes) / 2) * 60_000;
+  const remaining = Math.max(0, predictedArrivalMinutes);
+
+  if (remaining <= ARRIVAL_POLL_IMMINENT_MINUTES) return THIRTY_SECONDS_MS;
+  if (remaining <= ARRIVAL_POLL_NEAR_MINUTES) return ONE_MINUTE_MS;
+
+  const halfRemainingMs = (remaining / 2) * ONE_MINUTE_MS;
   return Math.min(ARRIVAL_POLL_MAX_MS, Math.max(ARRIVAL_POLL_MIN_MS, halfRemainingMs));
 }
 

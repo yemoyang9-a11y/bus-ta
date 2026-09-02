@@ -84,7 +84,8 @@ test("버스가 가까워지면 갱신 주기가 좁아진다", async () => {
   const near = buildCache([[arrival(2)]]);
 
   assert.equal((await far.cache.get(TARGET)).nextRefreshInMs, ARRIVAL_POLL_MAX_MS);
-  assert.equal((await near.cache.get(TARGET)).nextRefreshInMs, 1 * MINUTE);
+  // 2분 남았으면 임박 구간(4분 이하)이라 30초마다 확인한다.
+  assert.equal((await near.cache.get(TARGET)).nextRefreshInMs, 30_000);
 });
 
 test("실시간 차량이 없으면 빈 배열이고, 조회 실패가 아니다", async () => {
@@ -265,7 +266,7 @@ test("노선이 다르면 갱신 주기를 따로 관리한다", async () => {
 
   assert.deepEqual(seen, ["A", "B"]);
   assert.equal(a.nextRefreshInMs, ARRIVAL_POLL_MAX_MS);
-  assert.equal(b.nextRefreshInMs, 1 * MINUTE);
+  assert.equal(b.nextRefreshInMs, 30_000, "2분 남은 쪽은 임박 구간이라 30초마다 확인한다");
 });
 
 test("전부 최신이어도 항목 수는 상한을 넘지 않는다", async () => {
@@ -485,4 +486,71 @@ test("직전 값이 NO_VEHICLE 이어도 실패하면 UPSTREAM_ERROR 로 바뀐�
   assert.equal(calls, 2);
   assert.equal(failed.arrivalStatus, "UPSTREAM_ERROR");
   assert.deepEqual(failed.arrivals, [], "빈 배열만 보고 '차가 없다'로 판단하면 안 된다");
+});
+
+test("같은 노선·정류장이어도 목적지가 다르면 캐시를 공유하지 않는다", async () => {
+  // 회차 노선은 목적지에 따라 방향 판별이 갈린다. 키에서 목적지를 빼면 반대 방향으로
+  // 가는 다른 사용자의 도착정보가 그대로 새어 나간다.
+  const seen: string[] = [];
+  const cache = new ArrivalCache(
+    async (t) => {
+      seen.push(t.destinationStation?.stationName ?? "none");
+      return { arrivals: [arrival(5)], arrivalStatus: "AVAILABLE" as const };
+    },
+    { now: () => 0 },
+  );
+
+  const toA = { ...TARGET, destinationStation: { stationName: "A", latitude: 1, longitude: 1 } };
+  const toB = { ...TARGET, destinationStation: { stationName: "B", latitude: 2, longitude: 2 } };
+
+  await cache.get(toA);
+  await cache.get(toB);
+  await cache.get(toA);
+
+  assert.deepEqual(seen, ["A", "B"], "목적지가 같을 때만 캐시를 재사용한다");
+});
+
+test("목적지가 같으면 다음 조회에서 캐시를 재사용한다", async () => {
+  // POST /trips 직후 GET /status 가 같은 키를 써서 GBIS 를 한 번 더 부르지 않는다.
+  let calls = 0;
+  const cache = new ArrivalCache(
+    async () => {
+      calls += 1;
+      return { arrivals: [arrival(30)], arrivalStatus: "AVAILABLE" as const };
+    },
+    { now: () => 0 },
+  );
+
+  const target = {
+    ...TARGET,
+    destinationStation: { stationName: "병점역후문", latitude: 37.20601, longitude: 127.032047 },
+  };
+
+  await cache.get(target);
+  await cache.get({ ...target });
+
+  assert.equal(calls, 1, "같은 목적지면 캐시 키가 같아야 한다");
+});
+
+test("놓침 발화의 강제 재조회도 최소 간격 하한을 지킨다", async () => {
+  let clock = 0;
+  let calls = 0;
+  const cache = new ArrivalCache(
+    async () => {
+      calls += 1;
+      return { arrivals: [arrival(30)], arrivalStatus: "AVAILABLE" as const };
+    },
+    { now: () => clock },
+  );
+
+  await cache.get(TARGET);
+  assert.equal(calls, 1);
+
+  clock += 1_000;
+  await cache.get(TARGET, { refresh: true });
+  assert.equal(calls, 1, "최소 간격 안의 refresh 는 GBIS 를 부르지 않는다");
+
+  clock += ARRIVAL_POLL_MIN_MS;
+  await cache.get(TARGET, { refresh: true });
+  assert.equal(calls, 2, "최소 간격이 지나면 갱신 시점 전이라도 다시 부른다");
 });

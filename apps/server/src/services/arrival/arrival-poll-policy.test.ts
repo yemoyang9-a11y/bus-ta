@@ -17,15 +17,24 @@ test("멀리 있는 버스는 최대 간격(5분)으로만 확인한다", () => 
   assert.equal(nextArrivalPollDelayMs(10), ARRIVAL_POLL_MAX_MS);
 });
 
-test("가까워지면 남은 시간의 절반으로 좁힌다", () => {
+test("5분보다 멀면 남은 시간의 절반으로 좁힌다", () => {
   assert.equal(nextArrivalPollDelayMs(8), 4 * MINUTE);
-  assert.equal(nextArrivalPollDelayMs(5), 2.5 * MINUTE);
-  assert.equal(nextArrivalPollDelayMs(2), 1 * MINUTE);
+  assert.equal(nextArrivalPollDelayMs(6), 3 * MINUTE);
 });
 
-test("도착 직전에도 최소 간격(20초)보다 자주 부르지 않는다", () => {
-  assert.equal(nextArrivalPollDelayMs(0.5), ARRIVAL_POLL_MIN_MS);
-  assert.equal(nextArrivalPollDelayMs(0), ARRIVAL_POLL_MIN_MS);
+test("5분 이하면 1분마다 확인한다", () => {
+  // 비콘 스캔이 켜지는 시점과 같다. 이때부터는 절반 규칙보다 촘촘해야 한다.
+  assert.equal(nextArrivalPollDelayMs(5), 1 * MINUTE);
+  assert.equal(nextArrivalPollDelayMs(4.5), 1 * MINUTE);
+});
+
+test("4분 이하면 30초마다 확인한다", () => {
+  // 버스를 놓치는 건 대부분 막판이다. 이 구간에서 한 번 놓치면 그냥 지나간다.
+  assert.equal(nextArrivalPollDelayMs(4), 30_000);
+  assert.equal(nextArrivalPollDelayMs(2), 30_000);
+  assert.equal(nextArrivalPollDelayMs(1), 30_000);
+  assert.equal(nextArrivalPollDelayMs(0.5), 30_000);
+  assert.equal(nextArrivalPollDelayMs(0), 30_000);
 });
 
 test("예측값이 실시간의 1.5배로 줄어도 다음 조회 전에 도착하지 않는다", () => {

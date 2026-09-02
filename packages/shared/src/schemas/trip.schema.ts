@@ -188,6 +188,24 @@ export const TripStatusResponseSchema = z.object({
   // 다루므로(apps/mobile/src/api/client.ts) 필수로 두면 계약이 거짓이 된다.
   arrivals: z.array(ArrivalInfoSchema).optional(),
   arrivalStatus: ArrivalStatusSchema.optional(),
+  /**
+   * 앱이 다음 도착정보 조회까지 기다릴 시간(ms).
+   *
+   * 주기를 앱이 스스로 정하면 서버의 GBIS 호출 정책과 어긋난다. 서버가 남은 시간에
+   * 맞춰 정해 내려준다. 값이 없으면 앱은 반복 조회를 하지 않는다.
+   *
+   * arrivals·arrivalStatus 와 같은 범위다 — GET /status 의 WAITING_BUS 응답에만 있고
+   * PATCH /status 에는 없다.
+   */
+  nextArrivalRefreshInMs: z.number().int().nonnegative().optional(),
+  /**
+   * 스마트지팡이 비콘 스캔을 시작해야 하는지.
+   *
+   * 탑승 확정 전(WAITING_BUS)에만 참이 될 수 있다. 한 번 켜면 끄지 않는 것은 앱
+   * 책임이다 — 앞차가 떠나면 도착 예정 시간이 다시 늘어나는데, 그때 끄면 정작
+   * 버스가 눈앞에 왔을 때 스캔이 꺼져 있다.
+   */
+  shouldScanBeacon: z.boolean().optional(),
   currentStation: StationSchema.nullable().optional(),
   nextStation: StationSchema.nullable().optional(),
   remainingStations: z.number().int().nonnegative(),

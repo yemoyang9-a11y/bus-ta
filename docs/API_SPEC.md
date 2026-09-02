@@ -38,11 +38,30 @@ Function은 사용자 의도를 처리하는 경로다. 자동 GPS·하차벨 �
 
 ### `GET /api/trips/{tripId}/status`
 
-기본 운행 상태를 반환하면서, 요청 시점의 GBIS 도착정보를 선택 노선 기준으로 새로 조회한다.
-이 API는 DB의 운행·하차벨 상태를 변경하지 않으며, 생성 시 저장한
-`predictedArrivalMinutes` 또는 이전 응답의 도착정보를 재사용하지 않는다.
+기본 운행 상태를 반환하면서, `tripStatus`가 `WAITING_BUS`일 때 GBIS 도착정보를 선택 노선
+기준으로 조회한다. 이 API는 DB의 운행·하차벨 상태를 변경하지 않는다.
 
-성공 응답에는 다음 필드가 추가된다.
+생성 시 DB에 저장한 `predictedArrivalMinutes`나 앱·모델이 보관한 이전 안내값을 직접
+재사용하지 않고, 서버의 `ArrivalCache`를 통해 선택 노선의 도착정보 스냅샷을 반환한다.
+캐시 갱신 시점 전에는 서버가 보관한 스냅샷을 재사용하며, 갱신 시점 이후에만 GBIS를 다시
+호출한다. 금지되는 것은 앱·모델이 과거 안내값을 자체적으로 재사용하는 것이지, 서버 정책에
+따른 캐시 재사용이 아니다.
+
+탑승이 확정된 뒤에는 이 값을 쓸 곳이 없으므로 조회하지 않는다. 상태와 무관하게 매번
+조회하면 운행 내내 GBIS 호출이 이어진다.
+
+**Query parameter**
+
+| 이름 | 값 | 의미 |
+| --- | --- | --- |
+| `refreshArrivals` | `true` | 서버가 정한 갱신 주기 전이라도 GBIS를 다시 조회한다 |
+
+`refreshArrivals=true`는 "버스 놓쳤어요"처럼 사용자가 최신 값을 명시적으로 요구한 경우에만
+붙인다. "몇 분 남았어요?" 같은 일반 조회에는 붙이지 않는다 — 서버가 정한 주기를 앱이
+우회하게 된다. 붙이더라도 서버는 마지막 GBIS 호출로부터 최소 간격(20초)은 그대로 지키므로,
+발화가 여러 번 인식돼도 호출량이 늘지 않는다.
+
+성공 응답에는 다음 필드가 추가된다(모두 `WAITING_BUS`일 때만).
 
 ```json
 {
@@ -56,16 +75,35 @@ Function은 사용자 의도를 처리하는 경로다. 자동 GPS·하차벨 �
       }
     }
   ],
-  "arrivalStatus": "AVAILABLE"
+  "arrivalStatus": "AVAILABLE",
+  "nextArrivalRefreshInMs": 60000,
+  "shouldScanBeacon": true
 }
 ```
+
+`nextArrivalRefreshInMs`는 앱이 다음 조회까지 기다릴 시간(ms)이다. 주기를 앱이 스스로
+정하면 서버의 호출 정책과 어긋나므로 서버가 남은 시간에 맞춰 정한다. 값이 없으면 앱은
+반복 조회를 하지 않는다.
+
+| 남은 시간 | 주기 |
+| --- | --- |
+| 4분 이하 | 30초 |
+| 5분 이하 | 1분 |
+| 그보다 멀면 | 남은 시간의 절반, 최대 5분 |
+
+`shouldScanBeacon`은 스마트지팡이 비콘 스캔을 시작해야 하는지다. 도착 5분 이내이거나
+도착정보를 확인하지 못한 경우(`NO_PREDICTION`·`UPSTREAM_ERROR`) 참이다. `NO_VEHICLE`은
+조회에 성공했고 오는 차가 없다는 확인된 사실이므로 거짓이다. 한 번 켠 스캔을 끄지 않는 것은
+앱 책임이다 — 앞차가 떠나면 도착 예정 시간이 다시 늘어나는데, 그때 끄면 정작 버스가 눈앞에
+왔을 때 스캔이 꺼져 있다.
 
 `arrivalStatus`는 도착정보 재조회 결과를 구분한다.
 
 | 값 | 의미 | `arrivals` |
 | --- | --- | --- |
 | `AVAILABLE` | 정상 조회되었고 선택 노선 차량이 있음 | 1~2개 |
-| `NO_VEHICLE` | 정상 조회되었지만 선택 노선 차량이 없음 | `[]` |
+| `NO_VEHICLE` | 정상 조회되었지만 선택 노선 레코드가 없음 | `[]` |
+| `NO_PREDICTION` | 레코드는 있으나 예상 도착 시간이 비어 있음 | `[]` |
 | `UPSTREAM_ERROR` | GBIS 네트워크·HTTP·응답 오류, 또는 방향을 확인하지 못해 조회 결과를 신뢰할 수 없음 | `[]` |
 
 `NO_VEHICLE`은 GBIS가 정상 응답했고 그 정류장에 해당 노선 차량이 실제로 없을 때만
@@ -77,8 +115,14 @@ Function은 사용자 의도를 처리하는 경로다. 자동 GPS·하차벨 �
 `UPSTREAM_ERROR`에서도 운행 상태는 취소·종료되지 않는다. 사용자는 새 Function
 호출 결과만 근거로 안내받으며, 조회 전의 도착 예정 시간을 반복해서 안내하지 않는다.
 
-`arrivals`와 `arrivalStatus`는 이 GET 응답에만 있다. `PATCH /api/trips/{tripId}/status`
-응답에는 포함되지 않으므로 공유 스키마에서 두 필드는 선택 필드다.
+`NO_PREDICTION`은 `NO_VEHICLE`과 합치지 않는다. GBIS 공식 문서에서 빈 `predictTime`이
+"차량 없음"을 뜻한다고 확인한 적이 없고 실제 캡처에도 두 순번이 모두 빈 사례가 없다.
+확인된 사실은 "도착시간 정보가 없다"까지이므로 "오는 버스가 없습니다"라고 안내하면 안 된다.
+
+`arrivals`, `arrivalStatus`, `nextArrivalRefreshInMs`, `shouldScanBeacon`은 이 GET 응답의
+`WAITING_BUS` 상태에만 있다. 넷 다 같은 조건으로 실리고 빠진다 — 하나만 남겨 두면
+"왜 이건 오고 저건 안 오는지"로 계약이 헷갈린다. `PATCH /api/trips/{tripId}/status` 응답에는 포함되지 않으므로
+공유 스키마에서 네 필드 모두 선택 필드다.
 
 ### `POST /api/routes/search`
 

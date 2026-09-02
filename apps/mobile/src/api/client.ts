@@ -92,8 +92,10 @@ export const apiClient = {
         method: "POST",
         body: JSON.stringify(body),
       }),
-    getStatus: (tripId: string) =>
-      request<TripStatusResponse>(API_PATHS.trips.status(tripId)),
+    getStatus: (tripId: string, options?: { refreshArrivals?: boolean }) =>
+      request<TripStatusResponse>(
+        API_PATHS.trips.status(tripId, options?.refreshArrivals === true),
+      ),
     end: (tripId: string, body: UpdateTripRequest) =>
       request<EndTripResponse>(API_PATHS.trips.byId(tripId), {
         method: "PATCH",
