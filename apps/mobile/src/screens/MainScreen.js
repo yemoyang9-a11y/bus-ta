@@ -2,6 +2,7 @@ import React, { useEffect } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { useRealtime } from '../realtime/RealtimeProvider';
 import { useTrip } from '../state/TripContext';
+import { getTripNavigationTarget } from '../state/trip-transition';
 
 // Realtime 음성 세션의 실제 진입점.
 // 목적지 인식과 확인은 구식 STT/Confirm 화면이 아니라 Realtime 대화 안에서 처리한다.
@@ -18,11 +19,14 @@ export default function MainScreen({ navigation }) {
 
   // Function 결과는 TripContext에 저장된다. 이 화면은 그 단일 상태를 보고 이동한다.
   useEffect(() => {
-    if (tripId) {
+    const target = getTripNavigationTarget({ tripId, routeCandidates });
+
+    if (target === 'Riding') {
       navigation.navigate('Riding', { tripId, selectedRoute });
       return;
     }
-    if (routeCandidates && routeCandidates.length > 0) {
+
+    if (target === 'RouteList') {
       navigation.navigate('RouteList');
     }
   }, [tripId, routeCandidates, navigation, selectedRoute]);

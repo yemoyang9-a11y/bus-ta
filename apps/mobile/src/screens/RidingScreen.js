@@ -5,6 +5,7 @@ import * as Location from 'expo-location';
 import { useFocusEffect } from '@react-navigation/native';
 import { apiClient, ApiError } from '../api/client';
 import { useTrip } from '../state/TripContext';
+import { isScreenTripActive } from '../state/trip-transition';
 import { useRealtime } from '../realtime/RealtimeProvider';
 import { startBeaconScan, stopBeaconScan } from '../ble/bleManager';
 
@@ -139,7 +140,7 @@ export default function RidingScreen({ route, navigation }) {
   // RESET_TRIP_KEEP_SEARCH·RESET_TRIP 모두 이제 beaconScanActive를 건드리지 않고 이전 값을
   // 그대로 보존하므로(TripContext.js 참고), 여기서 실제로 stopBeaconScan()을 호출해서
   // "성공"을 확인한 뒤에만 SET_BEACON_SCAN_ACTIVE(active: false)를 dispatch한다.
-  const isThisTripStillActive = state.tripId === tripId;
+  const isThisTripStillActive = isScreenTripActive(state.tripId, tripId);
 
   useEffect(() => {
     if (!isThisTripStillActive) {

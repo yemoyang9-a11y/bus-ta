@@ -34,6 +34,12 @@ type SearchRoutesResultWithGuidedIds = RoutesSearchResponse & {
   guidedCandidateIds?: number[];
 };
 
+type EndTripModelResult = EndTripResponse & {
+  destination: string | null;
+  routes: Route[];
+  expired: boolean;
+};
+
 type FunctionResult =
   | RoutesSearchResponse
   | BoardingConfirmationResponse
@@ -42,6 +48,11 @@ type FunctionResult =
   | EndTripResponse
   | NextRouteCandidatesResult
   | ApiErrorResult;
+
+type ModelFunctionResult =
+  | FunctionResult
+  | EndTripModelResult
+  | (CreateTripResponse & { boardingStation: Route["boardingStation"] });
 
 // 동일 함수+인자 조합의 병렬 재호출 방지 (create_trip은 선택당 1회만 등)
 const inFlightCalls = new Map<string, Promise<FunctionResult>>();
@@ -59,7 +70,7 @@ function buildCallKey(
 
 function buildFunctionResponseInstructions(name: RealtimeFunctionName): string {
   const common =
-    "방금 전달된 Function 결과만 근거로 사용자에게 짧고 명확한 한국어 음성 안내를 생성한다. Function 결과가 오기 전의 추측은 사용하지 않는다. 내부 식별자와 오류 코드는 그대로 읽지 않는다. routeNo의 숫자 부분이 네 자리 이상이면 각 숫자를 한 자리씩 읽고, 세 자리 이하면 일반적인 한국어 수 읽기 방식으로 읽는다. 알파벳, 하이픈 뒤 숫자, 괄호 안 표시는 생략하지 않는다. 숫자-숫자 형태의 routeNo를 말할 때 하이픈(-)은 반드시 '다시'라고 읽고, '대시'나 '하이픈'이라고 읽거나 생략하지 않는다.";
+    "방금 전달된 Function 결과만 근거로 사용자에게 짧고 명확한 한국어 음성 안내를 생성한다. Function 결과가 오기 전의 추측은 사용하지 않는다. 내부 식별자와 오류 코드는 그대로 읽지 않는다. routeNo는 먼저 하이픈(-)을 기준으로 나누고 하이픈 양쪽 숫자를 이어 붙여 전체 자릿수를 계산하지 않는다. 나뉜 각 숫자 덩어리가 네 자리 이상이면 각 숫자를 한 자리씩 읽고, 세 자리 이하면 일반적인 한국어 수 읽기 방식으로 읽는다. 알파벳, 하이픈 뒤 숫자, 괄호 안 표시는 생략하지 않는다. 숫자-숫자 형태의 routeNo를 말할 때 하이픈(-)은 반드시 '다시'라고 읽고, '대시'나 '하이픈'이라고 읽거나 생략하지 않는다.";
 
   if (name === "search_routes") {
     return `${common} success가 true이고 routes가 빈 배열일 때만 조건에 맞는 노선 후보가 없다고 안내한다. success가 false이면 result.message의 원인을 바꾸어 말하지 않고, 위치 확인 실패나 API 오류를 노선 없음으로 안내하지 않는다. 후보가 있으면 각 후보의 routeNo, totalTime, intervalTime을 사용해 \"OO번은 예상 소요시간이 N분이고 배차 간격은 M분입니다\" 형식으로 최대 두 개를 모두 설명하고, 마지막에 반드시 \"어떤 버스를 선택하시겠어요?\"라고 묻는다. 값이 없는 시간은 추측하지 말고 확인할 수 없다고 말한다.`;
@@ -87,6 +98,10 @@ function buildFunctionResponseInstructions(name: RealtimeFunctionName): string {
   // 조회 실패를 "버스가 없다"고 안내하면, 실제로는 오고 있는 버스를 사용자가 포기하게 된다.
   if (name === "get_trip_status") {
     return `${common} "버스를 놓쳤다"는 발화 뒤에 이 결과가 오면, 이전에 안내했던 도착 예정 시간이나 앱이 기억하던 값을 반복하지 않고 이번 결과만 사용한다. arrivalStatus가 "AVAILABLE"이면 arrivals의 첫 항목으로 다음 차 도착 예정 시간을 안내한다. arrivalStatus가 "NO_VEHICLE"이면 "지금 이 정류장에 오는 OO번이 없습니다"라고 안내하고, 이때는 다른 노선을 제안해도 된다. arrivalStatus가 "UPSTREAM_ERROR"이면 "지금은 도착 정보를 확인할 수 없습니다"라고만 안내하고, 이 경우 절대 "버스가 없다"거나 차량이 없다는 취지로 말하지 않는다. 이 발화만으로 운행 자체를 취소하지 않는다.`;
+  }
+
+  if (name === "end_trip") {
+    return `${common} success가 true이면 선택한 운행만 취소된 것이다. expired가 true이면 오래된 후보를 안내하지 말고 다시 검색할지 묻는다. expired가 false이고 result.routes가 있으면 취소한 노선은 다시 말하지 말고, 새 검색도 하지 않은 채 전달된 다른 후보를 routeNo, totalTime, intervalTime으로 안내한 뒤 "어떤 버스를 선택하시겠어요?"라고 묻는다. result.routes가 비어 있을 때만 안내할 다른 보관 후보가 없다고 설명하고 다시 검색할지 묻는다. success가 false이면 후보를 다시 안내하거나 취소됐다고 말하지 말고 result.message의 확인된 실패 원인만 안내한다.`;
   }
 
   return common;
@@ -118,9 +133,11 @@ export async function dispatchRealtimeFunctionCall(
     result = rejectStaleTripResult(event.name, result, context);
   }
 
-  const candidateIdsToMark = collectCandidateIdsToMark(event.name, result);
-  updateContext(event.name, args, result, context);
   const modelResult = buildModelFunctionResult(event.name, args, result, context);
+  const candidateIdsToMark = collectCandidateIdsToMark(event.name, result, modelResult);
+  // end_trip 성공 시 Context가 즉시 초기화돼도 직전 검색 후보를 잃지 않도록
+  // 모델 결과를 먼저 만든 뒤 상태를 갱신한다.
+  updateContext(event.name, args, result, context);
 
   const responseEvent: RealtimeClientEvent = {
     type: "response.create",
@@ -154,6 +171,7 @@ export async function dispatchRealtimeFunctionCall(
 function collectCandidateIdsToMark(
   name: RealtimeFunctionName,
   result: FunctionResult,
+  modelResult: ModelFunctionResult,
 ): number[] {
   if (result.success !== true) {
     return [];
@@ -172,6 +190,10 @@ function collectCandidateIdsToMark(
     return searchResult.guidedCandidateIds ?? [];
   }
 
+  if (name === "end_trip" && "routes" in modelResult) {
+    return modelResult.routes.map((route) => route.candidateId);
+  }
+
   return [];
 }
 
@@ -180,7 +202,27 @@ function buildModelFunctionResult(
   args: unknown,
   result: FunctionResult,
   context: RealtimeGuideContext,
-): FunctionResult | (CreateTripResponse & { boardingStation: Route["boardingStation"] }) {
+): ModelFunctionResult {
+  if (name === "end_trip" && result.success === true) {
+    const appState = context.getAppState();
+    const expired =
+      !appState.routeCandidatesExpiresAt ||
+      Date.now() > appState.routeCandidatesExpiresAt;
+    const cancelledCandidateId = appState.selectedRoute?.candidateId;
+    const routes = expired
+      ? []
+      : ((appState.routeCandidates ?? []) as Route[])
+          .filter((route) => route.candidateId !== cancelledCandidateId)
+          .slice(0, 2);
+
+    return {
+      ...(result as EndTripResponse),
+      destination: appState.destination,
+      routes,
+      expired,
+    };
+  }
+
   if (name !== "create_trip" || result.success !== true || !("arrivals" in result)) {
     return result;
   }
@@ -194,19 +236,22 @@ function rejectStaleTripResult(
   result: FunctionResult,
   context: RealtimeGuideContext,
 ): FunctionResult {
-  if (name !== "confirm_boarding" || result.success !== true) {
+  if (
+    result.success !== true ||
+    (name !== "confirm_boarding" && name !== "end_trip")
+  ) {
     return result;
   }
 
-  const boardingResult = result as BoardingConfirmationResponse;
-  if (boardingResult.tripId === context.getAppState().tripId) {
+  const tripResult = result as BoardingConfirmationResponse | EndTripResponse;
+  if (tripResult.tripId === context.getAppState().tripId) {
     return result;
   }
 
   return {
     success: false,
     errorCode: "STALE_TRIP_CONTEXT",
-    message: "활성 운행이 변경되어 이전 탑승확정 응답을 적용하지 않았습니다.",
+    message: "활성 운행이 변경되어 이전 운행의 응답을 적용하지 않았습니다.",
     timestamp: new Date().toISOString(),
   };
 }
@@ -344,7 +389,9 @@ function updateContext(
     const statusResult = result as TripStatusResponse;
     context.dispatchAppAction({ type: "UPDATE_TRIP_STATUS", status: statusResult });
 
-    if (statusResult.tripStatus === "CANCELLED" || statusResult.tripStatus === "TRIP_DONE") {
+    if (statusResult.tripStatus === "CANCELLED") {
+      clearActiveTripContextKeepSearch(context);
+    } else if (statusResult.tripStatus === "TRIP_DONE") {
       clearActiveTripContext(context);
     }
     return;
