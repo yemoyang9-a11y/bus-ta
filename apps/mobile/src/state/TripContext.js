@@ -114,9 +114,15 @@ function tripReducer(state, action) {
         beaconScanActive: state.beaconScanActive,
       };
 
+    // 예모님 재지적(2026-08-28, P1): RESET_TRIP_KEEP_SEARCH와 같은 이유로, TRIP_DONE·
+    // TRIP_NOT_FOUND에서도 beaconScanActive를 곧바로 false로 만들면 RidingScreen의
+    // cleanup effect가 실제 stopBeaconScan() 호출을 건너뛸 수 있다. 이 액션도
+    // beaconScanActive는 건드리지 않고 이전 값을 유지해서, 실제 스캔 중지가 성공한
+    // 뒤에만 RidingScreen이 SET_BEACON_SCAN_ACTIVE(active: false)로 끄도록 한다.
     case 'RESET_TRIP':
       return {
         ...initialState,
+        beaconScanActive: state.beaconScanActive,
       };
 
     default:
