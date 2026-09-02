@@ -361,3 +361,45 @@ test("놓침 발화일 때만 강제 재조회 플래그를 전달한다", async
     "일반 조회에는 붙지 않고 놓침 발화에만 붙어야 한다",
   );
 });
+
+test("성공 응답이 공유 스키마(TripStatusResponseSchema)를 통과한다", async () => {
+  // 서버가 필드를 추가했는데 packages/shared 를 안 고치면, 타입 계약과 실제 응답이
+  // 어긋난 채로 앱이 그 값을 읽게 된다(예모 리뷰, PR #45).
+  const result = await getTripStatus("trip-1", {
+    findTripProgressData: async () => waitingBusProgress(),
+    getArrivals: async () => ({
+      arrivals: [arrivalAfter(3)],
+      arrivalStatus: "AVAILABLE" as const,
+      nextRefreshInMs: 60_000,
+    }),
+    now: () => "2026-09-01T00:00:00.000+09:00",
+  });
+
+  const parsed = TripStatusResponseSchema.safeParse(result.body);
+  assert.equal(
+    parsed.success,
+    true,
+    parsed.success ? "" : JSON.stringify(parsed.error.issues),
+  );
+  if (!parsed.success) return;
+  assert.equal(parsed.data.nextArrivalRefreshInMs, 60_000);
+  assert.equal(parsed.data.shouldScanBeacon, true);
+});
+
+test("탑승 뒤 응답도 공유 스키마를 통과한다 — 네 필드는 선택이다", async () => {
+  const result = await getTripStatus("trip-1", {
+    findTripProgressData: async () => ({
+      trip: { ...baseTrip, gbisStationId: "201000166", localBusId: "234000021" },
+      status: baseStatus, // ON_BUS
+    }),
+    getArrivals: async () => ({ arrivals: [], arrivalStatus: "NO_VEHICLE" as const }),
+    now: () => "2026-09-01T00:00:00.000+09:00",
+  });
+
+  const parsed = TripStatusResponseSchema.safeParse(result.body);
+  assert.equal(
+    parsed.success,
+    true,
+    parsed.success ? "" : JSON.stringify(parsed.error.issues),
+  );
+});
