@@ -88,6 +88,9 @@ test("creates a trip and initial status from a valid selected candidate", async 
       lastRequestId: null,
       locationSource: null,
       recordedAt: null,
+      lastLatitude: null,
+      lastLongitude: null,
+      locationChangedAt: null,
       updatedAt: "2026-07-01T14:31:00+09:00",
     },
   });

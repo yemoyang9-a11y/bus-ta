@@ -46,6 +46,7 @@ PATCH /trips (end_trip) → CANCELLED
 - 같은 `tripId + requestId`는 최초 처리 결과를 재사용한다. 종료된 운행이라도 이미 처리한 `requestId`면 200을 반환하고, 새 키면 409을 반환한다.
 - `WAITING_BUS`는 탑승 메타데이터가 없어야 한다. `ON_BUS`, `NEAR_DESTINATION`, `TRIP_DONE`은 `boarding_method`, `boarding_confirmed_at`, `boarding_request_id`가 모두 있어야 한다.
 - 기존 활성 데이터를 자동으로 탑승확정했다고 보정하지 않는다. 마이그레이션은 기존 `ON_BUS`·`NEAR_DESTINATION` 행이 하나라도 있으면 중단되므로, 배포 전에 해당 운행을 정상 종료하거나 취소한 뒤 다시 적용한다.
+- `trip_status.last_latitude`, `last_longitude`, `location_changed_at`은 위치 중단 감지용 상태다. 좌표가 마지막으로 변경된 뒤 60초를 초과하면 다음 위치 응답에서 지연 상태를 알린다.
 
 ## 하차벨 상태 전이
 

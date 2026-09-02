@@ -112,6 +112,9 @@ export class SupabaseTripRepository
         lastRequestId: readNullableString(status, "last_request_id"),
         locationSource: readNullableString(status, "location_source"),
         recordedAt: readNullableString(status, "recorded_at"),
+        lastLatitude: readNullableNumber(status, "last_latitude"),
+        lastLongitude: readNullableNumber(status, "last_longitude"),
+        locationChangedAt: readNullableString(status, "location_changed_at"),
         updatedAt: readString(status, "updated_at"),
       },
     };
@@ -400,6 +403,9 @@ function toTripStatusRow(status: TripStatusCreateRecord) {
     last_request_id: status.lastRequestId,
     location_source: status.locationSource,
     recorded_at: status.recordedAt,
+    last_latitude: status.lastLatitude,
+    last_longitude: status.lastLongitude,
+    location_changed_at: status.locationChangedAt,
     updated_at: status.updatedAt,
   };
 }
@@ -414,6 +420,9 @@ function toTripStatusUpdateRow(status: SaveStatusAndLocationInput["status"]) {
     last_request_id: status.lastRequestId,
     location_source: status.locationSource,
     recorded_at: status.recordedAt,
+    last_latitude: status.lastLatitude,
+    last_longitude: status.lastLongitude,
+    location_changed_at: status.locationChangedAt,
     updated_at: status.updatedAt,
   };
 }
@@ -455,6 +464,15 @@ function readNullableString(row: Record<string, unknown>, key: string) {
   if (value === null || value === undefined) return null;
   if (typeof value !== "string") {
     throw new Error(`Expected ${key} to be a nullable string`);
+  }
+  return value;
+}
+
+function readNullableNumber(row: Record<string, unknown>, key: string) {
+  const value = row[key];
+  if (value === null || value === undefined) return null;
+  if (typeof value !== "number") {
+    throw new Error(`Expected ${key} to be a nullable number`);
   }
   return value;
 }

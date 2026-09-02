@@ -44,6 +44,9 @@ export interface TripStatusCreateRecord {
   lastRequestId: string | null;
   locationSource: string | null;
   recordedAt: string | null;
+  lastLatitude: number | null;
+  lastLongitude: number | null;
+  locationChangedAt: string | null;
   updatedAt: string;
 }
 
@@ -171,6 +174,9 @@ export async function createTrip(
     lastRequestId: null,
     locationSource: null,
     recordedAt: null,
+    lastLatitude: null,
+    lastLongitude: null,
+    locationChangedAt: null,
     updatedAt: timestamp,
   };
 
