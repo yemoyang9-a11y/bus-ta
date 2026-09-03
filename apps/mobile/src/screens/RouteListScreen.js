@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, FlatList, ActivityIndicator } from 'react-native';
 import { apiClient, ApiError } from '../api/client';
 import { useTrip } from '../state/TripContext';
+import { stopBeaconScan } from '../ble/bleManager';
 
 // 예모님 확정(2026-08-28): 후보 유효시간 5분. TripContext.js와 동일한 값을 써야 하므로
 // 상수 자체는 여기서도 다시 정의하되, 계산 방식(검색 시각 + 5분)은 TripContext가 갖고 있다.
@@ -16,7 +17,6 @@ export default function RouteListScreen({ navigation }) {
   // 예모님 확인(2026-08-15): ConfirmScreen 삭제에 따라 route.params 대신 TripContext에서 값을 가져온다.
   // destination, routeCandidates는 function-dispatcher.ts의 search_routes 처리 결과로 채워진다.
   const { state, dispatch } = useTrip();
-  const { session } = useRealtime();
   const { destination, routeCandidates, routeCandidatesExpiresAt } = state;
 
   const [loading, setLoading] = useState(false);
@@ -56,9 +56,17 @@ export default function RouteListScreen({ navigation }) {
 
     setLoading(true);
 
-    dispatch({ type: 'SELECT_ROUTE', route: selectedRoute });
-
     try {
+      // A 취소 직후 후보 화면이 먼저 열려도, A의 실제 스캔 중지가 끝나기 전에는
+      // B 운행과 새 대상 비콘 설정을 시작하지 않는다. RidingScreen의 cleanup과
+      // 동시에 호출돼도 stopBeaconScan() single-flight가 같은 Promise를 공유한다.
+      if (state.beaconScanActive) {
+        await stopBeaconScan();
+        dispatch({ type: 'SET_BEACON_SCAN_ACTIVE', active: false });
+      }
+
+      dispatch({ type: 'SELECT_ROUTE', route: selectedRoute });
+
       // 공통 API 명세서 5.2 기준 필드만 전달 (guideMessage·recommendationReason 등
       // 스펙에 없는 필드는 보내지 않는다 — 백엔드 스키마 검증 대상이 아님)
       const tripRequest = {
