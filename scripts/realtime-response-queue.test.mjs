@@ -16,6 +16,7 @@ import {
   getAssistDeviceFallbackMessage,
   getAssistDeviceEventKey,
 } from '../apps/mobile/src/realtime/assist-device-status.ts';
+import { createAssistDevicePreparation } from '../apps/mobile/src/realtime/assist-device-preparation.ts';
 import {
   RealtimeConnectionTimeoutError,
   runWithRealtimeConnectionTimeout,
@@ -212,6 +213,88 @@ test('지팡이와 하차벨 연결 결과를 개별 또는 BOTH 이벤트로 �
   assert.equal(createAssistDeviceConnectionFailureEvents(false, false)[0]?.device, 'BOTH');
   assert.equal(createAssistDeviceConnectionFailureEvents(false, true)[0]?.device, 'CANE');
   assert.equal(createAssistDeviceConnectionFailureEvents(true, false)[0]?.device, 'BELL');
+});
+
+test('운행이 시작되면 보조기기 준비를 한 번 실행한다', async () => {
+  let activeTripId = 'trip-voice';
+  let beaconLookupCount = 0;
+  let connectCount = 0;
+  const dispatches = [];
+
+  const preparation = createAssistDevicePreparation({
+    getActiveTripId: () => activeTripId,
+    listBeacons: async () => {
+      beaconLookupCount += 1;
+      return { targetBeaconId: 'BUS_1551_001', isMock: false };
+    },
+    connectAll: async () => {
+      connectCount += 1;
+      return new Map([
+        ['White_cane', {}],
+        ['BUS_1551_001', {}],
+      ]);
+    },
+    setTargetBeacon: async () => {},
+    startBeaconScan: async () => {},
+    notifyFailure: () => {},
+    dispatch: (action) => dispatches.push(action),
+  });
+
+  await Promise.all([
+    preparation.prepare({ tripId: 'trip-voice', routeNo: '13' }),
+    preparation.prepare({ tripId: 'trip-voice', routeNo: '13' }),
+  ]);
+
+  assert.equal(beaconLookupCount, 1);
+  assert.equal(connectCount, 1);
+  assert.deepEqual(dispatches, [
+    { type: 'SET_BEACON_SCAN_ACTIVE', active: true },
+    { type: 'SET_BLE_MOCK_STATUS', isMock: false },
+  ]);
+});
+
+test('이전 운행의 늦은 보조기기 결과는 새 운행에 반영하지 않는다', async () => {
+  let activeTripId = 'trip-a';
+  let releaseFirstConnection;
+  let connectCount = 0;
+  const dispatches = [];
+  const notifications = [];
+
+  const preparation = createAssistDevicePreparation({
+    getActiveTripId: () => activeTripId,
+    listBeacons: async () => ({ targetBeaconId: 'BUS_1551_001', isMock: false }),
+    connectAll: () => {
+      connectCount += 1;
+      if (connectCount === 1) {
+        return new Promise((resolve) => {
+          releaseFirstConnection = resolve;
+        });
+      }
+      return Promise.resolve(new Map([
+        ['White_cane', {}],
+        ['BUS_1551_001', {}],
+      ]));
+    },
+    setTargetBeacon: async () => {},
+    startBeaconScan: async () => {},
+    notifyFailure: (event) => notifications.push(event),
+    dispatch: (action) => dispatches.push(action),
+  });
+
+  const first = preparation.prepare({ tripId: 'trip-a', routeNo: '13' });
+  await new Promise((resolve) => setImmediate(resolve));
+  activeTripId = 'trip-b';
+  const second = preparation.prepare({ tripId: 'trip-b', routeNo: '13' });
+  releaseFirstConnection(new Map());
+
+  await Promise.all([first, second]);
+
+  assert.equal(connectCount, 2);
+  assert.deepEqual(notifications, []);
+  assert.deepEqual(dispatches, [
+    { type: 'SET_BEACON_SCAN_ACTIVE', active: true },
+    { type: 'SET_BLE_MOCK_STATUS', isMock: false },
+  ]);
 });
 
 test('전체 연결 제한 시간이 지나면 작업을 중단하고 재시도 가능한 오류를 반환한다', async () => {
