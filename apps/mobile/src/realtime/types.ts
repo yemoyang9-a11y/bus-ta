@@ -52,6 +52,10 @@ export type AppTripState = {
   destination: string | null;
   routeCandidates: Route[] | null;
 
+  // 예모님 확정(2026-08-28): 검색 성공 시점 + 5분(TTL). 이 시각이 지나면 기존
+  // routeCandidates를 재사용하지 않고 재검색해야 한다.
+  routeCandidatesExpiresAt: number | null;
+
   // 예외상황 1번:
   // AI가 이미 안내한 노선 후보의 candidateId를 기록한다.
   announcedCandidateIds: number[];

@@ -4,16 +4,32 @@ import { apiClient, ApiError } from '../api/client';
 import { useTrip } from '../state/TripContext';
 import { connectAll, setTargetBeacon, startBeaconScan } from '../ble/bleManager';
 
+// 예모님 확정(2026-08-28): 후보 유효시간 5분. TripContext.js와 동일한 값을 써야 하므로
+// 상수 자체는 여기서도 다시 정의하되, 계산 방식(검색 시각 + 5분)은 TripContext가 갖고 있다.
+const ROUTE_CANDIDATES_TTL_MS = 5 * 60 * 1000;
+
+function isRouteCandidatesExpired(expiresAt) {
+  if (!expiresAt) return true;
+  return Date.now() > expiresAt;
+}
+
 export default function RouteListScreen({ navigation }) {
   // 예모님 확인(2026-08-15): ConfirmScreen 삭제에 따라 route.params 대신 TripContext에서 값을 가져온다.
   // destination, routeCandidates는 function-dispatcher.ts의 search_routes 처리 결과로 채워진다.
   const { state, dispatch } = useTrip();
-  const { destination, routeCandidates } = state;
+  const { destination, routeCandidates, routeCandidatesExpiresAt } = state;
 
   const [loading, setLoading] = useState(false);
 
   // 채린님 확인(2026-08-15): AI가 이미 노선 후보를 음성으로 안내하므로,
   // 화면 상단의 guideMessage 텍스트(중복 안내)는 제거한다.
+
+  // 채린님 임시 조치(2026-08-28): 서버가 최대 5개까지 routeCandidates를 응답에
+  // 담아 보내면서, 화면에 제한 로직이 없어 전부 리스트로 노출되던 문제를 발견.
+  // "다른 버스 없어요?" 시 다음 후보를 보여주는 정식 기능(유나님 파트)이 완성되기 전까지,
+  // 시연을 위해 임시로 상위 2개만 화면에 보여준다. 정식 기능 완성 후 이 slice는 제거하고
+  // announcedCandidateIds 기반으로 다시 설계해야 한다.
+  const visibleRouteCandidates = routeCandidates ? routeCandidates.slice(0, 2) : routeCandidates;
 
   // 정민님 확인(2026-08-12): 노선 선택 후(=여기) BLE 연결 시작, 배터리 절약을 위해
   // 앱 켤 때가 아니라 실제 필요 시점에 연결한다.
@@ -53,6 +69,15 @@ export default function RouteListScreen({ navigation }) {
 
   // 노선 선택 시 POST /api/trips 호출 후 탑승 중 화면으로 이동
   const selectRoute = async (selectedRoute) => {
+    // 예모님 지적(2026-08-28, P1): 화면에서 기존 후보를 선택할 때도 TTL을 확인하지 않고
+    // POST /api/trips를 호출하고 있었다. 검색 후 5분이 지난 후보는 사용하지 않고,
+    // 대신 다시 검색해야 한다는 안내와 함께 노선 목록 화면에 머무른다(재검색 자체는
+    // 사용자가 음성으로 다시 목적지를 말하거나, Realtime 쪽에서 재검색을 유도한다).
+    if (isRouteCandidatesExpired(routeCandidatesExpiresAt)) {
+      navigation.navigate('Main');
+      return;
+    }
+
     setLoading(true);
 
     dispatch({ type: 'SELECT_ROUTE', route: selectedRoute });
@@ -114,14 +139,14 @@ export default function RouteListScreen({ navigation }) {
   if (loading) {
     return (
       <View style={styles.container}>
-        <ActivityIndicator size="large" color="#FFD400" />
-        <Text style={{ marginTop: 20, color: '#FFFFFF' }}>운행을 준비하는 중...</Text>
+        <ActivityIndicator size="large" color="#2196F3" />
+        <Text style={{ marginTop: 20 }}>운행을 준비하는 중...</Text>
       </View>
     );
   }
 
   // 노선 없을 때 처리
-  if (!routeCandidates || routeCandidates.length === 0) {
+  if (!visibleRouteCandidates || visibleRouteCandidates.length === 0) {
     return (
       <View style={styles.emptyContainer}>
         <Text style={styles.emptyText}>이용 가능한 노선이 없습니다.</Text>
@@ -135,34 +160,21 @@ export default function RouteListScreen({ navigation }) {
   return (
     <View style={styles.container}>
       <FlatList
-        data={routeCandidates}
+        data={visibleRouteCandidates}
         keyExtractor={(item) => String(item.candidateId)}
-        renderItem={({ item, index }) => {
-          // 카드마다 강조색을 번갈아 사용 — 텍스트/기능은 그대로, 시각적 구분만 추가
-          const accentColor = index % 2 === 0 ? '#FFD400' : '#2F8FFF';
-
-          return (
-            <TouchableOpacity
-              style={[styles.routeCard, { borderColor: accentColor }]}
-              onPress={() => selectRoute(item)}
-            >
-              <View style={[styles.routeAccentBar, { backgroundColor: accentColor }]} />
-              <View style={styles.routeCardContent}>
-                <Text style={styles.routeNo}>{item.routeNo}번</Text>
-                <Text style={styles.routeInfo}>탑승 정류장: {item.boardingStation.stationName}</Text>
-                <Text style={styles.routeInfo}>하차 정류장: {item.destinationStation.stationName}</Text>
-                {item.totalTime && (
-                  <Text style={styles.routeInfo}>예상 소요 시간: {item.totalTime}분</Text>
-                )}
-                {item.recommendationReason && (
-                  <Text style={[styles.routeReason, { color: accentColor }]}>
-                    {item.recommendationReason}
-                  </Text>
-                )}
-              </View>
-            </TouchableOpacity>
-          );
-        }}
+        renderItem={({ item }) => (
+          <TouchableOpacity style={styles.routeCard} onPress={() => selectRoute(item)}>
+            <Text style={styles.routeNo}>{item.routeNo}번</Text>
+            <Text style={styles.routeInfo}>탑승 정류장: {item.boardingStation.stationName}</Text>
+            <Text style={styles.routeInfo}>하차 정류장: {item.destinationStation.stationName}</Text>
+            {item.totalTime && (
+              <Text style={styles.routeInfo}>예상 소요 시간: {item.totalTime}분</Text>
+            )}
+            {item.recommendationReason && (
+              <Text style={styles.routeReason}>{item.recommendationReason}</Text>
+            )}
+          </TouchableOpacity>
+        )}
       />
     </View>
   );
@@ -171,75 +183,55 @@ export default function RouteListScreen({ navigation }) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0A0C10',
+    backgroundColor: '#fff',
     padding: 20,
   },
-
   routeCard: {
-    flexDirection: 'row',
-    backgroundColor: '#15181F',
-    borderRadius: 18,
-    marginBottom: 16,
-    borderWidth: 2,
-    overflow: 'hidden',
-  },
-
-  // 카드 왼쪽 컬러 바 — 목업의 굵은 좌측 강조선
-  routeAccentBar: {
-    width: 6,
-  },
-
-  routeCardContent: {
-    flex: 1,
+    backgroundColor: '#f5f5f5',
     padding: 20,
+    borderRadius: 10,
+    marginBottom: 15,
+    borderLeftWidth: 5,
+    borderLeftColor: '#2196F3',
   },
-
   routeNo: {
-    fontSize: 24,
-    fontWeight: '800',
-    color: '#FFFFFF',
-    marginBottom: 10,
+    fontSize: 22,
+    fontWeight: 'bold',
+    marginBottom: 8,
   },
-
   routeInfo: {
-    fontSize: 15,
-    lineHeight: 22,
-    color: '#B8BFC9',
+    fontSize: 14,
+    color: '#555',
     marginBottom: 4,
   },
-
   routeReason: {
-    fontSize: 14,
+    fontSize: 13,
+    color: '#2196F3',
     marginTop: 8,
-    fontWeight: '700',
     fontStyle: 'italic',
   },
-
   emptyContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#0A0C10',
+    backgroundColor: '#fff',
     padding: 20,
   },
-
   emptyText: {
     fontSize: 18,
-    color: '#B8BFC9',
+    color: '#555',
     marginBottom: 30,
     textAlign: 'center',
   },
-
   backButton: {
-    backgroundColor: '#FFC400',
+    backgroundColor: '#2196F3',
     padding: 15,
-    borderRadius: 12,
+    borderRadius: 10,
     alignItems: 'center',
     width: 200,
   },
-
   backButtonText: {
-    color: '#111111',
+    color: '#fff',
     fontSize: 16,
     fontWeight: 'bold',
   },
