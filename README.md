@@ -133,6 +133,12 @@ cp .env.example .env
 - `OPENAI_API_KEY`
 - `REALTIME_SHARED_SECRET`
 
+시연용 mock 노선 검색:
+
+- 기본값(빈 값): 카카오·ODsay 실제 노선 검색
+- `ROUTE_SEARCH_MODE=MOCK`: 목적지와 무관하게 시연 노선 `1551`을 반환
+- 시연 노선의 비콘 매칭은 `1551 → BUS_1551_001`이며 `GET /api/beacons?routeNo=1551`에서 확인한다.
+
 ## Render 배포
 
 Render Blueprint 진입점은 저장소 루트의 `render.yaml`이며, `claude/nice-archimedes-iv7iu0` 브랜치를
