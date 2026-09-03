@@ -1,9 +1,14 @@
 import React, { createContext, useContext, useReducer } from 'react';
 
+// 예모님 확정(2026-08-28): 후보 유효시간 5분
+const ROUTE_CANDIDATES_TTL_MS = 5 * 60 * 1000;
+
 // 초기 상태 — 노선 검색부터 하차까지 화면 간 공유되는 값
 const initialState = {
   destination: null,
   routeCandidates: null,
+  routeCandidatesExpiresAt: null, // 예모님 확정(2026-08-28): 검색 성공 시점 + 5분. 앱 재시작 시
+                                   // 메모리 상태 자체가 초기화되므로 별도 처리 없이 자연스럽게 폐기된다.
   announcedCandidateIds: [],
   selectedRoute: null,
   tripId: null,
@@ -26,10 +31,12 @@ const initialState = {
 function tripReducer(state, action) {
   switch (action.type) {
     case 'SET_DESTINATION_AND_ROUTES':
+      // 새 검색 결과이므로 이전 검색에서 안내했던 후보 기록과 만료 시각을 새로 계산한다.
       return {
         ...state,
         destination: action.destination,
         routeCandidates: action.routes,
+        routeCandidatesExpiresAt: Date.now() + ROUTE_CANDIDATES_TTL_MS,
         announcedCandidateIds: [],
       };
 
@@ -99,26 +106,16 @@ function tripReducer(state, action) {
         beaconScanActive: action.active,
       };
 
-    // 유나님 지적(2026-08-28): beaconScanActive를 여기서 곧바로 false로 초기화하면,
-    // RidingScreen의 취소 감지 useEffect가 실행될 때 이미 false라서 stopBeaconScan()을
-    // 건너뛰게 된다(상태값만 꺼지고 실제 BLE 스캔은 계속 남을 수 있음). 그래서 이 액션은
-    // beaconScanActive를 건드리지 않고 그대로 이전 값을 유지한다. 실제 스캔 중지는
-    // RidingScreen이 stopBeaconScan()을 호출해서 "성공"한 뒤에만
-    // SET_BEACON_SCAN_ACTIVE(active: false)를 별도로 dispatch해서 끈다.
     case 'RESET_TRIP_KEEP_SEARCH':
       return {
         ...initialState,
         destination: state.destination,
         routeCandidates: state.routeCandidates,
+        routeCandidatesExpiresAt: state.routeCandidatesExpiresAt,
         announcedCandidateIds: state.announcedCandidateIds,
         beaconScanActive: state.beaconScanActive,
       };
 
-    // 예모님 재지적(2026-08-28, P1): RESET_TRIP_KEEP_SEARCH와 같은 이유로, TRIP_DONE·
-    // TRIP_NOT_FOUND에서도 beaconScanActive를 곧바로 false로 만들면 RidingScreen의
-    // cleanup effect가 실제 stopBeaconScan() 호출을 건너뛸 수 있다. 이 액션도
-    // beaconScanActive는 건드리지 않고 이전 값을 유지해서, 실제 스캔 중지가 성공한
-    // 뒤에만 RidingScreen이 SET_BEACON_SCAN_ACTIVE(active: false)로 끄도록 한다.
     case 'RESET_TRIP':
       return {
         ...initialState,
@@ -147,4 +144,12 @@ export function useTrip() {
     throw new Error('useTrip은 TripProvider 내부에서만 사용할 수 있습니다.');
   }
   return context;
+}
+
+// 예모님 확정(2026-08-28): routeCandidates가 5분 TTL을 넘겼는지 확인하는 헬퍼.
+// get_next_route_candidates(유나님 파트)나 화면에서, 후보를 사용하기 전에 이 함수로
+// 만료 여부를 먼저 확인해서, 만료됐으면 기존 후보를 쓰지 않고 재검색하도록 판단할 수 있다.
+export function isRouteCandidatesExpired(state) {
+  if (!state.routeCandidatesExpiresAt) return true;
+  return Date.now() > state.routeCandidatesExpiresAt;
 }
