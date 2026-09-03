@@ -34,6 +34,12 @@ export default function RidingScreen({ route, navigation }) {
   const startingBeaconScanRef = useRef(false);
   const patchInFlightRef = useRef(false);
   const arrivalPollFailureCountRef = useRef(0);
+
+  // 실차 GPS 계측용
+  const locationWatchStartedAtRef = useRef(null);
+  const firstLocationFixReceivedRef = useRef(false);
+  const locationPatchSkippedCountRef = useRef(0);
+
   const { state, dispatch } = useTrip();
   const { session, isConnected } = useRealtime();
   const currentTripStatus = state.tripStatus ?? status.tripStatus;
@@ -41,12 +47,15 @@ export default function RidingScreen({ route, navigation }) {
 
   // 예모님 재지적(2026-08-28, P1): 취소된 이전 운행에서 stoppedRef.current = true가
   // 남아있으면, 같은 Riding 화면 인스턴스가 재사용될 때(A 취소 후 B 선택) 새 tripId로도
-  // GPS interval이 계속 멈춰있는 상태가 된다. tripId가 바뀔 때마다 정지 관련 ref들을
+  // GPS 추적이 계속 멈춰있는 상태가 된다. tripId가 바뀔 때마다 정지 관련 ref들을
   // 새 운행 기준으로 초기화한다.
   useEffect(() => {
     stoppedRef.current = false;
     bellHandledRef.current = false;
     arrivalPollFailureCountRef.current = 0;
+    locationWatchStartedAtRef.current = null;
+    firstLocationFixReceivedRef.current = false;
+    locationPatchSkippedCountRef.current = 0;
   }, [tripId]);
 
   const screenTitle = (() => {
@@ -187,29 +196,131 @@ export default function RidingScreen({ route, navigation }) {
     }
   }, [status, isConnected]);
 
-  // 실제 GPS로 2초 간격 PATCH /status 전송
+  // 실제 GPS 위치를 연속 구독한다.
+  // 기존 2초 polling + getCurrentPositionAsync 대신 watchPositionAsync를 사용한다.
   useEffect(() => {
-    let interval;
-    let isMounted = true;
+    let subscription = null;
+    let cancelled = false;
+
+    locationWatchStartedAtRef.current = Date.now();
+    firstLocationFixReceivedRef.current = false;
+    locationPatchSkippedCountRef.current = 0;
+
+    console.log('[GPS] watch 구독 시작', {
+      tripId,
+      startedAt: new Date(locationWatchStartedAtRef.current).toISOString(),
+    });
 
     (async () => {
-      const { status: permStatus } = await Location.requestForegroundPermissionsAsync();
-      if (permStatus !== 'granted') {
+      const permission = await Location.requestForegroundPermissionsAsync();
+
+      console.log('[GPS] 위치 권한 상태', {
+        status: permission.status,
+        canAskAgain: permission.canAskAgain,
+        granted: permission.granted,
+        expires: permission.expires,
+        androidAccuracy: permission.android?.accuracy ?? 'unknown',
+      });
+
+      if (cancelled) return;
+
+      if (permission.status !== 'granted') {
         Speech.speak('위치 권한이 없어 운행 추적을 시작할 수 없습니다.', { language: 'ko' });
         navigation.navigate('Error');
         return;
       }
 
-      interval = setInterval(async () => {
-        if (!isMounted || stoppedRef.current) return;
-        if (patchInFlightRef.current) return;
-        await patchStatus();
-      }, 2000);
-    })();
+      subscription = await Location.watchPositionAsync(
+        {
+          accuracy: Location.Accuracy.High,
+          timeInterval: 2000,
+          distanceInterval: 0,
+        },
+        async (location) => {
+          if (cancelled || stoppedRef.current) return;
+
+          const callbackReceivedAt = Date.now();
+          const locationTimestamp = Number(location.timestamp);
+
+          // 실제 위치 측정 시각을 알 수 없는 fix는
+          // 현재 시각을 대신 붙여 정상 위치처럼 서버로 보내지 않는다.
+          if (!Number.isFinite(locationTimestamp)) {
+            console.warn('[GPS] location.timestamp 없음 - PATCH하지 않음', {
+              callbackReceivedAt: new Date(callbackReceivedAt).toISOString(),
+              accuracy: location.coords.accuracy,
+              latitude: location.coords.latitude,
+              longitude: location.coords.longitude,
+            });
+            return;
+          }
+
+          const locationAgeMs = Math.max(
+            0,
+            callbackReceivedAt - locationTimestamp,
+          );
+
+          if (!firstLocationFixReceivedRef.current) {
+            firstLocationFixReceivedRef.current = true;
+
+            console.log('[GPS] 첫 fix 수신', {
+              receivedAt: new Date(callbackReceivedAt).toISOString(),
+              watchToFirstFixMs:
+                locationWatchStartedAtRef.current == null
+                  ? null
+                  : callbackReceivedAt - locationWatchStartedAtRef.current,
+              locationTimestamp: new Date(locationTimestamp).toISOString(),
+              locationAgeMs,
+              accuracy: location.coords.accuracy,
+            });
+          }
+
+          console.log('[GPS] fix 수신', {
+            callbackReceivedAt: new Date(callbackReceivedAt).toISOString(),
+            locationTimestamp: new Date(locationTimestamp).toISOString(),
+            locationAgeMs,
+            accuracy: location.coords.accuracy,
+            latitude: location.coords.latitude,
+            longitude: location.coords.longitude,
+          });
+
+          // stale 임계값은 실차 로그 확인 후 확정한다.
+          // 기준 확정 전에는 임의의 시간값으로 위치를 버리지 않는다.
+
+          if (patchInFlightRef.current) {
+            locationPatchSkippedCountRef.current += 1;
+
+            console.log('[GPS] PATCH in-flight로 fix 건너뜀', {
+              skippedCount: locationPatchSkippedCountRef.current,
+              callbackReceivedAt: new Date(callbackReceivedAt).toISOString(),
+              locationAgeMs,
+            });
+
+            return;
+          }
+
+          await patchStatus(location, callbackReceivedAt);
+        },
+      );
+    })().catch((error) => {
+      console.log('[GPS] watch 시작 실패:', error);
+
+      if (!cancelled && !stoppedRef.current) {
+        navigation.navigate('Error');
+      }
+    });
 
     return () => {
-      isMounted = false;
-      if (interval) clearInterval(interval);
+      cancelled = true;
+
+      if (subscription) {
+        subscription.remove();
+      }
+
+      console.log('[GPS] watch 구독 종료', {
+        tripId,
+        endedAt: new Date().toISOString(),
+        skippedCount: locationPatchSkippedCountRef.current,
+      });
     };
   }, [tripId]);
 
@@ -249,18 +360,54 @@ export default function RidingScreen({ route, navigation }) {
   }, [currentTripStatus, status.arrivalPollIntervalSeconds, tripId]);
 
   // PATCH /api/trips/{tripId}/status 호출
-  const patchStatus = async () => {
+  const patchStatus = async (location, callbackReceivedAt = Date.now()) => {
     patchInFlightRef.current = true;
-    try {
-      const location = await Location.getCurrentPositionAsync({});
-      requestCounterRef.current += 1;
 
-      const data = await apiClient.trips.updateStatus(tripId, {
-        requestId: `location-${tripId}-${requestCounterRef.current}`,
+    const patchStartedAt = Date.now();
+    const locationTimestamp = Number(location.timestamp);
+    const locationAgeMs = Number.isFinite(locationTimestamp)
+      ? Math.max(0, callbackReceivedAt - locationTimestamp)
+      : null;
+
+    requestCounterRef.current += 1;
+    const requestId = `location-${tripId}-${requestCounterRef.current}`;
+
+    try {
+      // watch callback에서도 검사하지만, 다른 호출 경로가 생겨도
+      // 잘못된 recordedAt을 만들지 않도록 여기서도 방어한다.
+      if (!Number.isFinite(locationTimestamp)) {
+        console.warn('[GPS] PATCH 중단 - location.timestamp 없음', {
+          requestId,
+          callbackReceivedAt: new Date(callbackReceivedAt).toISOString(),
+          accuracy: location.coords.accuracy,
+        });
+        return;
+      }
+
+      console.log('[GPS] PATCH 시작', {
+        requestId,
+        startedAt: new Date(patchStartedAt).toISOString(),
+        callbackReceivedAt: new Date(callbackReceivedAt).toISOString(),
+        locationTimestamp: new Date(locationTimestamp).toISOString(),
+        locationAgeMs,
+        accuracy: location.coords.accuracy,
         latitude: location.coords.latitude,
         longitude: location.coords.longitude,
-        recordedAt: new Date().toISOString(),
+      });
+
+      const data = await apiClient.trips.updateStatus(tripId, {
+        requestId,
+        latitude: location.coords.latitude,
+        longitude: location.coords.longitude,
+        recordedAt: new Date(locationTimestamp).toISOString(),
         source: 'GPS',
+      });
+
+      console.log('[GPS] PATCH 완료', {
+        requestId,
+        completedAt: new Date().toISOString(),
+        durationMs: Date.now() - patchStartedAt,
+        skippedWhileInFlight: locationPatchSkippedCountRef.current,
       });
 
       if (stoppedRef.current || state.tripId !== tripId) {
@@ -292,6 +439,14 @@ export default function RidingScreen({ route, navigation }) {
         dispatch({ type: 'RESET_TRIP_KEEP_SEARCH' });
       }
     } catch (error) {
+      console.log('[GPS] PATCH 실패', {
+        requestId,
+        failedAt: new Date().toISOString(),
+        durationMs: Date.now() - patchStartedAt,
+        locationAgeMs,
+        error: error instanceof Error ? error.message : String(error),
+      });
+
       if (stoppedRef.current || state.tripId !== tripId) {
         return;
       }
