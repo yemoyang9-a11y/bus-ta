@@ -98,6 +98,13 @@ export type AppAction =
     }
   | { type: "UPDATE_TRIP_STATUS"; status: unknown }
   | { type: "RESET_TRIP" }
+  | {
+      // 예모님 지적(2026-08-28): 음성 end_trip(사용자 취소) 성공 시,
+      // destination·routeCandidates·announcedCandidateIds는 남기고 나머지만
+      // 초기화하는 액션. RidingScreen.js에서 화면 터치 취소 시 이미 쓰고 있던
+      // 것과 동일한 계약을 음성 경로에도 맞춘다.
+      type: "RESET_TRIP_KEEP_SEARCH";
+    }
   | { type: "SET_LAST_INJECTED_STATUS"; status: TripStatusSnapshot };
 
 // Realtime Dispatcher가 TripContext 상태를 읽고 쓰기 위한 창구.

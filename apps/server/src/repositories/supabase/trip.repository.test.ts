@@ -20,6 +20,9 @@ const input = {
     locationSource: "GPS" as const,
     recordedAt: "2026-07-25T12:00:00.000Z",
     updatedAt: "2026-07-25T12:00:01.000Z",
+    lastLatitude: 37.49,
+    lastLongitude: 127.03,
+    locationChangedAt: "2026-07-25T12:00:00.000Z",
   },
   locationLog: {
     tripId: "trip-test-001",

@@ -26,6 +26,9 @@ const activeTrip: TripProgressData = {
     locationSource: "GPS",
     recordedAt: "2026-07-25T12:00:00.000Z",
     updatedAt: "2026-07-25T12:00:01.000Z",
+    lastLatitude: DEMO_ROUTE.stationList[1]!.latitude,
+    lastLongitude: DEMO_ROUTE.stationList[1]!.longitude,
+    locationChangedAt: "2026-07-25T12:00:00.000Z",
   },
 };
 

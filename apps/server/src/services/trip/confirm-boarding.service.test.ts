@@ -21,10 +21,13 @@ const confirmedStatus = {
     bellStatus: "NOT_REQUESTED",
     bellRequestId: null,
     command: null,
-    lastRequestId: null,
+        lastRequestId: null,
     locationSource: null,
     recordedAt: null,
     updatedAt: "2026-08-22T01:00:00.000Z",
+    lastLatitude: null,
+    lastLongitude: null,
+    locationChangedAt: null,
   },
 };
 

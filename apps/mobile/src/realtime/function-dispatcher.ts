@@ -358,8 +358,10 @@ function updateContext(
     return;
   }
 
-  if (name === "end_trip") {
-    clearActiveTripContext(context);
+   if (name === "end_trip") {
+    // 예모님 지적(2026-08-28): 음성 end_trip(사용자 취소)은 검색 결과를 유지하는
+    // RESET_TRIP_KEEP_SEARCH를 써야 한다. 화면 터치 취소(RidingScreen.js)와 계약을 맞춘다.
+    clearActiveTripContext(context, true);
   }
 }
 
