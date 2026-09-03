@@ -624,3 +624,65 @@ test("get_next_route_candidates returns exhausted without repeating candidates w
   // 소진 안내에는 새로 기록할 후보가 없어 선택적 메타데이터를 생략한다.
   assert.equal(responseCreate.candidateIdsToMark, undefined);
 });
+
+test("get_trip_status forwards refreshArrivals only for an explicit forced refresh", async () => {
+  const actions: AppAction[] = [];
+  const requestedUrls: string[] = [];
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = async (input) => {
+    requestedUrls.push(String(input));
+    return Response.json({
+      success: true,
+      tripId: "trip-test-001",
+      tripStatus: TRIP_STATUS.WAITING_BUS,
+      boardingMethod: null,
+      boardingConfirmedAt: null,
+      currentStation: null,
+      nextStation: null,
+      remainingStations: 3,
+      shouldTriggerBell: false,
+      bellStatus: "NOT_REQUESTED",
+      bellRequestId: null,
+      command: null,
+      guideMessage: "버스를 기다리고 있습니다.",
+      arrivals: [],
+      arrivalStatus: "NO_VEHICLE",
+      shouldScanBeacon: false,
+      nextArrivalRefreshInMs: 15_000,
+      timestamp: "2026-09-03T00:00:00.000Z",
+    });
+  };
+
+  try {
+    await dispatchRealtimeFunctionCall(
+      {
+        type: "response.function_call_arguments.done",
+        call_id: "call-refresh-arrivals",
+        name: "get_trip_status",
+        arguments: JSON.stringify({
+          tripId: "trip-test-001",
+          refreshArrivals: true,
+        }),
+      },
+      createContext(actions),
+    );
+
+    await dispatchRealtimeFunctionCall(
+      {
+        type: "response.function_call_arguments.done",
+        call_id: "call-normal-status",
+        name: "get_trip_status",
+        arguments: JSON.stringify({ tripId: "trip-test-001" }),
+      },
+      createContext(actions),
+    );
+
+    assert.deepEqual(requestedUrls, [
+      "http://localhost:3000/api/trips/trip-test-001/status?refreshArrivals=true",
+      "http://localhost:3000/api/trips/trip-test-001/status",
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

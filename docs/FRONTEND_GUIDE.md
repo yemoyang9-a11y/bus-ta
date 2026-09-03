@@ -32,3 +32,5 @@ Function 매핑은 `search_routes → POST /api/routes/search`, `create_trip →
 사용자가 음성으로 탑승을 명시하면 `confirm_boarding` Function 경로가 즉시 `USER_CONFIRMED`를 전송한다. 이 경로는 BLE·GPS 결과를 기다리지 않는다. 어느 경로든 `boardingConfirmedAt`이 확인된 뒤에만 비콘 스캔을 중지한다. `PATCH /status` 응답에서만 `shouldTriggerBell: true`, `bellRequestId`, `STOP_REQUEST`를 받고 하차벨로 보낸 뒤 결과를 `POST /bell/result`로 기록한다.
 
 마이크·위치·BLE 권한 거부, Realtime 연결 끊김, 네트워크·외부 API 오류는 사용자가 이해할 수 있는 음성·화면 안내로 처리한다. `EXPO_PUBLIC_` 환경 변수에는 장기 API 키나 백엔드 공유 비밀을 넣지 않는다.
+
+지팡이·하차벨 준비 실패는 기기별 결과를 구분해 `assist_device_status_changed` 이벤트로 Realtime 세션에 전달한다. 노선 비콘 미등록·조회 실패는 지팡이 접근 진동 준비 실패로만 다루고 `attempted: false`로 기록한다. 이 경우에도 하차벨 BLE 연결은 별도로 계속 시도하며, 사용자 기기의 전원이나 하차벨 실패를 원인으로 단정하지 않는다. Realtime 연결이 없으면 같은 내용을 로컬 TTS로 안내한다.
