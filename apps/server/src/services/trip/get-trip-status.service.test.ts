@@ -288,6 +288,60 @@ test("도착정보를 확인하지 못하면 비콘 스캔을 켜 둔다", async
   assert.equal(body.shouldScanBeacon, true);
 });
 
+test("조회에 실패했으면 캐시에 남은 도착 예정 시간으로 비콘 스캔을 막지 않는다", async () => {
+  // arrival-cache 는 조회에 실패해도 직전 성공 값을 함께 돌려준다. 그래서
+  // UPSTREAM_ERROR 인데 arrivals 가 비어 있지 않을 수 있다. 그 값으로 스캔을
+  // 판단하면 "10분 남았으니 아직 멀었다"로 읽혀 지팡이가 꺼진 채로 남는다.
+  // 실제로는 조회가 실패한 것뿐이고 버스는 이미 눈앞에 와 있을 수 있다.
+  const result = await getTripStatus("trip-1", {
+    findTripProgressData: async () => waitingBusProgress(),
+    getArrivals: async () => ({
+      arrivals: [arrivalAfter(10)],
+      arrivalStatus: "UPSTREAM_ERROR" as const,
+    }),
+    now: () => "2026-09-01T00:00:00.000Z",
+  });
+
+  const body = result.body as Record<string, unknown>;
+  assert.equal(
+    body.shouldScanBeacon,
+    true,
+    "조회에 실패했다는 사실이 캐시된 숫자보다 우선한다",
+  );
+});
+
+test("조회에 성공했고 버스가 멀면 캐시가 아니라 그 값으로 스캔을 끈다", async () => {
+  // 위 테스트가 UPSTREAM_ERROR 를 무조건 켜는 것으로 바꿨는데, AVAILABLE 까지
+  // 같이 켜지면 배터리 절약이 통째로 사라진다. 두 경로가 갈라지는지 함께 고정한다.
+  const result = await getTripStatus("trip-1", {
+    findTripProgressData: async () => waitingBusProgress(),
+    getArrivals: async () => ({
+      arrivals: [arrivalAfter(10)],
+      arrivalStatus: "AVAILABLE" as const,
+    }),
+    now: () => "2026-09-01T00:00:00.000Z",
+  });
+
+  const body = result.body as Record<string, unknown>;
+  assert.equal(body.shouldScanBeacon, false);
+});
+
+test("NO_VEHICLE 이면 캐시에 임박한 도착이 남아 있어도 비콘 스캔을 켜지 않는다", async () => {
+  // NO_VEHICLE 은 조회에 성공한 확인된 사실이라 UPSTREAM_ERROR 와 다르다.
+  // 캐시 값이 임박해 보여도 올 차가 없다는 서버 응답을 그대로 따른다.
+  const result = await getTripStatus("trip-1", {
+    findTripProgressData: async () => waitingBusProgress(),
+    getArrivals: async () => ({
+      arrivals: [arrivalAfter(1)],
+      arrivalStatus: "NO_VEHICLE" as const,
+    }),
+    now: () => "2026-09-01T00:00:00.000Z",
+  });
+
+  const body = result.body as Record<string, unknown>;
+  assert.equal(body.shouldScanBeacon, false);
+});
+
 test("NO_VEHICLE 이면 비콘 스캔을 켜지 않는다", async () => {
   // 조회에 성공했고 오는 차가 없다는 확인된 사실이다. 이때까지 켜 두면 올 차도
   // 없는데 배터리만 쓴다. 확인하지 못한 경우(UPSTREAM_ERROR)와 구분해야 한다.
