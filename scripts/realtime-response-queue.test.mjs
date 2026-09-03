@@ -235,7 +235,6 @@ test('운행이 시작되면 보조기기 준비를 한 번 실행한다', async
       ]);
     },
     setTargetBeacon: async () => {},
-    startBeaconScan: async () => {},
     notifyFailure: () => {},
     dispatch: (action) => dispatches.push(action),
   });
@@ -248,9 +247,44 @@ test('운행이 시작되면 보조기기 준비를 한 번 실행한다', async
   assert.equal(beaconLookupCount, 1);
   assert.equal(connectCount, 1);
   assert.deepEqual(dispatches, [
-    { type: 'SET_BEACON_SCAN_ACTIVE', active: true },
     { type: 'SET_BLE_MOCK_STATUS', isMock: false },
   ]);
+});
+
+test('보조기기 준비는 대상 비콘만 알려주고 스캔은 켜지 않는다', async () => {
+  // 스캔을 켜는 시점은 서버가 정한다(도착 5분 전, shouldScanBeacon).
+  // 준비 단계에서 켜 버리면 지팡이와 비콘 보드가 가까이 있을 때 버스가 오기도
+  // 전에 진동이 시작되어, "버스가 가까워지면 울린다"를 확인할 수 없다.
+  const targetsSet = [];
+  const dispatches = [];
+
+  const preparation = createAssistDevicePreparation({
+    getActiveTripId: () => 'trip-scan',
+    listBeacons: async () => ({ targetBeaconId: 'BUS_1551_001', isMock: false }),
+    connectAll: async () =>
+      new Map([
+        ['White_cane', {}],
+        ['BUS_1551_001', {}],
+      ]),
+    setTargetBeacon: async (targetBeaconId) => {
+      targetsSet.push(targetBeaconId);
+    },
+    notifyFailure: () => {},
+    dispatch: (action) => dispatches.push(action),
+  });
+
+  await preparation.prepare({ tripId: 'trip-scan', routeNo: '13' });
+
+  assert.deepEqual(
+    targetsSet,
+    ['BUS_1551_001'],
+    '지팡이는 나중에 스캔 명령을 받았을 때 무엇을 찾을지 미리 알고 있어야 한다',
+  );
+  assert.equal(
+    dispatches.some((action) => action.type === 'SET_BEACON_SCAN_ACTIVE'),
+    false,
+    '준비 단계는 스캔을 켜지 않으므로 켜졌다고 표시해서도 안 된다',
+  );
 });
 
 test('이전 운행의 늦은 보조기기 결과는 새 운행에 반영하지 않는다', async () => {
@@ -276,7 +310,6 @@ test('이전 운행의 늦은 보조기기 결과는 새 운행에 반영하지 
       ]));
     },
     setTargetBeacon: async () => {},
-    startBeaconScan: async () => {},
     notifyFailure: (event) => notifications.push(event),
     dispatch: (action) => dispatches.push(action),
   });
@@ -292,7 +325,6 @@ test('이전 운행의 늦은 보조기기 결과는 새 운행에 반영하지 
   assert.equal(connectCount, 2);
   assert.deepEqual(notifications, []);
   assert.deepEqual(dispatches, [
-    { type: 'SET_BEACON_SCAN_ACTIVE', active: true },
     { type: 'SET_BLE_MOCK_STATUS', isMock: false },
   ]);
 });
