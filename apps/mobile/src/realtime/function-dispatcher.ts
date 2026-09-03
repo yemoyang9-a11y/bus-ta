@@ -27,6 +27,10 @@ type NextRouteCandidatesResult = {
   expired?: boolean;
 };
 
+type SearchRoutesResultWithGuidedIds = RoutesSearchResponse & {
+  guidedCandidateIds?: number[];
+};
+
 type FunctionResult =
   | RoutesSearchResponse
   | BoardingConfirmationResponse
@@ -59,8 +63,8 @@ function buildFunctionResponseInstructions(name: RealtimeFunctionName): string {
   }
 
   // 예모님 확정(2026-08-28, 예외상황 1번): "다른 버스 없어요?"에 새 검색 없이
-  // 앱에 보관된 후보 중 다음 2개를 안내한다. expired가 true이면 5분 TTL이 지난
-  // 상태이므로 candidates를 무시하고 재검색을 유도해야 한다.
+  // 앱에 보관된 후보 중 다음 2개를 candidates 필드로 안내한다. expired가 true이면
+  // 5분 TTL이 지난 상태이므로 candidates를 무시하고 재검색을 유도해야 한다.
   if (name === "get_next_route_candidates") {
     return `${common} expired가 true이면 이전에 검색한 노선 후보가 오래되어 더 이상 사용할 수 없다고 안내하고, 목적지를 다시 말씀해 달라고 요청한다. 이 경우 candidates는 절대 안내하지 않는다. expired가 true가 아니고 candidates가 비어 있지 않으면, 각 후보를 routeNo와 boardingStation, destinationStation을 사용해 안내하고, guideMessage가 있으면 그대로 활용한다. exhausted가 true이면(candidates가 비어 있고 expired도 아니면) 더 이상 안내할 다른 노선 후보가 없다고 말하고 새로 검색할지 묻는다.`;
   }
@@ -139,21 +143,33 @@ export async function dispatchRealtimeFunctionCall(
   ];
 }
 
-// 예외상황 1번: get_next_route_candidates가 이번에 안내 대상으로 고른 candidateId들을
-// session.ts에 넘긴다. 실제 음성(오디오 버퍼)이 끝난 뒤에야 MARK_CANDIDATES_ANNOUNCED로
-// 기록되므로, 여기서는 "이번에 안내하려는 후보"만 표시해 두고 확정은 session.ts가 한다.
+// 예모님 재지적(2026-08-28, P1): search_routes로 최초 안내한 상위 2개 후보도
+// get_next_route_candidates와 동일하게, 실제 오디오 출력 완료 후 MARK_CANDIDATES_ANNOUNCED로
+// 기록되어야 한다. 그렇지 않으면 검색 직후 "다른 버스 없어요?"라고 물었을 때 방금 안내한
+// 1·2위가 다시 나올 수 있다. search_routes 성공 시 상위 2개(guidedCandidateIds)를
+// updateContext에서 SearchRoutesResultWithGuidedIds에 함께 실어 보내고, 여기서 그대로 꺼내 쓴다.
 function collectCandidateIdsToMark(
   name: RealtimeFunctionName,
   result: FunctionResult,
 ): number[] {
-  if (name !== "get_next_route_candidates" || result.success !== true) {
+  if (result.success !== true) {
     return [];
   }
-  const nextResult = result as NextRouteCandidatesResult;
-  if (nextResult.expired) {
-    return [];
+
+  if (name === "get_next_route_candidates") {
+    const nextResult = result as NextRouteCandidatesResult;
+    if (nextResult.expired) {
+      return [];
+    }
+    return nextResult.candidates.map((route) => route.candidateId);
   }
-  return nextResult.candidates.map((route) => route.candidateId);
+
+  if (name === "search_routes") {
+    const searchResult = result as SearchRoutesResultWithGuidedIds;
+    return searchResult.guidedCandidateIds ?? [];
+  }
+
+  return [];
 }
 
 function buildModelFunctionResult(
@@ -218,8 +234,18 @@ async function callBackendFunction(
   context: RealtimeGuideContext,
 ): Promise<FunctionResult> {
   switch (name) {
-    case "search_routes":
-      return apiClient.routes.search(await assertRoutesSearchRequest(args, context));
+    case "search_routes": {
+      const result = await apiClient.routes.search(await assertRoutesSearchRequest(args, context));
+      // 예모님 재지적(2026-08-28, P1): 최초 안내되는 상위 2개(guidedCandidateIds)를
+      // 결과에 함께 실어서, collectCandidateIdsToMark가 실제 오디오 완료 후 기록할 수 있게 한다.
+      if (result.success === true) {
+        const guidedCandidateIds = (result.routes as Route[])
+          .slice(0, 2)
+          .map((route) => route.candidateId);
+        return { ...result, guidedCandidateIds } as SearchRoutesResultWithGuidedIds;
+      }
+      return result;
+    }
     case "get_next_route_candidates": {
       assertEmptyObject(args);
       const appState = context.getAppState();
@@ -262,10 +288,16 @@ async function callBackendFunction(
         boardingMethod: "USER_CONFIRMED",
       });
     }
-    case "get_trip_status":
+    case "get_trip_status": {
       // 예모님 확인(2026-08-27, exception-1-2): 서버가 이제 매 호출마다 GBIS를 다시 조회해서
       // arrivals·arrivalStatus를 실제 값으로 채워준다. 더 이상 mock으로 덮지 않는다.
-      return apiClient.trips.getStatus(assertTripId(args, context));
+      // 예모님 재지적(2026-08-28, P1): "버스 놓쳤어요" 발화 시 Realtime tool이 넘기는
+      // refreshArrivals: true를 그동안 무시하고 있었다. Function 인자에서 읽어서
+      // apiClient.trips.getStatus로 그대로 전달한다.
+      const value = assertRecord(args);
+      const refreshArrivals = value.refreshArrivals === true;
+      return apiClient.trips.getStatus(assertTripId(args, context), { refreshArrivals });
+    }
     case "end_trip": {
       const { tripId, body } = assertEndTripRequest(args, context);
       return apiClient.trips.end(tripId, body);

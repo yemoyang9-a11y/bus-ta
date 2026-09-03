@@ -18,6 +18,7 @@ import type {
 const baseState: AppTripState = {
   destination: "수원대학교",
   routeCandidates: null,
+  routeCandidatesExpiresAt: null,
 
   // 예외상황 1번:
   // AI가 이미 안내한 후보의 candidateId를 보관한다.

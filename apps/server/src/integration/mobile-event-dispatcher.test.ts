@@ -31,6 +31,7 @@ function createContext(
   const state = {
     destination: "수지구청역",
     routeCandidates: null,
+    routeCandidatesExpiresAt: null,
     announcedCandidateIds: [],
     selectedRoute: null,
     tripId: "trip-test-001",
