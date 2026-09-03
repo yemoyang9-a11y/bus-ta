@@ -458,6 +458,7 @@ test("get_next_route_candidates excludes already announced candidates and return
   const state: AppTripState = {
     ...baseState,
     routeCandidates: routes,
+    routeCandidatesExpiresAt: Date.now() + 60_000,
     announcedCandidateIds: [1, 2],
   };
 
@@ -509,20 +510,18 @@ test("get_next_route_candidates excludes already announced candidates and return
       events[0].item.output,
     ) as {
       success: boolean;
-      routes: Route[];
+      candidates: Route[];
       exhausted: boolean;
-      remainingCount: number;
     };
 
     assert.equal(output.success, true);
     assert.deepEqual(
-      output.routes.map(
+      output.candidates.map(
         (route) => route.candidateId,
       ),
       [3, 4],
     );
     assert.equal(output.exhausted, false);
-    assert.equal(output.remainingCount, 1);
 
     const responseCreate = events[1];
 
@@ -561,6 +560,7 @@ test("get_next_route_candidates returns exhausted without repeating candidates w
   const state: AppTripState = {
     ...baseState,
     routeCandidates: routes,
+    routeCandidatesExpiresAt: Date.now() + 60_000,
     announcedCandidateIds: [1, 2, 3],
   };
 
@@ -597,15 +597,13 @@ test("get_next_route_candidates returns exhausted without repeating candidates w
     events[0].item.output,
   ) as {
     success: boolean;
-    routes: Route[];
+    candidates: Route[];
     exhausted: boolean;
-    remainingCount: number;
   };
 
   assert.equal(output.success, true);
-  assert.deepEqual(output.routes, []);
+  assert.deepEqual(output.candidates, []);
   assert.equal(output.exhausted, true);
-  assert.equal(output.remainingCount, 0);
 
   const responseCreate = events[1];
 
@@ -623,9 +621,6 @@ test("get_next_route_candidates returns exhausted without repeating candidates w
     );
   }
 
-  // 소진 안내에는 새로 기록할 후보가 없다.
-  assert.deepEqual(
-    responseCreate.candidateIdsToMark,
-    [],
-  );
+  // 소진 안내에는 새로 기록할 후보가 없어 선택적 메타데이터를 생략한다.
+  assert.equal(responseCreate.candidateIdsToMark, undefined);
 });
