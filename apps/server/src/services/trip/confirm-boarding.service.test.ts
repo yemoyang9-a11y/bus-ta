@@ -24,6 +24,9 @@ const confirmedStatus = {
     lastRequestId: null,
     locationSource: null,
     recordedAt: null,
+    lastLatitude: null,
+    lastLongitude: null,
+    locationChangedAt: null,
     updatedAt: "2026-08-22T01:00:00.000Z",
   },
 };

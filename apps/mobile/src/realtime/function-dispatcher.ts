@@ -10,7 +10,10 @@ import type {
   TripStatusResponse,
   UpdateTripRequest,
 } from "@bus-ta/shared";
-import { clearActiveTripContext } from "./context";
+import {
+  clearActiveTripContext,
+  clearActiveTripContextKeepSearch,
+} from "./context";
 import { assertActiveTripId } from "./function-guards";
 import type {
   ApiErrorResult,
@@ -242,7 +245,7 @@ function updateContext(
   }
 
   if (name === "end_trip") {
-    clearActiveTripContext(context);
+    clearActiveTripContextKeepSearch(context);
   }
 }
 

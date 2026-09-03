@@ -30,3 +30,11 @@ export function createRealtimeGuideContext(
 export function clearActiveTripContext(context: RealtimeGuideContext) {
   context.dispatchAppAction({ type: "RESET_TRIP" });
 }
+
+/**
+ * 현재 운행만 초기화하고 기존 검색 결과는 유지한다.
+ * 사용자가 운행을 취소한 뒤 같은 검색 결과에서 다른 후보를 고를 때 사용한다.
+ */
+export function clearActiveTripContextKeepSearch(context: RealtimeGuideContext) {
+  context.dispatchAppAction({ type: "RESET_TRIP_KEEP_SEARCH" });
+}

@@ -77,6 +77,7 @@ export type AppAction =
       boardingConfirmedAt: string;
     }
   | { type: "UPDATE_TRIP_STATUS"; status: unknown }
+  | { type: "RESET_TRIP_KEEP_SEARCH" }
   | { type: "RESET_TRIP" }
   | { type: "SET_LAST_INJECTED_STATUS"; status: TripStatusSnapshot };
 

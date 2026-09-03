@@ -19,6 +19,9 @@ const input = {
     lastRequestId: "loc-001",
     locationSource: "GPS" as const,
     recordedAt: "2026-07-25T12:00:00.000Z",
+    lastLatitude: 37.49,
+    lastLongitude: 127.03,
+    locationChangedAt: "2026-07-25T12:00:00.000Z",
     updatedAt: "2026-07-25T12:00:01.000Z",
   },
   locationLog: {
@@ -73,6 +76,9 @@ test("saves status, location, and bell request through the atomic RPC", async ()
           last_request_id: "loc-001",
           location_source: "GPS",
           recorded_at: "2026-07-25T12:00:00.000Z",
+          last_latitude: 37.49,
+          last_longitude: 127.03,
+          location_changed_at: "2026-07-25T12:00:00.000Z",
           updated_at: "2026-07-25T12:00:01.000Z",
         },
         p_location_log: {
