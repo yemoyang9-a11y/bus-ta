@@ -16,7 +16,6 @@ type PreparationDependencies = {
   getBeaconLookupErrorCode?: (error: unknown) => string | undefined;
   connectAll: () => Promise<ReadonlyMap<string, unknown>>;
   setTargetBeacon: (targetBeaconId: string) => Promise<void>;
-  startBeaconScan: () => Promise<void>;
   notifyFailure: (event: AssistDeviceStatusChangedEvent) => void;
   dispatch: (action: AppAction) => void;
 };
@@ -82,16 +81,18 @@ export function createAssistDevicePreparation(
       dependencies.notifyFailure(event);
     }
 
+    // 여기서는 지팡이에 "무엇을 찾을지"만 알려주고 스캔은 켜지 않는다.
+    //
+    // 스캔을 켜는 시점은 서버가 정한다. 도착 예정 5분 이하가 되면 GET /status 가
+    // shouldScanBeacon 을 내려주고, 그때 RidingScreen 이 startBeaconScan() 을
+    // 호출한다. 운행을 만들자마자 켜면 두 가지가 어긋난다. 하나는 서버가 정한
+    // 호출 정책을 앱이 앞질러 배터리를 쓰는 것이고, 다른 하나는 지팡이와 비콘
+    // 보드가 가까이 있을 때 버스가 오기도 전에 진동이 시작되는 것이다.
+    // 후자는 "버스가 가까워지면 진동이 울린다"를 확인할 수 없게 만든다.
     if (caneConnected && beaconData?.targetBeaconId) {
       try {
         await dependencies.setTargetBeacon(beaconData.targetBeaconId);
         if (!isActiveTrip(tripId)) return;
-        await dependencies.startBeaconScan();
-        if (!isActiveTrip(tripId)) return;
-        dependencies.dispatch({
-          type: 'SET_BEACON_SCAN_ACTIVE',
-          active: true,
-        });
       } catch {
         if (isActiveTrip(tripId)) {
           dependencies.notifyFailure(
