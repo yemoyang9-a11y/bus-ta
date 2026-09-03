@@ -106,6 +106,7 @@ function tripReducer(state, action) {
         beaconScanActive: action.active,
       };
 
+    // 운행만 종료하고, 유효한 기존 목적지·후보 노선(및 TTL, 안내 기록)은 유지한다.
     case 'RESET_TRIP_KEEP_SEARCH':
       return {
         ...initialState,
@@ -116,6 +117,7 @@ function tripReducer(state, action) {
         beaconScanActive: state.beaconScanActive,
       };
 
+    // TRIP_DONE, CANCELLED, TRIP_NOT_FOUND 발생 시 호출 — 다음 운행을 위해 전체 초기화
     case 'RESET_TRIP':
       return {
         ...initialState,

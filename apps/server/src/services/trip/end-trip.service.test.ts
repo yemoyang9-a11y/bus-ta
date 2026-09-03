@@ -22,7 +22,7 @@ const activeTrip: TripProgressData = {
     bellStatus: BELL_STATUS.NOT_REQUESTED,
     bellRequestId: null,
     command: null,
-    lastRequestId: "loc-001",
+        lastRequestId: "loc-001",
     locationSource: "GPS",
     recordedAt: "2026-07-25T12:00:00.000Z",
     updatedAt: "2026-07-25T12:00:01.000Z",

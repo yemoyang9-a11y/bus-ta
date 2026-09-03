@@ -97,6 +97,7 @@ export type AppAction =
       boardingConfirmedAt: string;
     }
   | { type: "UPDATE_TRIP_STATUS"; status: unknown }
+  | { type: "RESET_TRIP_KEEP_SEARCH" }
   | { type: "RESET_TRIP" }
   | {
       // 예모님 지적(2026-08-28): 음성 end_trip(사용자 취소) 성공 시,

@@ -34,11 +34,14 @@ export function createRealtimeGuideContext(
  * RESET_TRIP_KEEP_SEARCH를, 그 외(TRIP_DONE·TRIP_NOT_FOUND 등 정상 종료·오류)에는
  * 기존처럼 RESET_TRIP(전체 초기화)을 사용한다.
  */
-export function clearActiveTripContext(
-  context: RealtimeGuideContext,
-  keepSearch = false,
-) {
-  context.dispatchAppAction({
-    type: keepSearch ? "RESET_TRIP_KEEP_SEARCH" : "RESET_TRIP",
-  });
+export function clearActiveTripContext(context: RealtimeGuideContext) {
+  context.dispatchAppAction({ type: "RESET_TRIP" });
+}
+
+/**
+ * 현재 운행만 초기화하고 기존 검색 결과는 유지한다.
+ * 사용자가 운행을 취소한 뒤 같은 검색 결과에서 다른 후보를 고를 때 사용한다.
+ */
+export function clearActiveTripContextKeepSearch(context: RealtimeGuideContext) {
+  context.dispatchAppAction({ type: "RESET_TRIP_KEEP_SEARCH" });
 }
