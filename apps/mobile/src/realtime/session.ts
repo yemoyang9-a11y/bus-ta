@@ -15,8 +15,7 @@ import type {
   TripStatusChangedEvent,
   TripStatusSnapshot,
 } from "./types";
-import { getRealtimeSharedSecret } from "./runtime-config";
-import { RealtimeWebRTCTransport } from "./webrtc-transport";
+import type { RealtimeWebRTCTransport } from "./webrtc-transport";
 import {
   RealtimeResponseQueue,
   type PendingResponse,
@@ -26,6 +25,7 @@ import {
   DEFAULT_REALTIME_CONNECTION_TIMEOUT_MS,
   runWithRealtimeConnectionTimeout,
 } from "./connection-timeout";
+import { CandidateAnnouncementTracker } from "./candidate-announcement-tracker";
 
 // OpenAI Realtime은 동시에 하나의 active response만 허용한다.
 const RESPONSE_CREATE_EVENT_TYPE = "response.create";
@@ -34,6 +34,36 @@ const ACTIVE_RESPONSE_ERROR_CODE =
 
 const STATUS_RESPONSE_INSTRUCTIONS =
   "방금 전달된 운행 상태 변화만 근거로 사용자에게 짧고 명확한 한국어 음성 안내를 생성한다. tripStatus가 WAITING_BUS이거나 boardingConfirmedAt이 없으면 탑승 정류장에서 버스를 기다리는 상태이며, 절대 '탑승했습니다', '탑승 중입니다', '운행을 시작합니다'라고 말하지 않는다. boardingConfirmedAt이 있고 tripStatus가 ON_BUS 또는 NEAR_DESTINATION이며 아직 같은 탑승 확인 안내를 하지 않은 경우에만 탑승을 안내한다. boardingMethod가 AUTO_DETECTED이면 '버스 탑승이 감지되었습니다. 하차 안내를 시작합니다.'라고 말하고, USER_CONFIRMED이면 '탑승이 확인되었습니다. 하차까지 남은 정류장을 안내하겠습니다.'라고 말한다. 하차벨 안내는 다음 규칙을 우선한다. remainingStations가 2이고 bellStatus가 NOT_REQUESTED이면 '하차 정류장까지 두 정거장 남았습니다. 미리 내릴 준비를 해주세요.'라고만 안내하고, 하차벨을 요청했거나 눌렀다고 말하지 않는다. remainingStations가 1이고 bellStatus가 PENDING으로 바뀐 경우에만 '하차 정류장까지 한 정거장 남았습니다. 하차벨을 요청했습니다.'라고 안내한다. 서버에서 bellStatus가 SUCCESS로 확정된 후에만 '하차벨이 켜졌습니다. 안전하게 하차하세요.'라고 안내한다. 서버에서 bellStatus가 FAIL로 확정되면 절대 성공했다고 말하지 않고 '하차벨 응답을 받지 못했습니다. 기사님께 직접 말씀해주세요.'라고 안내한다. bellStatus가 NOT_REQUESTED이고 remainingStations가 2가 아니면 하차벨을 별도로 언급하지 않는다. 선택된 실제 routeNo를 확인할 수 있으면 문장 앞에 노선 번호를 붙이고, 확인할 수 없으면 번호를 만들지 않는다. routeNo의 숫자 부분이 네 자리 이상이면 각 숫자를 한 자리씩 읽고, 세 자리 이하면 일반적인 한국어 수 읽기 방식으로 읽는다. 알파벳, 하이픈 뒤 숫자, 괄호 안 표시는 생략하지 않으며, 하이픈(-)은 반드시 '다시'라고 읽는다. boardingMethod, boardingConfirmedAt, tripStatus, bellStatus 같은 내부 필드명과 오류 코드는 그대로 읽지 않는다.";
+
+function hasSuccessfulFunctionResult(events: unknown[]): boolean {
+  for (const event of events) {
+    if (event == null || typeof event !== "object") {
+      continue;
+    }
+
+    const value = event as Record<string, unknown>;
+    if (value.type !== "conversation.item.create") {
+      continue;
+    }
+
+    const item = value.item as Record<string, unknown> | undefined;
+    if (
+      item?.type !== "function_call_output" ||
+      typeof item.output !== "string"
+    ) {
+      continue;
+    }
+
+    try {
+      const result = JSON.parse(item.output) as Record<string, unknown>;
+      return result.success === true;
+    } catch {
+      return false;
+    }
+  }
+
+  return false;
+}
 
 export class HaneumRealtimeSession {
   readonly context: RealtimeGuideContext;
@@ -44,6 +74,8 @@ export class HaneumRealtimeSession {
   private responseQueue = new RealtimeResponseQueue();
   private activeResponse: PendingResponse | null = null;
   private awaitingRetry: PendingResponse | null = null;
+  private candidateAnnouncementTracker =
+    new CandidateAnnouncementTracker();
   private eventIdCounter = 0;
   private hasSentReadyResponse = false;
 
@@ -57,8 +89,12 @@ export class HaneumRealtimeSession {
     sharedSecret?: string,
     signal?: AbortSignal,
   ): Promise<CreateRealtimeSessionResponse> {
+    const resolvedSharedSecret =
+      sharedSecret ??
+      (await import("./runtime-config")).getRealtimeSharedSecret();
+
     return apiClient.realtime.createSession(
-      sharedSecret ?? getRealtimeSharedSecret(),
+      resolvedSharedSecret,
       signal,
     );
   }
@@ -71,6 +107,8 @@ export class HaneumRealtimeSession {
     sharedSecret?: string,
     totalTimeoutMs = DEFAULT_REALTIME_CONNECTION_TIMEOUT_MS,
   ): Promise<RealtimeWebRTCTransport> {
+    const { RealtimeWebRTCTransport } =
+      await import("./webrtc-transport");
     let pendingTransport: RealtimeWebRTCTransport | null = null;
 
     try {
@@ -147,6 +185,13 @@ export class HaneumRealtimeSession {
           this.context,
         );
 
+      if (
+        event.name === "search_routes" &&
+        hasSuccessfulFunctionResult(clientEvents)
+      ) {
+        this.candidateAnnouncementTracker.resetForNewSearch();
+      }
+
       for (const clientEvent of clientEvents) {
         this.send(clientEvent, transport);
       }
@@ -170,6 +215,11 @@ export class HaneumRealtimeSession {
     const value =
       event as Record<string, unknown>;
     const eventType = value.type;
+
+    // 후보 안내는 모델 응답과 실제 오디오 출력 모두 정상 완료된 경우에만 기록한다.
+    this.markAnnouncedCandidates(
+      this.candidateAnnouncementTracker.handleServerEvent(value),
+    );
 
     if (
       eventType ===
@@ -255,29 +305,6 @@ export class HaneumRealtimeSession {
         )}`,
       );
 
-      /*
-       * 예외상황 1번:
-       * search_routes 또는 get_next_route_candidates 안내용 응답이
-       * 실제로 정상 완료된 경우에만 해당 candidateId를 안내 완료로 기록한다.
-       *
-       * failed / cancelled / incomplete 응답은 기록하지 않는다.
-       * 그래야 음성 생성 실패 후 "다른 버스" 요청이 왔을 때
-       * 말하지도 않은 후보가 제외되는 문제가 생기지 않는다.
-       */
-      if (
-        responseStatus === "completed" &&
-        this.activeResponse?.candidateIdsToMark &&
-        this.activeResponse.candidateIdsToMark
-          .length > 0
-      ) {
-        this.context.dispatchAppAction({
-          type: "MARK_CANDIDATES_ANNOUNCED",
-          candidateIds:
-            this.activeResponse
-              .candidateIdsToMark,
-        });
-      }
-
       this.isResponseActive = false;
       this.activeResponse = null;
       this.flushPendingResponse();
@@ -333,6 +360,7 @@ export class HaneumRealtimeSession {
         };
 
         this.activeResponse = null;
+        this.candidateAnnouncementTracker.cancelResponse();
       }
 
       this.isResponseActive = true;
@@ -345,6 +373,7 @@ export class HaneumRealtimeSession {
 
     // 일반 오류에서는 candidateId를 안내 완료로 기록하지 않는다.
     this.activeResponse = null;
+    this.candidateAnnouncementTracker.cancelResponse();
     this.isResponseActive = false;
     this.flushPendingResponse();
   }
@@ -390,6 +419,9 @@ export class HaneumRealtimeSession {
 
     this.activeResponse = dispatched;
     this.isResponseActive = true;
+    this.candidateAnnouncementTracker.startResponse(
+      pending.candidateIdsToMark,
+    );
 
     /*
      * candidateIdsToMark는 앱 내부 메타데이터이므로
@@ -415,6 +447,17 @@ export class HaneumRealtimeSession {
       precedingEvents,
       candidateIdsToMark,
     };
+  }
+
+  private markAnnouncedCandidates(candidateIds: number[]) {
+    if (candidateIds.length === 0) {
+      return;
+    }
+
+    this.context.dispatchAppAction({
+      type: "MARK_CANDIDATES_ANNOUNCED",
+      candidateIds,
+    });
   }
 
   /**
