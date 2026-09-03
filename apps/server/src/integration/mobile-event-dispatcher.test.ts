@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
+
 import test from "node:test";
+
 import { BOARDING_METHOD, TRIP_STATUS } from "@bus-ta/shared";
+
 import { checkAndDispatchStatusChange } from "../../../mobile/src/realtime/event-dispatcher.js";
+
 import type {
   AppAction,
   AppTripState,
@@ -27,6 +31,8 @@ function createContext(
   const state = {
     destination: "수지구청역",
     routeCandidates: null,
+    routeCandidatesExpiresAt: null,
+    announcedCandidateIds: [],
     selectedRoute: null,
     tripId: "trip-test-001",
     tripStatus: waitingSnapshot.tripStatus,
@@ -65,14 +71,19 @@ test("a pre-confirmation GPS event stays WAITING_BUS even with one station remai
   assert.equal(events[0]?.tripStatus, TRIP_STATUS.WAITING_BUS);
   assert.equal(events[0]?.boardingMethod, null);
   assert.equal(events[0]?.boardingConfirmedAt, null);
+
   assert.deepEqual(actions, [
-    { type: "SET_LAST_INJECTED_STATUS", status: waitingSnapshot },
+    {
+      type: "SET_LAST_INJECTED_STATUS",
+      status: waitingSnapshot,
+    },
   ]);
 });
 
 test("a server-confirmed boarding event includes its authoritative evidence", () => {
   const actions: AppAction[] = [];
   const events: TripStatusChangedEvent[] = [];
+
   const confirmedSnapshot: TripStatusSnapshot = {
     ...waitingSnapshot,
     tripStatus: TRIP_STATUS.ON_BUS,
@@ -90,6 +101,12 @@ test("a server-confirmed boarding event includes its authoritative evidence", ()
 
   assert.equal(events.length, 1);
   assert.equal(events[0]?.tripStatus, TRIP_STATUS.ON_BUS);
-  assert.equal(events[0]?.boardingMethod, BOARDING_METHOD.USER_CONFIRMED);
-  assert.equal(events[0]?.boardingConfirmedAt, "2026-08-24T01:00:00.000Z");
+  assert.equal(
+    events[0]?.boardingMethod,
+    BOARDING_METHOD.USER_CONFIRMED,
+  );
+  assert.equal(
+    events[0]?.boardingConfirmedAt,
+    "2026-08-24T01:00:00.000Z",
+  );
 });

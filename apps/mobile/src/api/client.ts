@@ -92,10 +92,15 @@ export const apiClient = {
         method: "POST",
         body: JSON.stringify(body),
       }),
-    getStatus: (tripId: string, options?: { refreshArrivals?: boolean }) =>
-      request<TripStatusResponse>(
-        API_PATHS.trips.status(tripId, options?.refreshArrivals === true),
-      ),
+    // 예모님 재지적(2026-08-28, P1): "버스 놓쳤어요" 발화 시 Realtime tool이 넘기는
+    // refreshArrivals: true를 쿼리 파라미터로 서버에 전달해야 한다. 값이 없거나 false면
+    // 기존과 동일하게 쿼리 없이 호출한다.
+    getStatus: (tripId: string, options?: { refreshArrivals?: boolean }) => {
+      const path = options?.refreshArrivals
+        ? `${API_PATHS.trips.status(tripId)}?refreshArrivals=true`
+        : API_PATHS.trips.status(tripId);
+      return request<TripStatusResponse>(path);
+    },
     end: (tripId: string, body: UpdateTripRequest) =>
       request<EndTripResponse>(API_PATHS.trips.byId(tripId), {
         method: "PATCH",

@@ -129,7 +129,7 @@ function expectedTotalMinutes(route: Route): number {
  * 남는 노선은 대개 이 상한보다 적어서(캡처된 수원대→병점은 4개) 상한은 사실상
  * "제한을 두지 않는다"에 가깝다.
  */
-export const ROUTE_CANDIDATE_LIMIT = 10;
+export const ROUTE_CANDIDATE_LIMIT = 5;
 
 /**
  * 안내 문장(guideMessage)을 만들어 줄 상위 후보 수.

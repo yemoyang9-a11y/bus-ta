@@ -23,12 +23,24 @@ import type {
   RealtimeFunctionName,
 } from "./types";
 
+type NextRouteCandidatesResult = {
+  success: true;
+  candidates: Route[];
+  exhausted: boolean;
+  expired?: boolean;
+};
+
+type SearchRoutesResultWithGuidedIds = RoutesSearchResponse & {
+  guidedCandidateIds?: number[];
+};
+
 type FunctionResult =
   | RoutesSearchResponse
   | BoardingConfirmationResponse
   | TripStatusResponse
   | CreateTripResponse
   | EndTripResponse
+  | NextRouteCandidatesResult
   | ApiErrorResult;
 
 // 동일 함수+인자 조합의 병렬 재호출 방지 (create_trip은 선택당 1회만 등)
@@ -53,12 +65,28 @@ function buildFunctionResponseInstructions(name: RealtimeFunctionName): string {
     return `${common} success가 true이고 routes가 빈 배열일 때만 조건에 맞는 노선 후보가 없다고 안내한다. success가 false이면 result.message의 원인을 바꾸어 말하지 않고, 위치 확인 실패나 API 오류를 노선 없음으로 안내하지 않는다. 후보가 있으면 각 후보의 routeNo, totalTime, intervalTime을 사용해 \"OO번은 예상 소요시간이 N분이고 배차 간격은 M분입니다\" 형식으로 최대 두 개를 모두 설명하고, 마지막에 반드시 \"어떤 버스를 선택하시겠어요?\"라고 묻는다. 값이 없는 시간은 추측하지 말고 확인할 수 없다고 말한다.`;
   }
 
+  // 예모님 확정(2026-08-28, 예외상황 1번): "다른 버스 없어요?"에 새 검색 없이
+  // 앱에 보관된 후보 중 다음 2개를 candidates 필드로 안내한다. expired가 true이면
+  // 5분 TTL이 지난 상태이므로 candidates를 무시하고 재검색을 유도해야 한다.
+  if (name === "get_next_route_candidates") {
+    return `${common} expired가 true이면 이전에 검색한 노선 후보가 오래되어 더 이상 사용할 수 없다고 안내하고, 목적지를 다시 말씀해 달라고 요청한다. 이 경우 candidates는 절대 안내하지 않는다. expired가 true가 아니고 candidates가 비어 있지 않으면, 각 후보를 routeNo와 boardingStation, destinationStation을 사용해 안내하고, guideMessage가 있으면 그대로 활용한다. exhausted가 true이면(candidates가 비어 있고 expired도 아니면) 더 이상 안내할 다른 노선 후보가 없다고 말하고 새로 검색할지 묻는다.`;
+  }
+
   if (name === "create_trip") {
     return `${common} create_trip 성공은 실제 탑승 완료가 아니라 WAITING_BUS 상태의 탑승 대기 시작이다. 성공 결과이면 \"OO번 버스를 선택했습니다. OO 정류장에서 기다려 주세요.\"라고 routeNo와 앱이 제공한 탑승 정류장을 안내한다. arrivals의 첫 항목이 있으면 predictedArrivalMinutes를 사용해 \"버스는 약 N분 후 도착합니다.\"라고 반드시 말한다. arrivals가 비어 있으면 시간을 추측하지 말고 \"현재 실시간 버스 도착정보를 확인할 수 없습니다\"라고 반드시 말한다. 이 응답에서는 절대 \"탑승했습니다\", \"탑승 중입니다\", \"운행을 시작합니다\"라고 말하지 않는다. 두 번째 차량은 사용자가 물을 때만 안내한다.`;
   }
 
   if (name === "confirm_boarding") {
     return `${common} success가 true인 서버 응답을 받은 경우에만 "탑승이 확인되었습니다. 하차까지 남은 정류장을 안내하겠습니다."라고 안내한다. success가 false이면 탑승이 확인됐다고 말하지 말고 result.message의 확인된 실패 원인만 짧게 안내한 뒤 다시 시도할지 묻는다. boardingMethod, boardingConfirmedAt, tripStatus 같은 내부 필드명은 읽지 않는다.`;
+  }
+
+  // 예모님 확정(2026-08-27, 3번 "버스 놓침" 계약, exception-1-2에서 실제 구현 완료):
+  // WAITING_BUS일 때 get_trip_status 응답에 arrivals·arrivalStatus가 포함된다.
+  // arrivalStatus는 AVAILABLE(정상 조회, 차량 있음) / NO_VEHICLE(정상 조회했으나 차량 없음) /
+  // UPSTREAM_ERROR(조회 실패) 세 가지이며, 뒤의 두 상태를 절대 같은 문장으로 합치면 안 된다 —
+  // 조회 실패를 "버스가 없다"고 안내하면, 실제로는 오고 있는 버스를 사용자가 포기하게 된다.
+  if (name === "get_trip_status") {
+    return `${common} "버스를 놓쳤다"는 발화 뒤에 이 결과가 오면, 이전에 안내했던 도착 예정 시간이나 앱이 기억하던 값을 반복하지 않고 이번 결과만 사용한다. arrivalStatus가 "AVAILABLE"이면 arrivals의 첫 항목으로 다음 차 도착 예정 시간을 안내한다. arrivalStatus가 "NO_VEHICLE"이면 "지금 이 정류장에 오는 OO번이 없습니다"라고 안내하고, 이때는 다른 노선을 제안해도 된다. arrivalStatus가 "UPSTREAM_ERROR"이면 "지금은 도착 정보를 확인할 수 없습니다"라고만 안내하고, 이 경우 절대 "버스가 없다"거나 차량이 없다는 취지로 말하지 않는다. 이 발화만으로 운행 자체를 취소하지 않는다.`;
   }
 
   return common;
@@ -90,8 +118,20 @@ export async function dispatchRealtimeFunctionCall(
     result = rejectStaleTripResult(event.name, result, context);
   }
 
+  const candidateIdsToMark = collectCandidateIdsToMark(event.name, result);
   updateContext(event.name, args, result, context);
   const modelResult = buildModelFunctionResult(event.name, args, result, context);
+
+  const responseEvent: RealtimeClientEvent = {
+    type: "response.create",
+    response: {
+      instructions: buildFunctionResponseInstructions(event.name),
+    },
+  };
+
+  if (candidateIdsToMark.length > 0) {
+    responseEvent.candidateIdsToMark = candidateIdsToMark;
+  }
 
   return [
     {
@@ -102,13 +142,37 @@ export async function dispatchRealtimeFunctionCall(
         output: JSON.stringify(modelResult),
       },
     },
-    {
-      type: "response.create",
-      response: {
-        instructions: buildFunctionResponseInstructions(event.name),
-      },
-    },
+    responseEvent,
   ];
+}
+
+// 예모님 재지적(2026-08-28, P1): search_routes로 최초 안내한 상위 2개 후보도
+// get_next_route_candidates와 동일하게, 실제 오디오 출력 완료 후 MARK_CANDIDATES_ANNOUNCED로
+// 기록되어야 한다. 그렇지 않으면 검색 직후 "다른 버스 없어요?"라고 물었을 때 방금 안내한
+// 1·2위가 다시 나올 수 있다. search_routes 성공 시 상위 2개(guidedCandidateIds)를
+// updateContext에서 SearchRoutesResultWithGuidedIds에 함께 실어 보내고, 여기서 그대로 꺼내 쓴다.
+function collectCandidateIdsToMark(
+  name: RealtimeFunctionName,
+  result: FunctionResult,
+): number[] {
+  if (result.success !== true) {
+    return [];
+  }
+
+  if (name === "get_next_route_candidates") {
+    const nextResult = result as NextRouteCandidatesResult;
+    if (nextResult.expired) {
+      return [];
+    }
+    return nextResult.candidates.map((route) => route.candidateId);
+  }
+
+  if (name === "search_routes") {
+    const searchResult = result as SearchRoutesResultWithGuidedIds;
+    return searchResult.guidedCandidateIds ?? [];
+  }
+
+  return [];
 }
 
 function buildModelFunctionResult(
@@ -156,7 +220,14 @@ export function isRealtimeFunctionCallEvent(event: unknown): event is RealtimeFu
     typeof value.call_id === "string" &&
     typeof value.name === "string" &&
     typeof value.arguments === "string" &&
-    ["search_routes", "create_trip", "confirm_boarding", "get_trip_status", "end_trip"].includes(value.name)
+    [
+      "search_routes",
+      "get_next_route_candidates",
+      "create_trip",
+      "confirm_boarding",
+      "get_trip_status",
+      "end_trip",
+    ].includes(value.name)
   );
 }
 
@@ -166,8 +237,50 @@ async function callBackendFunction(
   context: RealtimeGuideContext,
 ): Promise<FunctionResult> {
   switch (name) {
-    case "search_routes":
-      return apiClient.routes.search(await assertRoutesSearchRequest(args, context));
+    case "search_routes": {
+      const result = await apiClient.routes.search(await assertRoutesSearchRequest(args, context));
+      // 예모님 재지적(2026-08-28, P1): 최초 안내되는 상위 2개(guidedCandidateIds)를
+      // 결과에 함께 실어서, collectCandidateIdsToMark가 실제 오디오 완료 후 기록할 수 있게 한다.
+      if (result.success === true) {
+        const guidedCandidateIds = (result.routes as Route[])
+          .slice(0, 2)
+          .map((route) => route.candidateId);
+        return { ...result, guidedCandidateIds } as SearchRoutesResultWithGuidedIds;
+      }
+      return result;
+    }
+    case "get_next_route_candidates": {
+      assertEmptyObject(args);
+      const appState = context.getAppState();
+
+      // 예모님 지적(2026-08-28, P1): routeCandidatesExpiresAt이 TripContext에 저장만
+      // 되고 이 경로에서 확인되지 않아, 검색 후 5분이 지나도 기존 후보가 계속 재사용될
+      // 수 있었다. 만료됐으면 기존 후보를 쓰지 않고 expired: true로 알려서, AI가
+      // "다시 검색해 달라"고 안내하도록 한다(운행 자체를 여기서 취소하지 않는다).
+      if (
+        !appState.routeCandidatesExpiresAt ||
+        Date.now() > appState.routeCandidatesExpiresAt
+      ) {
+        return {
+          success: true,
+          candidates: [],
+          exhausted: true,
+          expired: true,
+        };
+      }
+
+      const routeCandidates = (appState.routeCandidates ?? []) as Route[];
+      const announcedCandidateIds = appState.announcedCandidateIds ?? [];
+      const nextCandidates = routeCandidates
+        .filter((route) => !announcedCandidateIds.includes(route.candidateId))
+        .slice(0, 2);
+
+      return {
+        success: true,
+        candidates: nextCandidates,
+        exhausted: nextCandidates.length === 0,
+      };
+    }
     case "create_trip":
       return apiClient.trips.create(assertCreateTripRequest(args, context));
     case "confirm_boarding": {
@@ -179,9 +292,13 @@ async function callBackendFunction(
       });
     }
     case "get_trip_status": {
-      // refreshArrivals 는 "버스 놓쳤어요" 발화에서만 모델이 붙인다. 일반 상태
-      // 조회에 붙으면 서버가 정한 갱신 주기를 우회하므로 그대로 넘기되 값만 검증한다.
-      const refreshArrivals = assertRecord(args).refreshArrivals === true;
+      // 예모님 확인(2026-08-27, exception-1-2): 서버가 이제 매 호출마다 GBIS를 다시 조회해서
+      // arrivals·arrivalStatus를 실제 값으로 채워준다. 더 이상 mock으로 덮지 않는다.
+      // 예모님 재지적(2026-08-28, P1): "버스 놓쳤어요" 발화 시 Realtime tool이 넘기는
+      // refreshArrivals: true를 그동안 무시하고 있었다. Function 인자에서 읽어서
+      // apiClient.trips.getStatus로 그대로 전달한다.
+      const value = assertRecord(args);
+      const refreshArrivals = value.refreshArrivals === true;
       return apiClient.trips.getStatus(assertTripId(args, context), { refreshArrivals });
     }
     case "end_trip": {

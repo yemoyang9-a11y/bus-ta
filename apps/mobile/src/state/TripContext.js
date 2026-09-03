@@ -1,13 +1,19 @@
 import React, { createContext, useContext, useReducer } from 'react';
 
+// 예모님 확정(2026-08-28): 후보 유효시간 5분
+const ROUTE_CANDIDATES_TTL_MS = 5 * 60 * 1000;
+
 // 초기 상태 — 노선 검색부터 하차까지 화면 간 공유되는 값
 const initialState = {
   destination: null,
-  routeCandidates: null,   // 검색된 노선 후보 배열 (원본 그대로 보관, 재조립 금지)
-  selectedRoute: null,     // 사용자가 선택한 노선 후보 객체
+  routeCandidates: null,
+  routeCandidatesExpiresAt: null, // 예모님 확정(2026-08-28): 검색 성공 시점 + 5분. 앱 재시작 시
+                                   // 메모리 상태 자체가 초기화되므로 별도 처리 없이 자연스럽게 폐기된다.
+  announcedCandidateIds: [],
+  selectedRoute: null,
   tripId: null,
-  tripStatus: null,        // WAITING_BUS | ON_BUS | NEAR_DESTINATION | TRIP_DONE | CANCELLED | ERROR
-  boardingMethod: null,    // USER_CONFIRMED | AUTO_DETECTED
+  tripStatus: null,
+  boardingMethod: null,
   boardingConfirmedAt: null,
   currentStation: null,
   nextStation: null,
@@ -16,32 +22,39 @@ const initialState = {
   bellStatus: 'NOT_REQUESTED',
   bellRequestId: null,
   command: null,
-  lastFunctionResult: null,   // Phase 5: Function Dispatcher가 마지막으로 처리한 결과
-  lastInjectedStatus: null,   // Phase 6: 이벤트 Dispatcher가 마지막으로 세션에 주입한 상태
-  bleIsMock: null,   // 예모님 코멘트 2번(2026-08-13): 하차벨 결과가 실제 BLE 응답인지, mock인지 표시
-  beaconScanActive: false,   // 예모님 코멘트 P0-2(2026-08-14): 비콘 스캔이 실제로 시작됐는지 추적,
-                              // stopBeaconScan() 성공 후에만 false로 바뀌어야 한다
+  lastFunctionResult: null,
+  lastInjectedStatus: null,
+  bleIsMock: null,
+  beaconScanActive: false,
 };
 
 function tripReducer(state, action) {
   switch (action.type) {
     case 'SET_DESTINATION_AND_ROUTES':
-      // Realtime search_routes Function 성공 후 호출
+      // 새 검색 결과이므로 이전 검색에서 안내했던 후보 기록과 만료 시각을 새로 계산한다.
       return {
         ...state,
         destination: action.destination,
         routeCandidates: action.routes,
+        routeCandidatesExpiresAt: Date.now() + ROUTE_CANDIDATES_TTL_MS,
+        announcedCandidateIds: [],
+      };
+
+    case 'MARK_CANDIDATES_ANNOUNCED':
+      return {
+        ...state,
+        announcedCandidateIds: [
+          ...new Set([...state.announcedCandidateIds, ...action.candidateIds]),
+        ],
       };
 
     case 'SELECT_ROUTE':
-      // RouteListScreen에서 노선 선택 시 호출
       return {
         ...state,
         selectedRoute: action.route,
       };
 
     case 'START_TRIP':
-      // RouteListScreen에서 create_trip 성공 후 호출
       return {
         ...state,
         tripId: action.tripId,
@@ -51,7 +64,6 @@ function tripReducer(state, action) {
       };
 
     case 'CONFIRM_BOARDING':
-      // 서버의 원자 저장 성공 응답만 반영한다. 프론트가 자체적으로 ON_BUS를 만들지 않는다.
       return {
         ...state,
         tripStatus: action.tripStatus,
@@ -60,8 +72,6 @@ function tripReducer(state, action) {
       };
 
     case 'UPDATE_TRIP_STATUS': {
-      // RidingScreen에서 PATCH /status 응답 반영 시 호출
-      // 서버 응답(action.status)을 그대로 신뢰해서 덮어씀 — 프론트에서 값 재계산 금지
       const s = action.status;
       return {
         ...state,
@@ -79,41 +89,39 @@ function tripReducer(state, action) {
     }
 
     case 'SET_LAST_INJECTED_STATUS':
-      // event-dispatcher.ts가 세션에 이벤트를 보낸 뒤, 마지막으로 보낸 상태를 기록할 때 호출
       return {
         ...state,
         lastInjectedStatus: action.status,
       };
 
     case 'SET_BLE_MOCK_STATUS':
-      // RouteListScreen에서 비콘 조회 + BLE 연결 시도 후 호출
-      // 서버가 알려준 isMock과 실제 BLE 연결 성공 여부를 조합한 최종값을 저장
       return {
         ...state,
         bleIsMock: action.isMock,
       };
 
     case 'SET_BEACON_SCAN_ACTIVE':
-      // RouteListScreen에서 startBeaconScan() 성공 시 true,
-      // RidingScreen에서 stopBeaconScan() 성공 시 false로 호출
       return {
         ...state,
         beaconScanActive: action.active,
       };
 
+    // 운행만 종료하고, 유효한 기존 목적지·후보 노선(및 TTL, 안내 기록)은 유지한다.
     case 'RESET_TRIP_KEEP_SEARCH':
-      // 운행만 종료하고, 유효한 기존 목적지·후보 노선은 다시 선택할 수 있도록 유지한다.
       return {
         ...initialState,
         destination: state.destination,
         routeCandidates: state.routeCandidates,
+        routeCandidatesExpiresAt: state.routeCandidatesExpiresAt,
+        announcedCandidateIds: state.announcedCandidateIds,
         beaconScanActive: state.beaconScanActive,
       };
 
+    // TRIP_DONE, CANCELLED, TRIP_NOT_FOUND 발생 시 호출 — 다음 운행을 위해 전체 초기화
     case 'RESET_TRIP':
-      // TRIP_DONE, CANCELLED, TRIP_NOT_FOUND 발생 시 호출 — 다음 운행을 위해 초기화
       return {
         ...initialState,
+        beaconScanActive: state.beaconScanActive,
       };
 
     default:
@@ -132,11 +140,18 @@ export function TripProvider({ children }) {
   );
 }
 
-// 화면에서 이 훅 하나로 상태와 dispatch를 모두 가져다 씀
 export function useTrip() {
   const context = useContext(TripContext);
   if (!context) {
     throw new Error('useTrip은 TripProvider 내부에서만 사용할 수 있습니다.');
   }
   return context;
+}
+
+// 예모님 확정(2026-08-28): routeCandidates가 5분 TTL을 넘겼는지 확인하는 헬퍼.
+// get_next_route_candidates(유나님 파트)나 화면에서, 후보를 사용하기 전에 이 함수로
+// 만료 여부를 먼저 확인해서, 만료됐으면 기존 후보를 쓰지 않고 재검색하도록 판단할 수 있다.
+export function isRouteCandidatesExpired(state) {
+  if (!state.routeCandidatesExpiresAt) return true;
+  return Date.now() > state.routeCandidatesExpiresAt;
 }

@@ -1,12 +1,23 @@
-import { RoutesSearchRequestSchema, type Route, type RoutesSearchRequest } from "@bus-ta/shared";
-import { generateRouteGuide, selectRouteCandidates, type RouteGuideResult } from "../guide.js";
+import {
+  RoutesSearchRequestSchema,
+  type Route,
+  type RoutesSearchRequest,
+} from "@bus-ta/shared";
+import {
+  generateRouteGuide,
+  selectRouteCandidates,
+  type RouteGuideResult,
+} from "../guide.js";
 
 export interface RouteSearchProvider {
   searchRoutes(request: RoutesSearchRequest): Promise<Route[]>;
 }
 
 export interface RouteGuideProvider {
-  generateRouteGuide(input: { destination: string; candidates: Route[] }): Promise<RouteGuideResult>;
+  generateRouteGuide(input: {
+    destination: string;
+    candidates: Route[];
+  }): Promise<RouteGuideResult>;
 }
 
 export interface SearchRoutesDependencies extends RouteSearchProvider {
@@ -45,7 +56,12 @@ const GUIDED_ROUTE_LIMIT = 2;
  * 진단에 필요한 값(어느 upstream, 어떤 상태 코드, 메시지)만 골라서 남긴다.
  */
 function logRouteSearchFailure(error: unknown): void {
-  const detail = error as { upstream?: unknown; status?: unknown; message?: unknown };
+  const detail = error as {
+    upstream?: unknown;
+    status?: unknown;
+    message?: unknown;
+  };
+
   console.error(
     "[routes/search] 외부 API 요청 실패",
     `upstream=${typeof detail.upstream === "string" ? detail.upstream : "UNKNOWN"}`,
@@ -54,18 +70,32 @@ function logRouteSearchFailure(error: unknown): void {
   );
 }
 
-function attachGuideMessages(routes: Route[], guideResult: RouteGuideResult): Route[] {
+function attachGuideMessages(
+  routes: Route[],
+  guideResult: RouteGuideResult,
+): Route[] {
   const guideByCandidateId = new Map(
-    guideResult.selectedCandidates.map((selected) => [selected.candidateId, selected.guideMessage]),
+    guideResult.selectedCandidates.map((selected) => [
+      selected.candidateId,
+      selected.guideMessage,
+    ]),
   );
 
   return routes.map((route, index) => {
-    const { recommendationReason: _recommendationReason, guideMessage: _guideMessage, ...routeWithoutGuide } =
-      route;
-    const guideMessage =
-      index < GUIDED_ROUTE_LIMIT ? guideByCandidateId.get(route.candidateId) : undefined;
+    const {
+      recommendationReason: _recommendationReason,
+      guideMessage: _guideMessage,
+      ...routeWithoutGuide
+    } = route;
 
-    return guideMessage ? { ...routeWithoutGuide, guideMessage } : routeWithoutGuide;
+    const guideMessage =
+      index < GUIDED_ROUTE_LIMIT
+        ? guideByCandidateId.get(route.candidateId)
+        : undefined;
+
+    return guideMessage
+      ? { ...routeWithoutGuide, guideMessage }
+      : routeWithoutGuide;
   });
 }
 
@@ -83,6 +113,7 @@ export async function searchRoutes(
   const timestamp = now();
 
   const parsed = RoutesSearchRequestSchema.safeParse(input);
+
   if (!parsed.success) {
     return {
       httpStatus: 400,
@@ -96,10 +127,12 @@ export async function searchRoutes(
   }
 
   let routes: Route[];
+
   try {
     routes = await dependencies.searchRoutes(parsed.data);
   } catch (error) {
     logRouteSearchFailure(error);
+
     return {
       httpStatus: 502,
       body: {
@@ -111,14 +144,23 @@ export async function searchRoutes(
     };
   }
 
-  const rankedRoutes = selectRouteCandidates(routes, ROUTE_CANDIDATE_LIMIT);
+  const rankedRoutes = selectRouteCandidates(
+    routes,
+    ROUTE_CANDIDATE_LIMIT,
+  );
+
   const guideRoutes =
     rankedRoutes.length > 0
       ? attachGuideMessages(
           rankedRoutes,
-          await (dependencies.generateRouteGuide ?? generateRouteGuide)({
+          await (
+            dependencies.generateRouteGuide ?? generateRouteGuide
+          )({
             destination: parsed.data.destination,
-            candidates: rankedRoutes.slice(0, GUIDED_ROUTE_LIMIT),
+            candidates: rankedRoutes.slice(
+              0,
+              GUIDED_ROUTE_LIMIT,
+            ),
           }),
         )
       : [];
