@@ -1,6 +1,5 @@
 import { BleManager } from 'react-native-ble-plx';
 import { Buffer } from 'buffer';
-import { createSingleFlight } from './single-flight';
 
 // 정민님 확인(2026-08-04): 공통 UUID, 기기 2대(지팡이/하차벨) 각각 연결
 const SERVICE_UUID = '4fa45540-8201-11e5-8223-0002a5d5c51b';
@@ -8,13 +7,12 @@ const CHARACTERISTIC_UUID = '4fa45541-8201-11e5-8223-0002a5d5c51b';
 
 const CANE_DEVICE_NAME = 'White_cane';
 // 정민님 확정(2026-08-12): 이 보드가 버스 비콘+하차벨 겸용이라 이름 하나로 둘 다 처리(MOCK 제거)
-const BELL_DEVICE_NAME = 'BUS_1551_001';
+const BELL_DEVICE_NAME = 'BUS_35_001';
 
 const manager = new BleManager();
 
 // 연결된 기기를 device name별로 보관
 const connectedDevices = new Map();
-const runStopBeaconScanSingleFlight = createSingleFlight();
 
 /**
  * 한 개의 device name을 스캔해서 찾은 뒤 연결한다.
@@ -95,7 +93,7 @@ export function isCaneConnected() {
   return connectedDevices.has(CANE_DEVICE_NAME);
 }
 
-/** 하차벨(BUS_1551_001, 버스 비콘 겸용) 연결 여부를 확인한다. */
+/** 하차벨(BUS_35_001, 버스 비콘 겸용) 연결 여부를 확인한다. */
 export function isBellConnected() {
   return connectedDevices.has(BELL_DEVICE_NAME);
 }
@@ -123,7 +121,7 @@ async function writeCommand(deviceName, payload) {
 
 /**
  * 지팡이에 타겟 비콘을 지정한다.
- * @param {string} targetBeaconId - 서버 beacons API 응답의 targetBeaconId 그대로 사용 (예: BUS_1551_001)
+ * @param {string} targetBeaconId - 서버 beacons API 응답의 targetBeaconId 그대로 사용 (예: BUS_35_001)
  */
 export async function setTargetBeacon(targetBeaconId) {
   const payload = JSON.stringify({ cmd: 'SET_TARGET_BEACON', target: targetBeaconId });
@@ -137,11 +135,9 @@ export async function startBeaconScan() {
 }
 
 /** 지팡이에 비콘 스캔 중지를 명령한다. */
-export function stopBeaconScan() {
-  return runStopBeaconScanSingleFlight(() => {
-    const payload = JSON.stringify({ cmd: 'STOP_BEACON_SCAN' });
-    return writeCommand(CANE_DEVICE_NAME, payload);
-  });
+export async function stopBeaconScan() {
+  const payload = JSON.stringify({ cmd: 'STOP_BEACON_SCAN' });
+  await writeCommand(CANE_DEVICE_NAME, payload);
 }
 
 /**

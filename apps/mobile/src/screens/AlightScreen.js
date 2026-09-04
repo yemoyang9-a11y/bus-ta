@@ -182,7 +182,7 @@ export default function AlightScreen({ route, navigation }) {
     }
     unsubscribeRef.current();
     disconnect('White_cane').catch(() => {});
-    disconnect('BUS_1551_001').catch(() => {});
+    disconnect('BUS_35_001').catch(() => {});
     dispatch({ type: 'RESET_TRIP' });
     navigation.navigate('Main');
   };

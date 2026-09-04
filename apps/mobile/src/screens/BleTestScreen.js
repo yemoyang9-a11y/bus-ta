@@ -25,16 +25,16 @@ export default function BleTestScreen() {
     addLog('지팡이·하차벨 연결 시도 중...');
     try {
       const connected = await connectAll();
-      addLog(`연결 결과: 지팡이=${connected.has('White_cane')}, 하차벨=${connected.has('BUS_1551_001')}`);
+      addLog(`연결 결과: 지팡이=${connected.has('White_cane')}, 하차벨=${connected.has('BUS_35_001')}`);
     } catch (error) {
       addLog(`연결 실패: ${error.message}`);
     }
   };
 
   const handleSetTargetBeacon = async () => {
-    addLog('타겟 비콘 설정 시도 중 (BUS_1551_001)...');
+    addLog('타겟 비콘 설정 시도 중 (BUS_35_001)...');
     try {
-      await setTargetBeacon('BUS_1551_001');
+      await setTargetBeacon('BUS_35_001');
       addLog('타겟 비콘 설정 성공');
     } catch (error) {
       addLog(`타겟 비콘 설정 실패: ${error.message}`);
@@ -92,7 +92,7 @@ export default function BleTestScreen() {
     }
     try {
       await disconnect('White_cane');
-      await disconnect('BUS_1551_001');
+      await disconnect('BUS_35_001');
       addLog('연결 해제 완료');
     } catch (error) {
       addLog(`연결 해제 실패: ${error.message}`);
@@ -108,7 +108,7 @@ export default function BleTestScreen() {
       </TouchableOpacity>
 
       <TouchableOpacity style={styles.button} onPress={handleSetTargetBeacon}>
-        <Text style={styles.buttonText}>타겟 비콘 설정 (BUS_1551_001)</Text>
+        <Text style={styles.buttonText}>타겟 비콘 설정 (BUS_35_001)</Text>
       </TouchableOpacity>
 
       <TouchableOpacity style={styles.button} onPress={handleStartScan}>
