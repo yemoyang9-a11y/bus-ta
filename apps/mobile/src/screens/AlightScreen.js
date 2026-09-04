@@ -6,6 +6,7 @@ import { apiClient, ApiError } from '../api/client';
 import { useTrip } from '../state/TripContext';
 import { useRealtime } from '../realtime/RealtimeProvider';
 import { connectBell, getBellDeviceName, isBellConnected, sendStopRequest, subscribeBellResult, disconnect } from '../ble/bleManager';
+import { sendStopRequestWithReconnect } from '../ble/bell-command-sender';
 
 // 정민님 확인(2026-08-12): 하차벨 응답을 못 받을 경우를 대비한 대기 시간
 const BELL_RESULT_TIMEOUT_MS = 10000;
@@ -87,27 +88,6 @@ export default function AlightScreen({ route, navigation }) {
   };
 
   const requestActualBellStop = async () => {
-    // 하차벨은 탑승 확정 직후 RidingScreen 이 이미 연결해 둔다. 다만 버스 안에서
-    // 흔들리다 끊겼을 수 있어, 명령을 보내기 전에 한 번 더 확인하고 필요하면
-    // 다시 연결한다. 여기서는 곧 내려야 하므로 재시도를 반복하지 않고 한 번만
-    // 시도한다(스캔 제한 시간 10초).
-    if (!isBellConnected()) {
-      try {
-        await connectBell(state.targetBeaconId ?? undefined);
-      } catch (error) {
-        console.log('하차벨 재연결 실패:', error);
-      }
-    }
-
-    if (!isMountedRef.current) return;
-
-    if (!isBellConnected()) {
-      // 실제 하차벨이 없으므로 mock 으로 기록한다. 사용자에게는 아래 실패 안내가 간다.
-      console.log('하차벨 미연결 - STOP_REQUEST 를 보내지 못함');
-      finalizeBellOutcome('fail', true);
-      return;
-    }
-
     const isMock = state.bleIsMock ?? true;
 
     const handleBellResult = (result) => {
@@ -119,21 +99,36 @@ export default function AlightScreen({ route, navigation }) {
       finalizeBellOutcome(result.result === 'SUCCESS' ? 'success' : 'fail', isMock);
     };
 
-    try {
-      unsubscribeRef.current = subscribeBellResult(handleBellResult);
+    // 하차벨은 탑승 확정 직후 RidingScreen 이 이미 연결해 둔다. 다만 버스 안에서
+    // 흔들리다 끊겼을 수 있으므로, 실제 장치에 연결 여부를 물어보고 끊겼으면 다시
+    // 붙인 뒤에 보낸다. 전송이 실패하면 한 번 더 붙여 다시 보낸다. 곧 내려야 하므로
+    // 여기서 반복하지는 않는다.
+    const { sent, unsubscribe } = await sendStopRequestWithReconnect({
+      isConnected: isBellConnected,
+      connect: () => connectBell(state.targetBeaconId ?? undefined),
+      subscribeResult: () => subscribeBellResult(handleBellResult),
+      sendStopRequest,
+    });
 
-      sendStopRequest().catch((error) => {
-        console.log('하차벨 명령 전송 실패:', error);
-      });
-
-      timeoutIdRef.current = setTimeout(() => {
-        unsubscribeRef.current();
-        finalizeBellOutcome('fail', isMock);
-      }, BELL_RESULT_TIMEOUT_MS);
-    } catch (error) {
-      console.log('하차벨 BLE 연결 실패:', error);
-      finalizeBellOutcome('fail', true);
+    if (!isMountedRef.current) {
+      unsubscribe();
+      return;
     }
+
+    unsubscribeRef.current = unsubscribe;
+
+    if (!sent) {
+      // 명령이 나가지 못했다. 결과가 올 리 없으므로 10초를 기다리지 않고 확정한다.
+      // 실제 하차벨이 동작하지 않았으므로 mock 으로 기록한다.
+      console.log('하차벨 STOP_REQUEST 전송 실패 - 결과를 기다리지 않고 실패 처리');
+      finalizeBellOutcome('fail', true);
+      return;
+    }
+
+    timeoutIdRef.current = setTimeout(() => {
+      unsubscribeRef.current();
+      finalizeBellOutcome('fail', isMock);
+    }, BELL_RESULT_TIMEOUT_MS);
   };
 
   // 하차벨 결과 저장

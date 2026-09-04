@@ -20,7 +20,10 @@ import {
   startBeaconScanWithRetry,
   stopBeaconScanWithRetry,
 } from '../ble/beacon-scan-controller';
-import { connectBellWithRetry } from '../ble/bell-connect-controller';
+import {
+  connectBellWithRetry,
+  disconnectBellWithRetry,
+} from '../ble/bell-connect-controller';
 
 const INITIAL_STATUS = {
   currentStation: null,
@@ -86,7 +89,8 @@ export default function RidingScreen({ route, navigation }) {
   const boardingConfirmedAtRef = useRef(boardingConfirmedAt);
   boardingConfirmedAtRef.current = boardingConfirmedAt;
 
-  const waitBeforeRetry = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const waitBeforeRetry = (ms) =>
+    new Promise((resolve) => setTimeout(resolve, ms));
 
   // 스캔 중지는 경로가 넷이다(늦은 성공 되돌리기, 탑승 확정, 취소, 운행 종료).
   // 넷 다 첫 실패에서 멈추면 실제 장치는 켜진 채 남는다. 하나로 모아 제한 재시도한다.
@@ -185,12 +189,6 @@ export default function RidingScreen({ route, navigation }) {
       startingBeaconScanRef.current = true;
       const attemptTripId = tripId;
 
-      // 이 운행에서 아직 스캔이 필요한지. 재시도를 기다리는 동안, 또는 명령이
-      // 오가는 동안 탑승·취소가 끼어들 수 있다. 그때 늦게 성공한 요청이 스캔을
-      // 켜면 탑승한 뒤에도 지팡이가 계속 진동한다.
-      //
-      // 판단은 렌더 당시 값이 아니라 ref 로 최신 값을 본다. 재시도는 effect 가
-      // 끝난 뒤에도 이어지므로 닫힌 값을 쓰면 탑승 확정을 놓친다.
       const isStillWanted = () =>
         !stoppedRef.current &&
         isScreenTripActive(activeTripIdRef.current, attemptTripId) &&
@@ -203,32 +201,36 @@ export default function RidingScreen({ route, navigation }) {
           dispatch({ type: 'SET_BEACON_SCAN_ACTIVE', active: true });
         },
         onStartedTooLate: () =>
-          // 이미 끝난 대기 구간이다. 켜진 스캔을 되돌리고 완료를 기다린다.
           stopBeaconScanWithRetry({
             stopBeaconScan,
             onStopped: () => undefined,
             onGaveUp: (error) => {
               console.log('늦게 성공한 스캔을 되돌리지 못함:', error);
-              // 앱은 이 스캔을 켜졌다고 기록한 적이 없다. 여기서 끝내면 실제 장치는
-              // 켜져 있는데 상태는 꺼짐이라, 탑승·취소 종료 경로도 다시 끄지 않는다.
-              // 켜진 것으로 남겨 그 경로들이 이어서 끄게 한다.
               dispatch({ type: 'SET_BEACON_SCAN_ACTIVE', active: true });
             },
             wait: waitBeforeRetry,
           }),
         onGaveUp: (error) => {
-          console.log('비콘 스캔 시작을 상한까지 재시도했지만 실패:', error);
+          console.log(
+            '비콘 스캔 시작을 상한까지 재시도했지만 실패:',
+            error,
+          );
           Speech.speak(
             '지팡이 진동 안내를 시작하지 못했습니다. 정류장에 계신 주변 분께 버스가 오면 알려 달라고 요청해 주세요.',
             { language: 'ko' },
           );
         },
-        wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+        wait: (ms) =>
+          new Promise((resolve) => setTimeout(resolve, ms)),
       }).finally(() => {
         startingBeaconScanRef.current = false;
       });
     }
-  }, [status.shouldScanBeacon, state.caneReady, state.beaconScanActive]);
+  }, [
+    status.shouldScanBeacon,
+    state.caneReady,
+    state.beaconScanActive,
+  ]);
 
   // 정민님 확인(2026-08-12): 탑승 완료 시 비콘 스캔 중지
   useEffect(() => {
@@ -239,22 +241,15 @@ export default function RidingScreen({ route, navigation }) {
     ) {
       stoppingBeaconScanRef.current = true;
 
-      runStopBeaconScan('탑승 확정 후 비콘 스캔 중지를 상한까지 재시도했지만 실패:')
-        .finally(() => {
-          stoppingBeaconScanRef.current = false;
-        });
+      runStopBeaconScan(
+        '탑승 확정 후 비콘 스캔 중지를 상한까지 재시도했지만 실패:',
+      ).finally(() => {
+        stoppingBeaconScanRef.current = false;
+      });
     }
   }, [boardingConfirmedAt, state.beaconScanActive]);
 
   // 탑승이 확정되면 하차벨 보드를 연결한다.
-  //
-  // 예전에는 운행을 만들 때 지팡이와 함께 한 번에 연결했는데, 그 시점의 하차벨 보드는
-  // 아직 오지 않은 버스 안이라 BLE 범위 밖이었다. 반드시 실패했고 다시 찾지 않았다.
-  // 2026-09-04 실차에서 두 번 다 여기서 막혀, 하차 화면이 연결 없음을 보고 1초 만에
-  // 실패 처리했다. 지금은 버스 안에 있는 것이 확실한 이 시점에 연결한다.
-  //
-  // 연결할 보드 이름은 서버가 노선별로 내려준 targetBeaconId 를 쓴다. 노선을 바꾸면
-  // 보드도 바뀌기 때문에, 앱에 이름을 박아 두면 이번처럼 DB 만 바뀌었을 때 어긋난다.
   useEffect(() => {
     if (
       !boardingConfirmedAt ||
@@ -268,8 +263,6 @@ export default function RidingScreen({ route, navigation }) {
     const attemptTripId = tripId;
     const targetBeaconId = state.targetBeaconId;
 
-    // 재시도를 기다리는 동안 운행이 끝나거나 바뀔 수 있다. 렌더 당시 값이 아니라
-    // ref 로 최신 값을 본다.
     const isStillWanted = () =>
       !stoppedRef.current &&
       isScreenTripActive(activeTripIdRef.current, attemptTripId);
@@ -277,37 +270,52 @@ export default function RidingScreen({ route, navigation }) {
     connectBellWithRetry({
       connectBell: () => connectBell(targetBeaconId),
       isStillWanted,
+
       onConnected: () => {
-        dispatch({ type: 'SET_BELL_CONNECTED', connected: true });
+        dispatch({
+          type: 'SET_BELL_CONNECTED',
+          connected: true,
+        });
       },
-      onConnectedTooLate: async () => {
-        // 끝난 운행에 늦게 붙었다. 다음 운행에 남지 않도록 끊는다.
-        try {
-          await disconnect(getBellDeviceName());
-        } catch (error) {
-          console.log('늦게 성공한 하차벨 연결을 끊지 못함:', error);
-        }
-      },
+
+      onConnectedTooLate: () =>
+        disconnectBellWithRetry({
+          disconnectBell: () =>
+            disconnect(getBellDeviceName()),
+          onGaveUp: (error) => {
+            console.log(
+              '늦게 성공한 하차벨 연결을 상한까지 끊지 못함:',
+              error,
+            );
+          },
+          wait: waitBeforeRetry,
+        }),
+
       onGaveUp: () => {
-        dispatch({ type: 'SET_BELL_CONNECTED', connected: false });
-        // 조용히 넘어가면 사용자는 내릴 때가 되어서야 벨이 안 눌린다는 것을 안다.
+        dispatch({
+          type: 'SET_BELL_CONNECTED',
+          connected: false,
+        });
+
         Speech.speak(
           '하차벨에 연결하지 못했습니다. 내리기 전에 기사님께 직접 말씀해 주세요.',
           { language: 'ko' },
         );
       },
+
       wait: waitBeforeRetry,
     }).finally(() => {
       connectingBellRef.current = false;
     });
-  }, [boardingConfirmedAt, state.bellConnected, state.targetBeaconId]);
+  }, [
+    boardingConfirmedAt,
+    state.bellConnected,
+    state.targetBeaconId,
+  ]);
 
-  // 예모님 지적(2026-08-27, P1) + 유나님 지적(2026-08-28):
   // 취소 감지 시 GPS/BLE를 즉시 중지한다.
-  // RESET_TRIP_KEEP_SEARCH·RESET_TRIP 모두 이제 beaconScanActive를 건드리지 않고 이전 값을
-  // 그대로 보존하므로(TripContext.js 참고), 여기서 실제로 stopBeaconScan()을 호출해서
-  // "성공"을 확인한 뒤에만 SET_BEACON_SCAN_ACTIVE(active: false)를 dispatch한다.
-  const isThisTripStillActive = isScreenTripActive(state.tripId, tripId);
+  const isThisTripStillActive =
+    isScreenTripActive(state.tripId, tripId);
 
   useEffect(() => {
     if (!isThisTripStillActive) {
@@ -319,13 +327,17 @@ export default function RidingScreen({ route, navigation }) {
       ) {
         stoppingBeaconScanRef.current = true;
 
-        runStopBeaconScan('취소 후 비콘 스캔 중지를 상한까지 재시도했지만 실패:')
-          .finally(() => {
-            stoppingBeaconScanRef.current = false;
-          });
+        runStopBeaconScan(
+          '취소 후 비콘 스캔 중지를 상한까지 재시도했지만 실패:',
+        ).finally(() => {
+          stoppingBeaconScanRef.current = false;
+        });
       }
     }
-  }, [isThisTripStillActive, state.beaconScanActive]);
+  }, [
+    isThisTripStillActive,
+    state.beaconScanActive,
+  ]);
 
   // 1정거장 남았을 때 TTS 출력 후 하차 안내 화면 전환
   useEffect(() => {
@@ -356,7 +368,6 @@ export default function RidingScreen({ route, navigation }) {
   }, [status, isConnected]);
 
   // 실제 GPS 위치를 연속 구독한다.
-  // 기존 2초 polling + getCurrentPositionAsync 대신 watchPositionAsync를 사용한다.
   useEffect(() => {
     let cancelled = false;
 
@@ -408,73 +419,93 @@ export default function RidingScreen({ route, navigation }) {
             distanceInterval: 0,
           },
           async (location) => {
-            if (cancelled || stoppedRef.current) {
+            if (
+              cancelled ||
+              stoppedRef.current
+            ) {
               return;
             }
 
             const callbackReceivedAt = Date.now();
-            const locationTimestamp = Number(
-              location.timestamp,
-            );
+            const locationTimestamp =
+              Number(location.timestamp);
 
-            // 실제 위치 측정 시각을 알 수 없는 fix는
-            // 현재 시각을 대신 붙여 정상 위치처럼 서버로 보내지 않는다.
-            if (!Number.isFinite(locationTimestamp)) {
+            if (
+              !Number.isFinite(locationTimestamp)
+            ) {
               console.warn(
                 '[GPS] location.timestamp 없음 - PATCH하지 않음',
                 {
-                  callbackReceivedAt: new Date(
-                    callbackReceivedAt,
-                  ).toISOString(),
-                  accuracy: location.coords.accuracy,
-                  latitude: location.coords.latitude,
-                  longitude: location.coords.longitude,
+                  callbackReceivedAt:
+                    new Date(
+                      callbackReceivedAt,
+                    ).toISOString(),
+                  accuracy:
+                    location.coords.accuracy,
+                  latitude:
+                    location.coords.latitude,
+                  longitude:
+                    location.coords.longitude,
                 },
               );
 
               return;
             }
 
-            const locationAgeMs = Math.max(
-              0,
-              callbackReceivedAt - locationTimestamp,
-            );
-
-            if (!firstLocationFixReceivedRef.current) {
-              firstLocationFixReceivedRef.current = true;
-
-              console.log('[GPS] 첫 fix 수신', {
-                receivedAt: new Date(
-                  callbackReceivedAt,
-                ).toISOString(),
-                watchToFirstFixMs:
-                  locationWatchStartedAtRef.current == null
-                    ? null
-                    : callbackReceivedAt -
-                      locationWatchStartedAtRef.current,
-                locationTimestamp: new Date(
+            const locationAgeMs =
+              Math.max(
+                0,
+                callbackReceivedAt -
                   locationTimestamp,
-                ).toISOString(),
-                locationAgeMs,
-                accuracy: location.coords.accuracy,
-              });
+              );
+
+            if (
+              !firstLocationFixReceivedRef.current
+            ) {
+              firstLocationFixReceivedRef.current =
+                true;
+
+              console.log(
+                '[GPS] 첫 fix 수신',
+                {
+                  receivedAt:
+                    new Date(
+                      callbackReceivedAt,
+                    ).toISOString(),
+                  watchToFirstFixMs:
+                    locationWatchStartedAtRef.current ==
+                    null
+                      ? null
+                      : callbackReceivedAt -
+                        locationWatchStartedAtRef.current,
+                  locationTimestamp:
+                    new Date(
+                      locationTimestamp,
+                    ).toISOString(),
+                  locationAgeMs,
+                  accuracy:
+                    location.coords.accuracy,
+                },
+              );
             }
 
             console.log('[GPS] fix 수신', {
-              callbackReceivedAt: new Date(
-                callbackReceivedAt,
-              ).toISOString(),
-              locationTimestamp: new Date(
-                locationTimestamp,
-              ).toISOString(),
+              callbackReceivedAt:
+                new Date(
+                  callbackReceivedAt,
+                ).toISOString(),
+              locationTimestamp:
+                new Date(
+                  locationTimestamp,
+                ).toISOString(),
               locationAgeMs,
-              accuracy: location.coords.accuracy,
-              latitude: location.coords.latitude,
-              longitude: location.coords.longitude,
+              accuracy:
+                location.coords.accuracy,
+              latitude:
+                location.coords.latitude,
+              longitude:
+                location.coords.longitude,
             });
-
-            // stale 임계값은 실차 로그 확인 후 확정한다.
-            // 기준 확정 전에는 임의의 시간값으로 위치를 버리지 않는다.
 
             if (patchInFlightRef.current) {
               locationPatchSkippedCountRef.current += 1;
@@ -484,9 +515,10 @@ export default function RidingScreen({ route, navigation }) {
                 {
                   skippedCount:
                     locationPatchSkippedCountRef.current,
-                  callbackReceivedAt: new Date(
-                    callbackReceivedAt,
-                  ).toISOString(),
+                  callbackReceivedAt:
+                    new Date(
+                      callbackReceivedAt,
+                    ).toISOString(),
                   locationAgeMs,
                 },
               );
@@ -501,24 +533,27 @@ export default function RidingScreen({ route, navigation }) {
           },
         );
 
-      // watchPositionAsync가 resolve되기 전에 화면이 종료되거나
-      // 운행이 중단된 경우, 뒤늦게 생성된 subscription을 즉시 해제한다.
-      if (cancelled || stoppedRef.current) {
+      if (
+        cancelled ||
+        stoppedRef.current
+      ) {
         subscription.remove();
 
         console.log(
           '[GPS] 늦게 생성된 watch 구독 즉시 해제',
           {
             tripId,
-            endedAt: new Date().toISOString(),
+            endedAt:
+              new Date().toISOString(),
           },
         );
 
         return;
       }
 
-      // 기존 subscription이 남아 있다면 중복 watch가 생기지 않도록 제거한다.
-      if (locationSubscriptionRef.current) {
+      if (
+        locationSubscriptionRef.current
+      ) {
         try {
           locationSubscriptionRef.current.remove();
         } catch (error) {
@@ -532,9 +567,15 @@ export default function RidingScreen({ route, navigation }) {
       locationSubscriptionRef.current =
         subscription;
     })().catch((error) => {
-      console.log('[GPS] watch 시작 실패:', error);
+      console.log(
+        '[GPS] watch 시작 실패:',
+        error,
+      );
 
-      if (!cancelled && !stoppedRef.current) {
+      if (
+        !cancelled &&
+        !stoppedRef.current
+      ) {
         stopLocationWatch();
         navigation.navigate('Error');
       }
@@ -546,17 +587,19 @@ export default function RidingScreen({ route, navigation }) {
 
       console.log('[GPS] watch 구독 종료', {
         tripId,
-        endedAt: new Date().toISOString(),
+        endedAt:
+          new Date().toISOString(),
         skippedCount:
           locationPatchSkippedCountRef.current,
       });
     };
   }, [tripId]);
 
-  // 효린님 확인(2026-08-28): WAITING_BUS 동안 서버가 알려준 주기로 GET /status를 반복
-  // 호출해 도착정보를 갱신한다. 실패가 누적되면(20초 이상) 오류 화면으로 전환한다.
+  // WAITING_BUS 동안 서버가 알려준 주기로 GET /status를 반복 호출한다.
   useEffect(() => {
-    if (currentTripStatus !== 'WAITING_BUS') {
+    if (
+      currentTripStatus !== 'WAITING_BUS'
+    ) {
       arrivalPollFailureCountRef.current = 0;
       return;
     }
@@ -567,13 +610,18 @@ export default function RidingScreen({ route, navigation }) {
     let cancelled = false;
 
     const poll = async () => {
-      if (cancelled || stoppedRef.current) {
+      if (
+        cancelled ||
+        stoppedRef.current
+      ) {
         return;
       }
 
       try {
         const latest =
-          await apiClient.trips.getStatus(tripId);
+          await apiClient.trips.getStatus(
+            tripId,
+          );
 
         if (
           cancelled ||
@@ -595,10 +643,6 @@ export default function RidingScreen({ route, navigation }) {
           status: latest,
         });
 
-        // 이 폴링이 도착 예정 시간을 갱신하는 유일한 경로다. 여기서 세션에 알리지
-        // 않으면 서버가 3분·2분을 내려줘도 AI는 create_trip 때의 값만 알고 있게 된다.
-        // dispatch는 비동기라 context를 다시 읽지 않고 방금 받은 응답을 그대로 넘긴다.
-        // session은 RealtimeProvider가 한 번 만들어 두는 값이라 클로저에 담아도 안전하다.
         session?.notifyStatusChange(
           toTripStatusSnapshot(latest),
         );
@@ -639,18 +683,17 @@ export default function RidingScreen({ route, navigation }) {
     patchInFlightRef.current = true;
 
     const patchStartedAt = Date.now();
-    const locationTimestamp = Number(
-      location.timestamp,
-    );
+    const locationTimestamp =
+      Number(location.timestamp);
 
-    const locationAgeMs = Number.isFinite(
-      locationTimestamp,
-    )
-      ? Math.max(
-          0,
-          callbackReceivedAt - locationTimestamp,
-        )
-      : null;
+    const locationAgeMs =
+      Number.isFinite(locationTimestamp)
+        ? Math.max(
+            0,
+            callbackReceivedAt -
+              locationTimestamp,
+          )
+        : null;
 
     requestCounterRef.current += 1;
 
@@ -658,17 +701,19 @@ export default function RidingScreen({ route, navigation }) {
       `location-${tripId}-${requestCounterRef.current}`;
 
     try {
-      // watch callback에서도 검사하지만, 다른 호출 경로가 생겨도
-      // 잘못된 recordedAt을 만들지 않도록 여기서도 방어한다.
-      if (!Number.isFinite(locationTimestamp)) {
+      if (
+        !Number.isFinite(locationTimestamp)
+      ) {
         console.warn(
           '[GPS] PATCH 중단 - location.timestamp 없음',
           {
             requestId,
-            callbackReceivedAt: new Date(
-              callbackReceivedAt,
-            ).toISOString(),
-            accuracy: location.coords.accuracy,
+            callbackReceivedAt:
+              new Date(
+                callbackReceivedAt,
+              ).toISOString(),
+            accuracy:
+              location.coords.accuracy,
           },
         );
 
@@ -677,19 +722,25 @@ export default function RidingScreen({ route, navigation }) {
 
       console.log('[GPS] PATCH 시작', {
         requestId,
-        startedAt: new Date(
-          patchStartedAt,
-        ).toISOString(),
-        callbackReceivedAt: new Date(
-          callbackReceivedAt,
-        ).toISOString(),
-        locationTimestamp: new Date(
-          locationTimestamp,
-        ).toISOString(),
+        startedAt:
+          new Date(
+            patchStartedAt,
+          ).toISOString(),
+        callbackReceivedAt:
+          new Date(
+            callbackReceivedAt,
+          ).toISOString(),
+        locationTimestamp:
+          new Date(
+            locationTimestamp,
+          ).toISOString(),
         locationAgeMs,
-        accuracy: location.coords.accuracy,
-        latitude: location.coords.latitude,
-        longitude: location.coords.longitude,
+        accuracy:
+          location.coords.accuracy,
+        latitude:
+          location.coords.latitude,
+        longitude:
+          location.coords.longitude,
       });
 
       const data =
@@ -697,20 +748,25 @@ export default function RidingScreen({ route, navigation }) {
           tripId,
           {
             requestId,
-            latitude: location.coords.latitude,
-            longitude: location.coords.longitude,
-            recordedAt: new Date(
-              locationTimestamp,
-            ).toISOString(),
+            latitude:
+              location.coords.latitude,
+            longitude:
+              location.coords.longitude,
+            recordedAt:
+              new Date(
+                locationTimestamp,
+              ).toISOString(),
             source: 'GPS',
           },
         );
 
       console.log('[GPS] PATCH 완료', {
         requestId,
-        completedAt: new Date().toISOString(),
+        completedAt:
+          new Date().toISOString(),
         durationMs:
-          Date.now() - patchStartedAt,
+          Date.now() -
+          patchStartedAt,
         skippedWhileInFlight:
           locationPatchSkippedCountRef.current,
       });
@@ -733,10 +789,9 @@ export default function RidingScreen({ route, navigation }) {
         toTripStatusSnapshot(data),
       );
 
-      // 예모님 재지적(2026-08-28, P1): TRIP_DONE·TRIP_NOT_FOUND에서도
-      // RESET_TRIP_KEEP_SEARCH와 같은 이유로 실제 stopBeaconScan()이
-      // 성공한 뒤에만 상태를 끄도록 순서를 지킨다.
-      if (data.tripStatus === 'TRIP_DONE') {
+      if (
+        data.tripStatus === 'TRIP_DONE'
+      ) {
         stopLocationWatch();
         await stopBeaconScanIfActive();
 
@@ -755,9 +810,11 @@ export default function RidingScreen({ route, navigation }) {
     } catch (error) {
       console.log('[GPS] PATCH 실패', {
         requestId,
-        failedAt: new Date().toISOString(),
+        failedAt:
+          new Date().toISOString(),
         durationMs:
-          Date.now() - patchStartedAt,
+          Date.now() -
+          patchStartedAt,
         locationAgeMs,
         error:
           error instanceof Error
@@ -772,7 +829,9 @@ export default function RidingScreen({ route, navigation }) {
         return;
       }
 
-      if (error instanceof ApiError) {
+      if (
+        error instanceof ApiError
+      ) {
         if (
           error.errorCode ===
           'INVALID_TRIP_STATUS'
@@ -827,30 +886,26 @@ export default function RidingScreen({ route, navigation }) {
     }
   };
 
-  // 예모님 재지적(2026-08-28, P1): TRIP_DONE·TRIP_NOT_FOUND에서
-  // RESET_TRIP을 dispatch하기 전에 실제 스캔이 켜져 있으면
-  // stopBeaconScan()을 먼저 호출해서 성공을 기다린다.
-  // 실패해도 RESET_TRIP은 진행하되(운행 자체는 끝난 상태),
-  // 다음 취소 감지 useEffect가 beaconScanActive가 남아있으면
-  // 다시 시도할 수 있도록 상태는 여기서 강제로 끄지 않는다.
-  const stopBeaconScanIfActive = async () => {
-    if (
-      !state.beaconScanActive ||
-      stoppingBeaconScanRef.current
-    ) {
-      return;
-    }
+  const stopBeaconScanIfActive =
+    async () => {
+      if (
+        !state.beaconScanActive ||
+        stoppingBeaconScanRef.current
+      ) {
+        return;
+      }
 
-    stoppingBeaconScanRef.current = true;
+      stoppingBeaconScanRef.current = true;
 
-    try {
-      await runStopBeaconScan(
-        '종료 시 비콘 스캔 중지를 상한까지 재시도했지만 실패, 취소 감지 로직이 다시 시도함:',
-      );
-    } finally {
-      stoppingBeaconScanRef.current = false;
-    }
-  };
+      try {
+        await runStopBeaconScan(
+          '종료 시 비콘 스캔 중지를 상한까지 재시도했지만 실패, 취소 감지 로직이 다시 시도함:',
+        );
+      } finally {
+        stoppingBeaconScanRef.current =
+          false;
+      }
+    };
 
   const handleAlightNavigation = () => {
     if (bellHandledRef.current) {
@@ -863,9 +918,12 @@ export default function RidingScreen({ route, navigation }) {
 
     navigation.navigate('Alight', {
       tripId,
-      bellRequestId: status.bellRequestId,
-      command: status.command,
-      guideMessage: status.guideMessage,
+      bellRequestId:
+        status.bellRequestId,
+      command:
+        status.command,
+      guideMessage:
+        status.guideMessage,
     });
   };
 

@@ -28,7 +28,7 @@ const runStopBeaconScanSingleFlight = createSingleFlight();
  * @param {string} deviceName
  * @returns {Promise<import('react-native-ble-plx').Device | null>} 연결 성공한 기기, 실패 시 null
  */
-function connectOneByName(deviceName) {
+function scanAndConnect(deviceName) {
   return new Promise((resolve) => {
     let settled = false;
 
@@ -56,6 +56,18 @@ function connectOneByName(deviceName) {
           const connected = await device.connect();
           await connected.discoverAllServicesAndCharacteristics();
           connectedDevices.set(deviceName, connected);
+
+          // 예모님 지적(2026-09-04): 여기서 Map 에 넣기만 하고 빼는 곳이 연결 해제
+          // 함수뿐이라, 버스 안에서 연결이 끊겨도 Map 에는 그대로 남았다. 그러면
+          // isBellConnected() 가 true 를 돌려주고 재연결을 건너뛰어, 정작 명령을
+          // 보낼 때 실패한다. 끊기는 순간 Map 에서 지운다.
+          connected.onDisconnected(() => {
+            if (connectedDevices.get(deviceName) === connected) {
+              connectedDevices.delete(deviceName);
+              console.log('[BLE] 연결 끊김:', deviceName);
+            }
+          });
+
           finish(connected);
         } catch (connectError) {
           console.log('[BLE] 연결 실패:', deviceName, connectError);
@@ -64,6 +76,41 @@ function connectOneByName(deviceName) {
       }
     });
   });
+}
+
+// 진행 중인 연결 요청. 같은 기기를 두 화면이 동시에 찾으면 스캔을 두 번 시작하지 않고
+// 먼저 시작한 요청의 결과를 함께 기다린다.
+const inFlightConnects = new Map();
+
+// BleManager 인스턴스가 하나뿐이라 스캔도 하나뿐이다. 한쪽의 stopDeviceScan() 이
+// 다른 쪽 스캔을 끊으므로, 서로 다른 기기라도 스캔은 한 번에 하나만 돌린다.
+let connectQueue = Promise.resolve();
+
+/**
+ * 한 기기를 연결한다. 같은 이름의 요청이 이미 진행 중이면 그 결과를 함께 기다리고,
+ * 다른 이름이면 앞선 스캔이 끝난 뒤에 시작한다.
+ *
+ * 예모님 지적(2026-09-04): 탑승 직후 재시도가 최장 33초 살아 있는데 그 사이 하차
+ * 화면으로 넘어가면 양쪽이 각자 connectBell() 을 부른다. 2026-08-13 에 한 번 없앴던
+ * 스캔 충돌이 화면 사이에서 되살아난다.
+ *
+ * @param {string} deviceName
+ * @returns {Promise<import('react-native-ble-plx').Device | null>}
+ */
+function connectOneByName(deviceName) {
+  const inFlight = inFlightConnects.get(deviceName);
+  if (inFlight) return inFlight;
+
+  const pending = connectQueue.then(() => scanAndConnect(deviceName));
+  connectQueue = pending.catch(() => undefined);
+
+  const tracked = pending.finally(() => {
+    if (inFlightConnects.get(deviceName) === tracked) {
+      inFlightConnects.delete(deviceName);
+    }
+  });
+  inFlightConnects.set(deviceName, tracked);
+  return tracked;
 }
 
 /**
@@ -116,8 +163,13 @@ export async function connectCane() {
  *   넘기면 이번 운행의 대상으로 기억해 두고, 이후 STOP_REQUEST 도 같은 이름으로 보낸다.
  */
 export async function connectBell(targetBeaconId) {
-  if (targetBeaconId) {
-    bellDeviceName = targetBeaconId;
+  // 예모님 지적(2026-09-04): 이 변수는 모듈 전역이라 운행이 끝나도 남는다. 예전에는
+  // targetBeaconId 가 없을 때 이전 값을 그대로 썼고, 그러면 다음 운행에서 비콘 조회가
+  // 실패했을 때 이전 버스의 보드에 붙으러 갔다. 값이 없으면 이전 값이 아니라 기본값으로
+  // 되돌린다.
+  bellDeviceName = targetBeaconId || DEFAULT_BELL_DEVICE_NAME;
+  if (!targetBeaconId) {
+    console.log('[BLE] targetBeaconId 없음 - 기본 하차벨 이름 사용:', bellDeviceName);
   }
   return connectOneByName(bellDeviceName);
 }
@@ -127,9 +179,26 @@ export function isCaneConnected() {
   return connectedDevices.has(CANE_DEVICE_NAME);
 }
 
-/** 하차벨(버스 비콘 겸용) 연결 여부를 확인한다. */
-export function isBellConnected() {
-  return connectedDevices.has(bellDeviceName);
+/**
+ * 하차벨(버스 비콘 겸용) 연결 여부를 실제 장치에 물어 확인한다.
+ *
+ * Map 에 있는지만 보면 안 된다. onDisconnected 가 놓친 경우(예: 앱이 잠깐 멈춘 사이의
+ * 해제)에도 Map 에는 남아 있을 수 있다. 명령을 보내기 직전에는 실제 상태를 확인하고,
+ * 끊겼으면 Map 에서 지워 다음 연결이 새로 스캔하게 한다.
+ */
+export async function isBellConnected() {
+  const device = connectedDevices.get(bellDeviceName);
+  if (!device) return false;
+
+  try {
+    const connected = await device.isConnected();
+    if (!connected) connectedDevices.delete(bellDeviceName);
+    return connected;
+  } catch (error) {
+    console.log('[BLE] 하차벨 연결 확인 실패:', error);
+    connectedDevices.delete(bellDeviceName);
+    return false;
+  }
 }
 
 /** 이번 운행에서 쓰는 하차벨 보드 이름. 연결 해제나 진단에 쓴다. */
