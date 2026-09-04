@@ -119,6 +119,7 @@ export type AppAction =
   | { type: "RESET_TRIP_KEEP_SEARCH" }
   | { type: "RESET_TRIP" }
   | { type: "SET_BLE_MOCK_STATUS"; isMock: boolean }
+  | { type: "SET_CANE_READY"; ready: boolean }
   | { type: "SET_BEACON_SCAN_ACTIVE"; active: boolean }
   | {
       // 예모님 지적(2026-08-28): 음성 end_trip(사용자 취소) 성공 시,
