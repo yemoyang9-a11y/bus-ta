@@ -8,6 +8,8 @@ import { useTrip } from '../state/TripContext';
 import { isScreenTripActive } from '../state/trip-transition';
 import { useRealtime } from '../realtime/RealtimeProvider';
 import { startBeaconScan, stopBeaconScan } from '../ble/bleManager';
+import { canStartBeaconScan } from '../ble/beacon-scan-gate';
+import { startBeaconScanWithRetry, stopBeaconScanWithRetry } from '../ble/beacon-scan-controller';
 
 const INITIAL_STATUS = {
   currentStation: null,
@@ -63,6 +65,33 @@ export default function RidingScreen({ route, navigation }) {
       }
     }
   };
+
+  // 비콘 스캔 재시도는 effect 가 끝난 뒤에도 이어진다. 그 사이 탑승이 확정되거나
+  // 운행이 바뀌어도 콜백이 렌더 당시의 값을 계속 보면 안 되므로 ref 로 최신 값을
+  // 들고 있는다.
+  const activeTripIdRef = useRef(state.tripId);
+  activeTripIdRef.current = state.tripId;
+  const boardingConfirmedAtRef = useRef(boardingConfirmedAt);
+  boardingConfirmedAtRef.current = boardingConfirmedAt;
+
+  const waitBeforeRetry = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  // 스캔 중지는 경로가 넷이다(늦은 성공 되돌리기, 탑승 확정, 취소, 운행 종료).
+  // 넷 다 첫 실패에서 멈추면 실제 장치는 켜진 채 남는다. 하나로 모아 제한 재시도한다.
+  //
+  // 실패했을 때 beaconScanActive 를 끄지 않는 것이 핵심이다. 실제로는 켜져 있을 수
+  // 있으므로 켜진 것으로 남겨 두어야 뒤이은 종료 경로가 다시 끈다.
+  const runStopBeaconScan = (label) =>
+    stopBeaconScanWithRetry({
+      stopBeaconScan,
+      onStopped: () => {
+        dispatch({ type: 'SET_BEACON_SCAN_ACTIVE', active: false });
+      },
+      onGaveUp: (error) => {
+        console.log(label, error);
+      },
+      wait: waitBeforeRetry,
+    });
 
   // 예모님 재지적(2026-08-28, P1): 취소된 이전 운행에서 stoppedRef.current = true가
   // 남아있으면, 같은 Riding 화면 인스턴스가 재사용될 때(A 취소 후 B 선택) 새 tripId로도
@@ -124,34 +153,70 @@ export default function RidingScreen({ route, navigation }) {
   }, [status.guideMessage, status.remainingStations, isConnected]);
 
   // 효린님 확인(2026-08-28): shouldScanBeacon이 true이고 아직 스캔 중이 아니면 자동으로
-  // startBeaconScan()을 호출한다. 음성 경로에서는 아직 RouteListScreen 즉시 시작 로직이
-  // 남아있으므로 중복 시작 방지는 startBeaconScan/connectAll 쪽 멱등성에 맡긴다.
+  // startBeaconScan()을 호출한다. 스캔을 시작하는 곳은 앱 전체에서 여기 하나다.
+  //
+  // 예모님 지적(2026-09-04, PR #47 P1): 서버 신호가 지팡이 준비보다 먼저 도착할 수
+  // 있다. 그때 startBeaconScan()은 BLE_NOT_CONNECTED로 실패하는데, 실패해도
+  // beaconScanActive는 false 그대로이고 shouldScanBeacon도 계속 true라서 이 effect의
+  // 의존값이 바뀌지 않는다. 그러면 다시 시도되지 않고 스캔이 영영 안 켜진다.
+  // 그래서 caneReady를 조건과 의존값에 함께 넣는다. 신호가 먼저 와도 준비가 끝나는
+  // 순간 값이 바뀌면서 그때 시작된다.
   useEffect(() => {
     if (
-      status.shouldScanBeacon &&
-      !state.beaconScanActive &&
-      !startingBeaconScanRef.current
+      canStartBeaconScan({
+        shouldScanBeacon: status.shouldScanBeacon,
+        caneReady: state.caneReady,
+        beaconScanActive: state.beaconScanActive,
+        starting: startingBeaconScanRef.current,
+      })
     ) {
       startingBeaconScanRef.current = true;
+      const attemptTripId = tripId;
 
-      startBeaconScan()
-        .then(() => {
-          dispatch({
-            type: 'SET_BEACON_SCAN_ACTIVE',
-            active: true,
-          });
-        })
-        .catch((error) => {
-          console.log(
-            '신호 기반 비콘 스캔 시작 실패, 다음 주기에 재시도:',
-            error,
+      // 이 운행에서 아직 스캔이 필요한지. 재시도를 기다리는 동안, 또는 명령이
+      // 오가는 동안 탑승·취소가 끼어들 수 있다. 그때 늦게 성공한 요청이 스캔을
+      // 켜면 탑승한 뒤에도 지팡이가 계속 진동한다.
+      //
+      // 판단은 렌더 당시 값이 아니라 ref 로 최신 값을 본다. 재시도는 effect 가
+      // 끝난 뒤에도 이어지므로 닫힌 값을 쓰면 탑승 확정을 놓친다.
+      const isStillWanted = () =>
+        !stoppedRef.current &&
+        isScreenTripActive(activeTripIdRef.current, attemptTripId) &&
+        !boardingConfirmedAtRef.current;
+
+      startBeaconScanWithRetry({
+        startBeaconScan,
+        isStillWanted,
+        onStarted: () => {
+          dispatch({ type: 'SET_BEACON_SCAN_ACTIVE', active: true });
+        },
+        onStartedTooLate: () =>
+          // 이미 끝난 대기 구간이다. 켜진 스캔을 되돌리고 완료를 기다린다.
+          stopBeaconScanWithRetry({
+            stopBeaconScan,
+            onStopped: () => undefined,
+            onGaveUp: (error) => {
+              console.log('늦게 성공한 스캔을 되돌리지 못함:', error);
+              // 앱은 이 스캔을 켜졌다고 기록한 적이 없다. 여기서 끝내면 실제 장치는
+              // 켜져 있는데 상태는 꺼짐이라, 탑승·취소 종료 경로도 다시 끄지 않는다.
+              // 켜진 것으로 남겨 그 경로들이 이어서 끄게 한다.
+              dispatch({ type: 'SET_BEACON_SCAN_ACTIVE', active: true });
+            },
+            wait: waitBeforeRetry,
+          }),
+        onGaveUp: (error) => {
+          console.log('비콘 스캔 시작을 상한까지 재시도했지만 실패:', error);
+          Speech.speak(
+            '지팡이 진동 안내를 시작하지 못했습니다. 정류장에 계신 주변 분께 버스가 오면 알려 달라고 요청해 주세요.',
+            { language: 'ko' },
           );
-        })
-        .finally(() => {
-          startingBeaconScanRef.current = false;
-        });
+        },
+        wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      }).finally(() => {
+        startingBeaconScanRef.current = false;
+      });
     }
-  }, [status.shouldScanBeacon, state.beaconScanActive]);
+  }, [status.shouldScanBeacon, state.caneReady, state.beaconScanActive]);
 
   // 정민님 확인(2026-08-12): 탑승 완료 시 비콘 스캔 중지
   useEffect(() => {
@@ -162,19 +227,7 @@ export default function RidingScreen({ route, navigation }) {
     ) {
       stoppingBeaconScanRef.current = true;
 
-      stopBeaconScan()
-        .then(() => {
-          dispatch({
-            type: 'SET_BEACON_SCAN_ACTIVE',
-            active: false,
-          });
-        })
-        .catch((error) => {
-          console.log(
-            '비콘 스캔 중지 실패, 다음 주기에 재시도:',
-            error,
-          );
-        })
+      runStopBeaconScan('탑승 확정 후 비콘 스캔 중지를 상한까지 재시도했지만 실패:')
         .finally(() => {
           stoppingBeaconScanRef.current = false;
         });
@@ -198,19 +251,7 @@ export default function RidingScreen({ route, navigation }) {
       ) {
         stoppingBeaconScanRef.current = true;
 
-        stopBeaconScan()
-          .then(() => {
-            dispatch({
-              type: 'SET_BEACON_SCAN_ACTIVE',
-              active: false,
-            });
-          })
-          .catch((error) => {
-            console.log(
-              '취소 후 비콘 스캔 중지 실패:',
-              error,
-            );
-          })
+        runStopBeaconScan('취소 후 비콘 스캔 중지를 상한까지 재시도했지만 실패:')
           .finally(() => {
             stoppingBeaconScanRef.current = false;
           });
@@ -746,16 +787,8 @@ export default function RidingScreen({ route, navigation }) {
     stoppingBeaconScanRef.current = true;
 
     try {
-      await stopBeaconScan();
-
-      dispatch({
-        type: 'SET_BEACON_SCAN_ACTIVE',
-        active: false,
-      });
-    } catch (error) {
-      console.log(
-        '종료 시 비콘 스캔 중지 실패, 취소 감지 로직이 재시도함:',
-        error,
+      await runStopBeaconScan(
+        '종료 시 비콘 스캔 중지를 상한까지 재시도했지만 실패, 취소 감지 로직이 다시 시도함:',
       );
     } finally {
       stoppingBeaconScanRef.current = false;

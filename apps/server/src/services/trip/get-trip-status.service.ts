@@ -189,9 +189,15 @@ export async function getTripStatus(
 /**
  * 비콘 스캔을 시작할지.
  *
- * 조회 자체를 못 한 경우(UPSTREAM_ERROR)와 예상 시간만 없는 경우(NO_PREDICTION)는
+ * 조회 자체를 못 한 경우(UPSTREAM_ERROR)와 조회는 됐지만 예상 시간이 없는 경우는
  * 켠다. 값이 없다고 막으면 비콘 감지가 영영 시작되지 않아 자동 탑승 판정이 동작하지
  * 않는다. 배터리보다 탑승을 놓치지 않는 쪽을 우선한다.
+ *
+ * UPSTREAM_ERROR 는 arrivals 가 비어 있지 않을 수 있다. arrival-cache 가 조회에
+ * 실패해도 직전 성공 값을 함께 돌려주기 때문이다. 그 값은 지금 남은 시간의 근거가
+ * 되지 못하므로 스캔 판단에 쓰지 않는다. 예를 들어 캐시에 10분이 남아 있으면
+ * "아직 멀었다"로 읽혀 스캔이 꺼지는데, 실제로는 버스가 눈앞에 와 있어도 지팡이가
+ * 진동하지 않는다. 조회에 실패했다는 사실이 캐시된 숫자보다 우선한다.
  *
  * 다만 NO_VEHICLE 은 "조회에 성공했고 지금 오는 차가 없다"는 확인된 사실이다.
  * 이때까지 켜 두면 올 차도 없는데 배터리만 쓴다.
@@ -201,6 +207,7 @@ function shouldStartBeaconScan(
   arrivals: ArrivalInfo[],
 ): boolean {
   if (arrivalStatus === "NO_VEHICLE") return false;
+  if (arrivalStatus === "UPSTREAM_ERROR") return true;
   return shouldScanBeacon(arrivals[0]?.predictedArrivalMinutes ?? null);
 }
 
