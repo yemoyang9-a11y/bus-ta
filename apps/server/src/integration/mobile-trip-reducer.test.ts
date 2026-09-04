@@ -92,3 +92,57 @@ test("지팡이 준비 완료와 스캔 시작 신호를 각각 기록한다", (
   assert.equal(scanning.beaconScanActive, true);
   assert.equal(scanning.caneReady, true, "스캔 시작이 준비 상태를 지우지 않는다");
 });
+
+// ─────────────────────────────────────────────
+// 하차벨 연결 상태.
+//
+// 하차벨 연결을 탑승 확정 뒤로 옮기면서, 어떤 보드에 붙어야 하는지(targetBeaconId)와
+// 붙었는지(bellConnected)를 화면 사이에서 공유해야 한다. 특히 bellConnected 의 null 은
+// "실패"가 아니라 "아직 시도하지 않음"이다. 이 구분이 없으면 탑승 확정 effect 가
+// 매 렌더마다 다시 연결을 시도한다.
+// ─────────────────────────────────────────────
+
+test("서버가 내려준 하차벨 보드 이름을 기억한다", () => {
+  const next = tripReducer(initialState, {
+    type: "SET_TARGET_BEACON_ID",
+    targetBeaconId: "BUS_35_001",
+  });
+
+  assert.equal(next.targetBeaconId, "BUS_35_001");
+});
+
+test("하차벨 연결 여부는 시도 전에는 null 이다", () => {
+  assert.equal(initialState.bellConnected, null);
+
+  const connected = tripReducer(initialState, {
+    type: "SET_BELL_CONNECTED",
+    connected: true,
+  });
+  assert.equal(connected.bellConnected, true);
+
+  const failed = tripReducer(initialState, {
+    type: "SET_BELL_CONNECTED",
+    connected: false,
+  });
+  assert.equal(failed.bellConnected, false);
+});
+
+test("운행이 끝나면 하차벨 연결 상태도 초기화된다", () => {
+  const onBus = tripReducer(
+    tripReducer(initialState, {
+      type: "SET_TARGET_BEACON_ID",
+      targetBeaconId: "BUS_35_001",
+    }),
+    { type: "SET_BELL_CONNECTED", connected: true },
+  );
+
+  // 다음 운행은 다른 노선일 수 있다. 이전 버스의 보드 이름과 연결 상태가 남으면
+  // 새 운행에서 엉뚱한 보드에 붙었다고 판단해 다시 연결하지 않는다.
+  const afterCancel = tripReducer(onBus, { type: "RESET_TRIP_KEEP_SEARCH" });
+  assert.equal(afterCancel.targetBeaconId, null);
+  assert.equal(afterCancel.bellConnected, null);
+
+  const afterDone = tripReducer(onBus, { type: "RESET_TRIP" });
+  assert.equal(afterDone.targetBeaconId, null);
+  assert.equal(afterDone.bellConnected, null);
+});

@@ -5,7 +5,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import { apiClient, ApiError } from '../api/client';
 import { useTrip } from '../state/TripContext';
 import { useRealtime } from '../realtime/RealtimeProvider';
-import { sendStopRequest, subscribeBellResult, disconnect } from '../ble/bleManager';
+import { connectBell, getBellDeviceName, isBellConnected, sendStopRequest, subscribeBellResult, disconnect } from '../ble/bleManager';
 
 // 정민님 확인(2026-08-12): 하차벨 응답을 못 받을 경우를 대비한 대기 시간
 const BELL_RESULT_TIMEOUT_MS = 10000;
@@ -41,7 +41,9 @@ export default function AlightScreen({ route, navigation }) {
       // 유나님 확인(2026-08-17): Realtime 연결 중에는 로컬 TTS를 생략하고 바로 BLE 처리로 넘어간다.
       // Realtime 미연결일 때만 기존 고정 TTS로 대체 안내한다.
       if (isConnected) {
-        requestActualBellStop();
+        requestActualBellStop().catch((error) => {
+          console.log('하차벨 처리 실패:', error);
+        });
         return () => {
           isMountedRef.current = false;
           if (timeoutIdRef.current) {
@@ -57,7 +59,9 @@ export default function AlightScreen({ route, navigation }) {
         Speech.speak(ttsMessage, {
           language: 'ko',
           onDone: () => {
-            requestActualBellStop();
+            requestActualBellStop().catch((error) => {
+              console.log('하차벨 처리 실패:', error);
+            });
           },
         });
       }, 500);
@@ -82,7 +86,28 @@ export default function AlightScreen({ route, navigation }) {
     sendBellResult(outcome === 'success' ? 'SUCCESS' : 'FAIL', isMock);
   };
 
-  const requestActualBellStop = () => {
+  const requestActualBellStop = async () => {
+    // 하차벨은 탑승 확정 직후 RidingScreen 이 이미 연결해 둔다. 다만 버스 안에서
+    // 흔들리다 끊겼을 수 있어, 명령을 보내기 전에 한 번 더 확인하고 필요하면
+    // 다시 연결한다. 여기서는 곧 내려야 하므로 재시도를 반복하지 않고 한 번만
+    // 시도한다(스캔 제한 시간 10초).
+    if (!isBellConnected()) {
+      try {
+        await connectBell(state.targetBeaconId ?? undefined);
+      } catch (error) {
+        console.log('하차벨 재연결 실패:', error);
+      }
+    }
+
+    if (!isMountedRef.current) return;
+
+    if (!isBellConnected()) {
+      // 실제 하차벨이 없으므로 mock 으로 기록한다. 사용자에게는 아래 실패 안내가 간다.
+      console.log('하차벨 미연결 - STOP_REQUEST 를 보내지 못함');
+      finalizeBellOutcome('fail', true);
+      return;
+    }
+
     const isMock = state.bleIsMock ?? true;
 
     const handleBellResult = (result) => {
@@ -182,7 +207,7 @@ export default function AlightScreen({ route, navigation }) {
     }
     unsubscribeRef.current();
     disconnect('White_cane').catch(() => {});
-    disconnect('BUS_35_001').catch(() => {});
+    disconnect(getBellDeviceName()).catch(() => {});
     dispatch({ type: 'RESET_TRIP' });
     navigation.navigate('Main');
   };
