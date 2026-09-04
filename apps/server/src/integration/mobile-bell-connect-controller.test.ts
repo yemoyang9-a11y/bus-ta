@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   MAX_BELL_CONNECT_ATTEMPTS,
   connectBellWithRetry,
+  disconnectBellWithRetry,
   type BellConnectDeps,
 } from "../../../mobile/src/ble/bell-connect-controller.js";
 
@@ -175,4 +176,54 @@ test("시작할 때 이미 운행이 끝났으면 연결을 시도조차 하지 
 
   assert.equal(calls.attempts, 0);
   assert.equal(calls.gaveUp, 0);
+});
+
+
+// ─────────────────────────────────────────────
+// 늦게 성공한 연결 되돌리기.
+//
+// 예모님 지적(2026-09-04): 해제가 한 번 실패하면 로그만 남기고 끝나서, 끝난 운행의
+// 연결이 다음 운행까지 남는다. 앞 PR 에서 고친 "늦은 START 정리 실패"와 같은 구멍이다.
+// ─────────────────────────────────────────────
+
+test("연결 해제가 한 번 실패해도 다시 시도해 끊는다", async () => {
+  let attempt = 0;
+  let gaveUp = 0;
+  const waits: number[] = [];
+
+  await disconnectBellWithRetry({
+    disconnectBell: async () => {
+      attempt += 1;
+      if (attempt === 1) throw new Error("cancelConnection 실패");
+    },
+    onGaveUp: () => {
+      gaveUp += 1;
+    },
+    wait: async (ms) => {
+      waits.push(ms);
+    },
+  });
+
+  assert.equal(attempt, 2);
+  assert.equal(gaveUp, 0);
+  assert.deepEqual(waits, [1000]);
+});
+
+test("연결 해제가 상한까지 실패하면 알린다", async () => {
+  let attempt = 0;
+  let gaveUp = 0;
+
+  await disconnectBellWithRetry({
+    disconnectBell: async () => {
+      attempt += 1;
+      throw new Error("cancelConnection 실패");
+    },
+    onGaveUp: () => {
+      gaveUp += 1;
+    },
+    wait: async () => undefined,
+  });
+
+  assert.equal(attempt, MAX_BELL_CONNECT_ATTEMPTS);
+  assert.equal(gaveUp, 1);
 });
