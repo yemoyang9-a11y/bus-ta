@@ -10,7 +10,7 @@ import { useRealtime } from '../realtime/RealtimeProvider';
 import { connectBell, disconnect, getBellDeviceName, startBeaconScan, stopBeaconScan } from '../ble/bleManager';
 import { canStartBeaconScan } from '../ble/beacon-scan-gate';
 import { startBeaconScanWithRetry, stopBeaconScanWithRetry } from '../ble/beacon-scan-controller';
-import { connectBellWithRetry } from '../ble/bell-connect-controller';
+import { connectBellWithRetry, disconnectBellWithRetry } from '../ble/bell-connect-controller';
 
 const INITIAL_STATUS = {
   currentStation: null,
@@ -270,14 +270,16 @@ export default function RidingScreen({ route, navigation }) {
       onConnected: () => {
         dispatch({ type: 'SET_BELL_CONNECTED', connected: true });
       },
-      onConnectedTooLate: async () => {
-        // 끝난 운행에 늦게 붙었다. 다음 운행에 남지 않도록 끊는다.
-        try {
-          await disconnect(getBellDeviceName());
-        } catch (error) {
-          console.log('늦게 성공한 하차벨 연결을 끊지 못함:', error);
-        }
-      },
+      onConnectedTooLate: () =>
+        // 끝난 운행에 늦게 붙었다. 다음 운행에 남지 않도록 끊는다. 한 번 실패하고
+        // 끝내면 이전 버스의 연결이 다음 운행까지 남는다.
+        disconnectBellWithRetry({
+          disconnectBell: () => disconnect(getBellDeviceName()),
+          onGaveUp: (error) => {
+            console.log('늦게 성공한 하차벨 연결을 상한까지 끊지 못함:', error);
+          },
+          wait: waitBeforeRetry,
+        }),
       onGaveUp: () => {
         dispatch({ type: 'SET_BELL_CONNECTED', connected: false });
         // 조용히 넘어가면 사용자는 내릴 때가 되어서야 벨이 안 눌린다는 것을 안다.

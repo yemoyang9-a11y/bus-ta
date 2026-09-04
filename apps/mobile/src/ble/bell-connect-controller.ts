@@ -50,6 +50,34 @@ export const MAX_BELL_CONNECT_ATTEMPTS = 3;
 /** 재시도 간격(ms). 1초 → 2초. */
 export const BELL_CONNECT_RETRY_DELAYS_MS = [1000, 2000];
 
+/**
+ * 하차벨 연결 해제를 제한된 횟수만큼 재시도한다.
+ *
+ * 예모님 지적(2026-09-04): 늦게 성공한 연결을 되돌릴 때 한 번 실패하면 로그만 남기고
+ * 끝났다. 그러면 끝난 운행의 연결이 다음 운행까지 남는다. 앞 PR 의 "늦은 START 정리
+ * 실패"와 같은 종류의 구멍이다.
+ */
+export async function disconnectBellWithRetry(deps: {
+  disconnectBell: () => Promise<void>;
+  onGaveUp: (error: unknown) => void;
+  wait: (ms: number) => Promise<void>;
+}): Promise<void> {
+  for (let attempt = 0; attempt < MAX_BELL_CONNECT_ATTEMPTS; attempt += 1) {
+    try {
+      await deps.disconnectBell();
+      return;
+    } catch (error) {
+      const isLastAttempt = attempt === MAX_BELL_CONNECT_ATTEMPTS - 1;
+      if (isLastAttempt) {
+        deps.onGaveUp(error);
+        return;
+      }
+
+      await deps.wait(BELL_CONNECT_RETRY_DELAYS_MS[attempt] ?? 2000);
+    }
+  }
+}
+
 export async function connectBellWithRetry(
   deps: BellConnectDeps,
 ): Promise<void> {
