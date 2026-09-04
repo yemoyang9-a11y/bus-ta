@@ -10,20 +10,24 @@
  * 준비가 끝나는 순간 값이 바뀌면서 그때 시작된다.
  *
  * 판단만 하고 부수효과는 없다. 화면에서 떼어내야 테스트할 수 있어서 분리했다.
- *
- * @param {object} input
- * @param {boolean} input.shouldScanBeacon 서버가 내려준 스캔 시작 신호
- * @param {boolean} input.caneReady 지팡이 연결과 대상 비콘 지정이 끝났는지
- * @param {boolean} input.beaconScanActive 이미 스캔이 돌고 있는지
- * @param {boolean} input.starting 지금 시작 요청이 진행 중인지
- * @returns {boolean}
  */
+export type BeaconScanGateInput = {
+  /** 서버가 내려준 스캔 시작 신호. 도착 예정 5분 이하일 때만 true 다. */
+  shouldScanBeacon: boolean;
+  /** 지팡이 연결과 대상 비콘 지정이 끝났는지. */
+  caneReady: boolean;
+  /** 이미 스캔이 돌고 있는지. */
+  beaconScanActive: boolean;
+  /** 지금 시작 요청이 진행 중인지. */
+  starting: boolean;
+};
+
 export function canStartBeaconScan({
   shouldScanBeacon,
   caneReady,
   beaconScanActive,
   starting,
-}) {
+}: BeaconScanGateInput): boolean {
   if (!shouldScanBeacon) return false;
   // 지팡이가 대상 비콘을 모르는 상태에서 스캔 명령을 보내면 실패한다.
   if (!caneReady) return false;
