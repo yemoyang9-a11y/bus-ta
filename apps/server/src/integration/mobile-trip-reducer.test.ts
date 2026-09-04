@@ -89,6 +89,7 @@ test("지팡이 준비 완료와 스캔 시작 신호를 각각 기록한다", (
     type: "SET_BEACON_SCAN_ACTIVE",
     active: true,
   });
+
   assert.equal(scanning.beaconScanActive, true);
   assert.equal(scanning.caneReady, true, "스캔 시작이 준비 상태를 지우지 않는다");
 });
@@ -103,7 +104,11 @@ test("지팡이 준비 완료와 스캔 시작 신호를 각각 기록한다", (
 
 const arrivalAfter = (minutes: number) => ({
   predictedArrivalMinutes: minutes,
-  occupancy: { type: "UNAVAILABLE", congestionLevel: null, remainingSeats: null },
+  occupancy: {
+    type: "UNAVAILABLE",
+    congestionLevel: null,
+    remainingSeats: null,
+  },
 });
 
 /** 대기 중 GET /status 응답 — 서버는 이때만 도착정보 네 필드를 싣는다. */
@@ -155,6 +160,7 @@ test("도착정보가 없는 PATCH 응답은 직전 GET 의 최신 도착정보�
     type: "UPDATE_TRIP_STATUS",
     status: waitingGetResponse,
   });
+
   const afterPatch = tripReducer(afterGet, {
     type: "UPDATE_TRIP_STATUS",
     status: patchResponse,
@@ -171,9 +177,13 @@ test("도착정보가 새로 오면 이전 값이 아니라 최신 값으로 바
     type: "UPDATE_TRIP_STATUS",
     status: waitingGetResponse,
   });
+
   const afterRefresh = tripReducer(afterGet, {
     type: "UPDATE_TRIP_STATUS",
-    status: { ...waitingGetResponse, arrivals: [arrivalAfter(2)] },
+    status: {
+      ...waitingGetResponse,
+      arrivals: [arrivalAfter(2)],
+    },
   });
 
   assert.deepEqual(afterRefresh.arrivals, [arrivalAfter(2)]);
@@ -186,6 +196,7 @@ test("탑승이 확정돼 대기 상태를 벗어나면 도착정보를 명시�
     type: "UPDATE_TRIP_STATUS",
     status: waitingGetResponse,
   });
+
   const afterBoarding = tripReducer(afterGet, {
     type: "UPDATE_TRIP_STATUS",
     status: {
@@ -208,6 +219,7 @@ test("CONFIRM_BOARDING 도 도착정보를 정리한다", () => {
     type: "UPDATE_TRIP_STATUS",
     status: waitingGetResponse,
   });
+
   const afterConfirm = tripReducer(afterGet, {
     type: "CONFIRM_BOARDING",
     tripStatus: "ON_BUS",
@@ -227,9 +239,80 @@ test("운행을 취소하면 도착정보도 함께 비운다", () => {
     status: waitingGetResponse,
   });
 
-  const after = tripReducer(afterGet, { type: "RESET_TRIP_KEEP_SEARCH" });
+  const after = tripReducer(afterGet, {
+    type: "RESET_TRIP_KEEP_SEARCH",
+  });
 
-  assert.equal(after.arrivals, null, "취소한 운행의 도착정보를 다음 선택으로 넘기지 않는다");
+  assert.equal(
+    after.arrivals,
+    null,
+    "취소한 운행의 도착정보를 다음 선택으로 넘기지 않는다",
+  );
   assert.equal(after.arrivalStatus, null);
   assert.equal(after.shouldScanBeacon, false);
+});
+
+// ─────────────────────────────────────────────
+// 하차벨 연결 상태.
+//
+// 하차벨 연결을 탑승 확정 뒤로 옮기면서, 어떤 보드에 붙어야 하는지(targetBeaconId)와
+// 붙었는지(bellConnected)를 화면 사이에서 공유해야 한다. 특히 bellConnected 의 null 은
+// "실패"가 아니라 "아직 시도하지 않음"이다. 이 구분이 없으면 탑승 확정 effect 가
+// 매 렌더마다 다시 연결을 시도한다.
+// ─────────────────────────────────────────────
+
+test("서버가 내려준 하차벨 보드 이름을 기억한다", () => {
+  const next = tripReducer(initialState, {
+    type: "SET_TARGET_BEACON_ID",
+    targetBeaconId: "BUS_35_001",
+  });
+
+  assert.equal(next.targetBeaconId, "BUS_35_001");
+});
+
+test("하차벨 연결 여부는 시도 전에는 null 이다", () => {
+  assert.equal(initialState.bellConnected, null);
+
+  const connected = tripReducer(initialState, {
+    type: "SET_BELL_CONNECTED",
+    connected: true,
+  });
+
+  assert.equal(connected.bellConnected, true);
+
+  const failed = tripReducer(initialState, {
+    type: "SET_BELL_CONNECTED",
+    connected: false,
+  });
+
+  assert.equal(failed.bellConnected, false);
+});
+
+test("운행이 끝나면 하차벨 연결 상태도 초기화된다", () => {
+  const onBus = tripReducer(
+    tripReducer(initialState, {
+      type: "SET_TARGET_BEACON_ID",
+      targetBeaconId: "BUS_35_001",
+    }),
+    {
+      type: "SET_BELL_CONNECTED",
+      connected: true,
+    },
+  );
+
+  // 다음 운행은 다른 노선일 수 있다. 이전 버스의 보드 이름과 연결 상태가 남으면
+  // 새 운행에서 엉뚱한 보드에 붙었다고 판단해 다시 연결하지 않는다.
+  const afterCancel = tripReducer(onBus, {
+    type: "RESET_TRIP_KEEP_SEARCH",
+  });
+
+  assert.equal(afterCancel.targetBeaconId, null);
+  assert.equal(afterCancel.bellConnected, null);
+
+  const afterDone = tripReducer(onBus, {
+    type: "RESET_TRIP",
+  });
+
+  assert.equal(afterDone.targetBeaconId, null);
+  assert.equal(afterDone.bellConnected, null);
 });

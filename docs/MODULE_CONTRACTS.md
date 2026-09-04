@@ -36,7 +36,7 @@
 
 ## 하드웨어 연동
 
-`GET /api/beacons?routeNo=`의 `targetBeaconId`는 스마트지팡이 대상 식별에 사용한다. 프론트 BLE는 수집한 신호로 자동 탑승을 최종 판정한 뒤 `AUTO_DETECTED`로 공통 탑승확정 API를 호출한다. 원시 RSSI를 백엔드에 저장하는 공개 계약은 만들지 않는다. 하차벨 명령은 탑승확정 이후 `PATCH /status` 응답의 `shouldTriggerBell`, `bellRequestId`, `command: STOP_REQUEST`를 사용할 때만 전송한다.
+`GET /api/beacons?routeNo=`의 `targetBeaconId`는 스마트지팡이 대상 식별에 사용한다. 프론트 BLE는 수집한 신호로 자동 탑승을 최종 판정한 뒤 `AUTO_DETECTED`로 공통 탑승확정 API를 호출한다. 원시 RSSI를 백엔드에 저장하는 공개 계약은 만들지 않는다. 하차벨 명령은 탑승확정 이후 `PATCH /status` 응답의 `shouldTriggerBell`, `bellRequestId`, `command: STOP_REQUEST`를 사용할 때만 전송한다. 하차벨 보드의 BLE 연결도 탑승확정 이후에 시도한다(2026-09-04 확정). 정류장에서 대기하는 동안에는 버스가 아직 없어 연결이 반드시 실패하고, 그 실패를 그대로 두면 탑승 후에도 재시도되지 않는다. 연결 대상 이름은 `GET /api/beacons?routeNo=`의 `targetBeaconId`를 사용하며 앱에 고정하지 않는다. 제한 횟수까지 실패하면 사용자에게 기사님께 직접 말씀드리라고 안내한다.
 
 ## 변경 영향
 
