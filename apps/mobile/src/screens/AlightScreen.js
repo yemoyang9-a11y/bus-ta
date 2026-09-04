@@ -91,6 +91,8 @@ export default function AlightScreen({ route, navigation }) {
     const isMock = state.bleIsMock ?? true;
 
     const handleBellResult = (result) => {
+      console.log('[BLE] 하차벨 결과 Notify 수신:', result);
+
       if (timeoutIdRef.current) {
         clearTimeout(timeoutIdRef.current);
         timeoutIdRef.current = null;
