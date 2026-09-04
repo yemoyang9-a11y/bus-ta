@@ -9,6 +9,7 @@ import { isScreenTripActive } from '../state/trip-transition';
 import { useRealtime } from '../realtime/RealtimeProvider';
 import { startBeaconScan, stopBeaconScan } from '../ble/bleManager';
 import { canStartBeaconScan } from '../ble/beacon-scan-gate';
+import { startBeaconScanWithRetry } from '../ble/beacon-scan-controller';
 
 const INITIAL_STATUS = {
   currentStation: null,
@@ -64,6 +65,14 @@ export default function RidingScreen({ route, navigation }) {
       }
     }
   };
+
+  // 비콘 스캔 재시도는 effect 가 끝난 뒤에도 이어진다. 그 사이 탑승이 확정되거나
+  // 운행이 바뀌어도 콜백이 렌더 당시의 값을 계속 보면 안 되므로 ref 로 최신 값을
+  // 들고 있는다.
+  const activeTripIdRef = useRef(state.tripId);
+  activeTripIdRef.current = state.tripId;
+  const boardingConfirmedAtRef = useRef(boardingConfirmedAt);
+  boardingConfirmedAtRef.current = boardingConfirmedAt;
 
   // 예모님 재지적(2026-08-28, P1): 취소된 이전 운행에서 stoppedRef.current = true가
   // 남아있으면, 같은 Riding 화면 인스턴스가 재사용될 때(A 취소 후 B 선택) 새 tripId로도
@@ -143,23 +152,40 @@ export default function RidingScreen({ route, navigation }) {
       })
     ) {
       startingBeaconScanRef.current = true;
+      const attemptTripId = tripId;
 
-      startBeaconScan()
-        .then(() => {
-          dispatch({
-            type: 'SET_BEACON_SCAN_ACTIVE',
-            active: true,
-          });
-        })
-        .catch((error) => {
-          console.log(
-            '신호 기반 비콘 스캔 시작 실패, 다음 주기에 재시도:',
-            error,
+      // 이 운행에서 아직 스캔이 필요한지. 재시도를 기다리는 동안, 또는 명령이
+      // 오가는 동안 탑승·취소가 끼어들 수 있다. 그때 늦게 성공한 요청이 스캔을
+      // 켜면 탑승한 뒤에도 지팡이가 계속 진동한다.
+      //
+      // 판단은 렌더 당시 값이 아니라 ref 로 최신 값을 본다. 재시도는 effect 가
+      // 끝난 뒤에도 이어지므로 닫힌 값을 쓰면 탑승 확정을 놓친다.
+      const isStillWanted = () =>
+        !stoppedRef.current &&
+        isScreenTripActive(activeTripIdRef.current, attemptTripId) &&
+        !boardingConfirmedAtRef.current;
+
+      startBeaconScanWithRetry({
+        startBeaconScan,
+        isStillWanted,
+        onStarted: () => {
+          dispatch({ type: 'SET_BEACON_SCAN_ACTIVE', active: true });
+        },
+        onStartedTooLate: () => {
+          // 이미 끝난 대기 구간이다. 켜진 스캔을 되돌린다.
+          stopBeaconScan().catch(() => undefined);
+        },
+        onGaveUp: (error) => {
+          console.log('비콘 스캔 시작을 상한까지 재시도했지만 실패:', error);
+          Speech.speak(
+            '지팡이 진동 안내를 시작하지 못했습니다. 정류장에 계신 주변 분께 버스가 오면 알려 달라고 요청해 주세요.',
+            { language: 'ko' },
           );
-        })
-        .finally(() => {
-          startingBeaconScanRef.current = false;
-        });
+        },
+        wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      }).finally(() => {
+        startingBeaconScanRef.current = false;
+      });
     }
   }, [status.shouldScanBeacon, state.caneReady, state.beaconScanActive]);
 

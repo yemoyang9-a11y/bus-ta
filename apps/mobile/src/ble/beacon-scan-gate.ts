@@ -12,7 +12,10 @@
  * 판단만 하고 부수효과는 없다. 화면에서 떼어내야 테스트할 수 있어서 분리했다.
  */
 export type BeaconScanGateInput = {
-  /** 서버가 내려준 스캔 시작 신호. 도착 예정 5분 이하일 때만 true 다. */
+  /**
+   * 서버가 내려준 스캔 시작 신호. 도착 예정 5분 이하일 때 켜지고, 도착정보를
+   * 확인하지 못한 경우(UPSTREAM_ERROR 등)에도 탑승을 놓치지 않으려고 켜진다.
+   */
   shouldScanBeacon: boolean;
   /** 지팡이 연결과 대상 비콘 지정이 끝났는지. */
   caneReady: boolean;
