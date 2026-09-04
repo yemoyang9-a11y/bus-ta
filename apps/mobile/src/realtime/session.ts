@@ -26,6 +26,11 @@ import {
   runWithRealtimeConnectionTimeout,
 } from "./connection-timeout";
 import { CandidateAnnouncementTracker } from "./candidate-announcement-tracker";
+import {
+  ASSIST_DEVICE_RESPONSE_INSTRUCTIONS,
+  getAssistDeviceEventKey,
+} from "./assist-device-status";
+import type { AssistDeviceStatusChangedEvent } from "./types";
 
 // OpenAI Realtime은 동시에 하나의 active response만 허용한다.
 const RESPONSE_CREATE_EVENT_TYPE = "response.create";
@@ -33,7 +38,7 @@ const ACTIVE_RESPONSE_ERROR_CODE =
   "conversation_already_has_active_response";
 
 const STATUS_RESPONSE_INSTRUCTIONS =
-  "방금 전달된 운행 상태 변화만 근거로 사용자에게 짧고 명확한 한국어 음성 안내를 생성한다. tripStatus가 WAITING_BUS이거나 boardingConfirmedAt이 없으면 탑승 정류장에서 버스를 기다리는 상태이며, 절대 '탑승했습니다', '탑승 중입니다', '운행을 시작합니다'라고 말하지 않는다. boardingConfirmedAt이 있고 tripStatus가 ON_BUS 또는 NEAR_DESTINATION이며 아직 같은 탑승 확인 안내를 하지 않은 경우에만 탑승을 안내한다. boardingMethod가 AUTO_DETECTED이면 '버스 탑승이 감지되었습니다. 하차 안내를 시작합니다.'라고 말하고, USER_CONFIRMED이면 '탑승이 확인되었습니다. 하차까지 남은 정류장을 안내하겠습니다.'라고 말한다. 하차벨 안내는 다음 규칙을 우선한다. remainingStations가 2이고 bellStatus가 NOT_REQUESTED이면 '하차 정류장까지 두 정거장 남았습니다. 미리 내릴 준비를 해주세요.'라고만 안내하고, 하차벨을 요청했거나 눌렀다고 말하지 않는다. remainingStations가 1이고 bellStatus가 PENDING으로 바뀐 경우에만 '하차 정류장까지 한 정거장 남았습니다. 하차벨을 요청했습니다.'라고 안내한다. 서버에서 bellStatus가 SUCCESS로 확정된 후에만 '하차벨이 켜졌습니다. 안전하게 하차하세요.'라고 안내한다. 서버에서 bellStatus가 FAIL로 확정되면 절대 성공했다고 말하지 않고 '하차벨 응답을 받지 못했습니다. 기사님께 직접 말씀해주세요.'라고 안내한다. bellStatus가 NOT_REQUESTED이고 remainingStations가 2가 아니면 하차벨을 별도로 언급하지 않는다. 선택된 실제 routeNo를 확인할 수 있으면 문장 앞에 노선 번호를 붙이고, 확인할 수 없으면 번호를 만들지 않는다. routeNo의 숫자 부분이 네 자리 이상이면 각 숫자를 한 자리씩 읽고, 세 자리 이하면 일반적인 한국어 수 읽기 방식으로 읽는다. 알파벳, 하이픈 뒤 숫자, 괄호 안 표시는 생략하지 않으며, 하이픈(-)은 반드시 '다시'라고 읽는다. boardingMethod, boardingConfirmedAt, tripStatus, bellStatus 같은 내부 필드명과 오류 코드는 그대로 읽지 않는다.";
+  "방금 전달된 운행 상태 변화만 근거로 사용자에게 짧고 명확한 한국어 음성 안내를 생성한다. tripStatus가 WAITING_BUS이거나 boardingConfirmedAt이 없으면 탑승 정류장에서 버스를 기다리는 상태이며, 절대 '탑승했습니다', '탑승 중입니다', '운행을 시작합니다'라고 말하지 않는다. boardingConfirmedAt이 있고 tripStatus가 ON_BUS 또는 NEAR_DESTINATION이며 아직 같은 탑승 확인 안내를 하지 않은 경우에만 탑승을 안내한다. boardingMethod가 AUTO_DETECTED이면 '버스 탑승이 감지되었습니다. 하차 안내를 시작합니다.'라고 말하고, USER_CONFIRMED이면 '탑승이 확인되었습니다. 하차까지 남은 정류장을 안내하겠습니다.'라고 말한다. 하차벨 안내는 다음 규칙을 우선한다. remainingStations가 2이고 bellStatus가 NOT_REQUESTED이면 '하차 정류장까지 두 정거장 남았습니다. 미리 내릴 준비를 해주세요.'라고만 안내하고, 하차벨을 요청했거나 눌렀다고 말하지 않는다. remainingStations가 1이고 bellStatus가 PENDING으로 바뀐 경우에만 '하차 정류장까지 한 정거장 남았습니다. 하차벨을 요청했습니다.'라고 안내한다. 서버에서 bellStatus가 SUCCESS로 확정된 후에만 '하차벨이 켜졌습니다. 안전하게 하차하세요.'라고 안내한다. 서버에서 bellStatus가 FAIL로 확정되면 절대 성공했다고 말하지 않고 '하차벨 응답을 받지 못했습니다. 기사님께 직접 말씀해주세요.'라고 안내한다. bellStatus가 NOT_REQUESTED이고 remainingStations가 2가 아니면 하차벨을 별도로 언급하지 않는다. 선택된 실제 routeNo를 확인할 수 있으면 문장 앞에 노선 번호를 붙이고, 확인할 수 없으면 번호를 만들지 않는다. routeNo는 먼저 하이픈(-)을 기준으로 나누고 하이픈 양쪽 숫자를 이어 붙여 전체 자릿수를 계산하지 않는다. 나뉜 각 숫자 덩어리가 네 자리 이상이면 각 숫자를 한 자리씩 읽고, 세 자리 이하면 일반적인 한국어 수 읽기 방식으로 읽는다. 알파벳, 하이픈 뒤 숫자, 괄호 안 표시는 생략하지 않으며, 하이픈(-)은 반드시 '다시'라고 읽는다. boardingMethod, boardingConfirmedAt, tripStatus, bellStatus 같은 내부 필드명과 오류 코드는 그대로 읽지 않는다.";
 
 function hasSuccessfulFunctionResult(events: unknown[]): boolean {
   for (const event of events) {
@@ -78,6 +83,7 @@ export class HaneumRealtimeSession {
     new CandidateAnnouncementTracker();
   private eventIdCounter = 0;
   private hasSentReadyResponse = false;
+  private queuedAssistDeviceEventKeys = new Set<string>();
 
   // context는 RealtimeProvider가 TripContext와 연결해서 만든 것을 그대로 받는다.
   // (2026-08-12, 예모님 확정 구조: TripContext를 운행 상태의 유일한 원본으로 사용)
@@ -554,5 +560,55 @@ export class HaneumRealtimeSession {
         this.flushPendingResponse();
       },
     );
+  }
+
+  /**
+   * 지팡이·하차벨 준비 실패를 Realtime 대화에 시스템 이벤트로 넣고
+   * 모델의 음성 안내를 생성한다. 같은 운행의 같은 실패는 한 번만 큐에 넣는다.
+   *
+   * @returns Realtime 연결에 전달했거나 이미 처리한 이벤트면 true.
+   * 연결 전이면 false이며 호출부가 로컬 TTS로 대체한다.
+   */
+  notifyAssistDeviceStatusChange(
+    event: AssistDeviceStatusChangedEvent,
+  ): boolean {
+    if (!this.transport) {
+      return false;
+    }
+
+    const eventKey = getAssistDeviceEventKey(
+      this.context.getAppState().tripId,
+      event,
+    );
+
+    if (this.queuedAssistDeviceEventKeys.has(eventKey)) {
+      return true;
+    }
+
+    this.queuedAssistDeviceEventKeys.add(eventKey);
+
+    const statusEvent = {
+      type: "conversation.item.create",
+      item: {
+        type: "message",
+        role: "system",
+        content: [
+          {
+            type: "input_text",
+            text: JSON.stringify(event),
+          },
+        ],
+      },
+    };
+
+    this.responseQueue.enqueueDirect(
+      this.createPendingResponse(
+        ASSIST_DEVICE_RESPONSE_INSTRUCTIONS,
+        [statusEvent],
+      ),
+    );
+    this.flushPendingResponse();
+
+    return true;
   }
 }

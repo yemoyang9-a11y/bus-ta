@@ -1,10 +1,15 @@
 import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
 import * as Location from 'expo-location';
+import * as Speech from 'expo-speech';
 import { useTrip } from '../state/TripContext';
+import { apiClient, ApiError } from '../api/client';
+import { connectAll, setTargetBeacon, startBeaconScan } from '../ble/bleManager';
 import { HaneumRealtimeSession } from './session';
 import { createRealtimeGuideContext } from './context';
 import { connectWithBestEffortLocation, runSingleFlight } from './connect-best-effort';
 import { createLocationRefreshCoordinator } from './location-refresh';
+import { createAssistDevicePreparation } from './assist-device-preparation';
+import { getAssistDeviceFallbackMessage } from './assist-device-status';
 import type { RealtimeWebRTCTransport } from './webrtc-transport';
 import type { AppAction, AppTripState } from './types';
 
@@ -92,6 +97,38 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
     });
     sessionRef.current = new HaneumRealtimeSession(guideContext);
   }
+
+  const assistPreparationRef = useRef<ReturnType<typeof createAssistDevicePreparation> | null>(null);
+  if (!assistPreparationRef.current) {
+    assistPreparationRef.current = createAssistDevicePreparation({
+      getActiveTripId: () => stateRef.current.tripId,
+      listBeacons: (routeNo) => apiClient.beacons.list(routeNo),
+      getBeaconLookupErrorCode: (error) =>
+        error instanceof ApiError ? error.errorCode : undefined,
+      connectAll,
+      setTargetBeacon,
+      startBeaconScan,
+      notifyFailure: (event) => {
+        const deliveredToRealtime =
+          sessionRef.current?.notifyAssistDeviceStatusChange(event) ?? false;
+        if (!deliveredToRealtime) {
+          Speech.speak(getAssistDeviceFallbackMessage(event), { language: 'ko' });
+        }
+      },
+      dispatch: (action) => dispatchRef.current(action),
+    });
+  }
+
+  useEffect(() => {
+    const tripId = state.tripId;
+    const routeNo = state.selectedRoute?.routeNo;
+    if (!tripId || !routeNo) return;
+
+    void assistPreparationRef.current?.prepare({
+      tripId,
+      routeNo,
+    });
+  }, [state.tripId, state.selectedRoute?.routeNo]);
 
   const connect = () => {
     if (!sessionRef.current) return Promise.resolve();

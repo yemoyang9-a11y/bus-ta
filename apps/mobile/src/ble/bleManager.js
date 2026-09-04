@@ -1,5 +1,6 @@
 import { BleManager } from 'react-native-ble-plx';
 import { Buffer } from 'buffer';
+import { createSingleFlight } from './single-flight';
 
 // 정민님 확인(2026-08-04): 공통 UUID, 기기 2대(지팡이/하차벨) 각각 연결
 const SERVICE_UUID = '4fa45540-8201-11e5-8223-0002a5d5c51b';
@@ -13,6 +14,7 @@ const manager = new BleManager();
 
 // 연결된 기기를 device name별로 보관
 const connectedDevices = new Map();
+const runStopBeaconScanSingleFlight = createSingleFlight();
 
 /**
  * 한 개의 device name을 스캔해서 찾은 뒤 연결한다.
@@ -135,9 +137,11 @@ export async function startBeaconScan() {
 }
 
 /** 지팡이에 비콘 스캔 중지를 명령한다. */
-export async function stopBeaconScan() {
-  const payload = JSON.stringify({ cmd: 'STOP_BEACON_SCAN' });
-  await writeCommand(CANE_DEVICE_NAME, payload);
+export function stopBeaconScan() {
+  return runStopBeaconScanSingleFlight(() => {
+    const payload = JSON.stringify({ cmd: 'STOP_BEACON_SCAN' });
+    return writeCommand(CANE_DEVICE_NAME, payload);
+  });
 }
 
 /**

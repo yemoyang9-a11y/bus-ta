@@ -47,6 +47,25 @@ export type TripStatusChangedEvent = {
   guideMessage: string | null;
 };
 
+export type AssistDevice = "CANE" | "BELL" | "BOTH";
+
+export type AssistDeviceFailureReason =
+  | "NOT_CONNECTED"
+  | "BEACON_NOT_REGISTERED"
+  | "BEACON_LOOKUP_FAILED"
+  | "COMMAND_FAILED";
+
+// 앱이 확인한 보조기기 준비 실패를 Realtime 세션에 전달하는 시스템 이벤트.
+// attempted=false이면 실제 BLE 스캔 전 단계에서 실패한 것이므로 기기 탓으로 안내하지 않는다.
+export type AssistDeviceStatusChangedEvent = {
+  type: "assist_device_status_changed";
+  device: AssistDevice;
+  status: "UNAVAILABLE";
+  reason: AssistDeviceFailureReason;
+  attempted: boolean;
+  retryable: boolean;
+};
+
 // TripContext(state/TripContext.js)의 state 구조와 대응한다.
 export type AppTripState = {
   destination: string | null;
@@ -99,6 +118,8 @@ export type AppAction =
   | { type: "UPDATE_TRIP_STATUS"; status: unknown }
   | { type: "RESET_TRIP_KEEP_SEARCH" }
   | { type: "RESET_TRIP" }
+  | { type: "SET_BLE_MOCK_STATUS"; isMock: boolean }
+  | { type: "SET_BEACON_SCAN_ACTIVE"; active: boolean }
   | {
       // 예모님 지적(2026-08-28): 음성 end_trip(사용자 취소) 성공 시,
       // destination·routeCandidates·announcedCandidateIds는 남기고 나머지만

@@ -624,3 +624,272 @@ test("get_next_route_candidates returns exhausted without repeating candidates w
   // 소진 안내에는 새로 기록할 후보가 없어 선택적 메타데이터를 생략한다.
   assert.equal(responseCreate.candidateIdsToMark, undefined);
 });
+
+test("get_trip_status forwards refreshArrivals only for an explicit forced refresh", async () => {
+  const actions: AppAction[] = [];
+  const requestedUrls: string[] = [];
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = async (input) => {
+    requestedUrls.push(String(input));
+    return Response.json({
+      success: true,
+      tripId: "trip-test-001",
+      tripStatus: TRIP_STATUS.WAITING_BUS,
+      boardingMethod: null,
+      boardingConfirmedAt: null,
+      currentStation: null,
+      nextStation: null,
+      remainingStations: 3,
+      shouldTriggerBell: false,
+      bellStatus: "NOT_REQUESTED",
+      bellRequestId: null,
+      command: null,
+      guideMessage: "버스를 기다리고 있습니다.",
+      arrivals: [],
+      arrivalStatus: "NO_VEHICLE",
+      shouldScanBeacon: false,
+      nextArrivalRefreshInMs: 15_000,
+      timestamp: "2026-09-03T00:00:00.000Z",
+    });
+  };
+
+  try {
+    await dispatchRealtimeFunctionCall(
+      {
+        type: "response.function_call_arguments.done",
+        call_id: "call-refresh-arrivals",
+        name: "get_trip_status",
+        arguments: JSON.stringify({
+          tripId: "trip-test-001",
+          refreshArrivals: true,
+        }),
+      },
+      createContext(actions),
+    );
+
+    await dispatchRealtimeFunctionCall(
+      {
+        type: "response.function_call_arguments.done",
+        call_id: "call-normal-status",
+        name: "get_trip_status",
+        arguments: JSON.stringify({ tripId: "trip-test-001" }),
+      },
+      createContext(actions),
+    );
+
+    assert.deepEqual(requestedUrls, [
+      "http://localhost:3000/api/trips/trip-test-001/status?refreshArrivals=true",
+      "http://localhost:3000/api/trips/trip-test-001/status",
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("successful end_trip excludes the cancelled route and returns two valid alternatives", async () => {
+  const actions: AppAction[] = [];
+  const routeCandidates = [
+    makeRoute(1, "100"),
+    makeRoute(2, "200"),
+    makeRoute(3, "300"),
+    makeRoute(4, "400"),
+  ];
+  const state: AppTripState = {
+    ...baseState,
+    routeCandidates,
+    routeCandidatesExpiresAt: Date.now() + 60_000,
+    selectedRoute: routeCandidates[0] ?? null,
+  };
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = async () =>
+    Response.json({
+      success: true,
+      tripId: "trip-test-001",
+      tripStatus: TRIP_STATUS.CANCELLED,
+      message: "운행 안내를 종료했습니다.",
+      timestamp: "2026-09-03T10:00:00.000Z",
+    });
+
+  try {
+    const events = await dispatchRealtimeFunctionCall(
+      {
+        type: "response.function_call_arguments.done",
+        call_id: "call-end-trip-success",
+        name: "end_trip",
+        arguments: JSON.stringify({
+          tripId: "trip-test-001",
+          action: "CANCEL",
+        }),
+      },
+      createContext(actions, state),
+    );
+
+    assert.deepEqual(actions, [{ type: "RESET_TRIP_KEEP_SEARCH" }]);
+    if (events[0]?.type !== "conversation.item.create") {
+      assert.fail("expected function_call_output event");
+    }
+    const output = JSON.parse(events[0].item.output) as {
+      success: boolean;
+      expired: boolean;
+      routes: Route[];
+    };
+    assert.equal(output.success, true);
+    assert.equal(output.expired, false);
+    assert.deepEqual(
+      output.routes.map((route) => route.candidateId),
+      [2, 3],
+    );
+    if (events[1]?.type !== "response.create") {
+      assert.fail("expected response.create event");
+    }
+    assert.deepEqual(events[1].candidateIdsToMark, [2, 3]);
+    assert.match(events[1].response?.instructions ?? "", /취소한 노선은 다시 말하지 말고/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("successful end_trip does not expose expired candidates", async () => {
+  const actions: AppAction[] = [];
+  const routeCandidates = [makeRoute(1, "100"), makeRoute(2, "200")];
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = async () =>
+    Response.json({
+      success: true,
+      tripId: "trip-test-001",
+      tripStatus: TRIP_STATUS.CANCELLED,
+      message: "운행 안내를 종료했습니다.",
+      timestamp: "2026-09-03T10:00:00.000Z",
+    });
+
+  try {
+    const events = await dispatchRealtimeFunctionCall(
+      {
+        type: "response.function_call_arguments.done",
+        call_id: "call-end-trip-expired",
+        name: "end_trip",
+        arguments: JSON.stringify({ tripId: "trip-test-001", action: "CANCEL" }),
+      },
+      createContext(actions, {
+        ...baseState,
+        routeCandidates,
+        routeCandidatesExpiresAt: Date.now() - 1,
+        selectedRoute: routeCandidates[0] ?? null,
+      }),
+    );
+
+    if (events[0]?.type !== "conversation.item.create") {
+      assert.fail("expected function_call_output event");
+    }
+    const output = JSON.parse(events[0].item.output) as {
+      expired: boolean;
+      routes: Route[];
+    };
+    assert.equal(output.expired, true);
+    assert.deepEqual(output.routes, []);
+    if (events[1]?.type !== "response.create") {
+      assert.fail("expected response.create event");
+    }
+    assert.equal(events[1].candidateIdsToMark, undefined);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("failed end_trip keeps the active trip and does not expose saved routes", async () => {
+  const actions: AppAction[] = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    Response.json(
+      {
+        success: false,
+        errorCode: "INVALID_TRIP_STATUS",
+        message: "이미 완료된 운행은 취소할 수 없습니다.",
+        timestamp: "2026-09-03T10:00:00.000Z",
+      },
+      { status: 409 },
+    );
+
+  try {
+    const events = await dispatchRealtimeFunctionCall(
+      {
+        type: "response.function_call_arguments.done",
+        call_id: "call-end-trip-failure",
+        name: "end_trip",
+        arguments: JSON.stringify({ tripId: "trip-test-001", action: "CANCEL" }),
+      },
+      createContext(actions, {
+        ...baseState,
+        routeCandidates: [makeRoute(1, "100")],
+      }),
+    );
+    assert.deepEqual(actions, []);
+    if (events[0]?.type !== "conversation.item.create") {
+      assert.fail("expected function_call_output event");
+    }
+    const output = JSON.parse(events[0].item.output) as Record<string, unknown>;
+    assert.equal(output.success, false);
+    assert.equal("routes" in output, false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("delayed end_trip response cannot reset a newer active trip", async () => {
+  const actions: AppAction[] = [];
+  let currentState: AppTripState = {
+    ...baseState,
+    tripId: "trip-A",
+    routeCandidates: [makeRoute(1, "100")],
+    routeCandidatesExpiresAt: Date.now() + 60_000,
+  };
+  let releaseFetch: ((response: Response) => void) | undefined;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    new Promise<Response>((resolve) => {
+      releaseFetch = resolve;
+    });
+  const context: RealtimeGuideContext = {
+    getAppState: () => currentState,
+    getCurrentLocation: () => undefined,
+    refreshCurrentLocation: async () => {},
+    dispatchAppAction: (action) => actions.push(action),
+  };
+
+  try {
+    const pending = dispatchRealtimeFunctionCall(
+      {
+        type: "response.function_call_arguments.done",
+        call_id: "call-end-trip-A",
+        name: "end_trip",
+        arguments: JSON.stringify({ tripId: "trip-A", action: "CANCEL" }),
+      },
+      context,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    currentState = { ...currentState, tripId: "trip-B" };
+    releaseFetch?.(
+      Response.json({
+        success: true,
+        tripId: "trip-A",
+        tripStatus: TRIP_STATUS.CANCELLED,
+        message: "운행 안내를 종료했습니다.",
+        timestamp: "2026-09-03T10:00:00.000Z",
+      }),
+    );
+    const events = await pending;
+    assert.deepEqual(actions, []);
+    if (events[0]?.type !== "conversation.item.create") {
+      assert.fail("expected function_call_output event");
+    }
+    const output = JSON.parse(events[0].item.output) as Record<string, unknown>;
+    assert.equal(output.success, false);
+    assert.equal(output.errorCode, "STALE_TRIP_CONTEXT");
+    assert.equal("routes" in output, false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
