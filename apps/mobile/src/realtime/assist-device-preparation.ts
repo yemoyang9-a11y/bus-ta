@@ -72,7 +72,7 @@ export function createAssistDevicePreparation(
     if (!isActiveTrip(tripId)) return;
 
     const caneConnected = connected.has('White_cane');
-    const bellConnected = connected.has('BUS_1551_001');
+    const bellConnected = connected.has('BUS_35_001');
 
     for (const event of createAssistDeviceConnectionFailureEvents(
       caneConnected,
