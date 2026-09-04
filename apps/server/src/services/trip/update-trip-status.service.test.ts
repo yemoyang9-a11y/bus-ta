@@ -157,6 +157,255 @@ test("updates current station, next station, remainingStations, and tripStatus f
   });
 });
 
+// ─────────────────────────────────────────────
+// 정류장 도착 반경.
+// 반경이 없을 때는 "가장 가까운 정류장"을 그대로 현재 위치로 삼아서, 두 정류장
+// 사이 중간을 넘는 순간 다음 정류장으로 진행이 넘어갔다. 실차(2026-09-04, 35번)에서
+// 앞 355m / 뒤 339m 지점에 남은 정거장이 2에서 1로 바뀌고 하차벨이 목적지 539m
+// 앞에서 울렸다. 아래 좌표는 그 구간을 그대로 옮긴 것이다.
+// ─────────────────────────────────────────────
+
+// 실차 35번 구간. 정류장 간격이 700m 안팎이라 중간 지점이 350m 부근이다.
+const REAL_ROUTE = {
+  routeNo: "35",
+  stationList: [
+    { stationName: "고색역.고색초교.태산아파트", latitude: 37.250829, longitude: 126.980265, sequence: 0 },
+    { stationName: "서수원주민편익시설", latitude: 37.248579, longitude: 126.972315, sequence: 1 },
+    { stationName: "오목천동삼거리.남광하우스토리아파트", latitude: 37.245977, longitude: 126.965227, sequence: 2 },
+    { stationName: "오목천동사거리", latitude: 37.244727, longitude: 126.963542, sequence: 3 },
+  ],
+};
+
+const realTrip: TripProgressData["trip"] = {
+  tripId: "trip-real-001",
+  destination: "오목천역",
+  routeNo: REAL_ROUTE.routeNo,
+  stationList: REAL_ROUTE.stationList,
+};
+
+function realStatusAt(index: number): TripProgressData["status"] {
+  return {
+    ...baseStatus,
+    tripId: "trip-real-001",
+    currentStation: REAL_ROUTE.stationList[index]!,
+    nextStation: REAL_ROUTE.stationList[index + 1] ?? null,
+    remainingStations: REAL_ROUTE.stationList.length - 1 - index,
+    tripStatus: TRIP_STATUS.ON_BUS,
+    boardingMethod: BOARDING_METHOD.USER_CONFIRMED,
+    boardingConfirmedAt: "2026-09-04T10:41:00+09:00",
+  };
+}
+
+test("정류장 사이를 지나는 중이면 다음 정류장으로 넘기지 않는다", async () => {
+  // 실차에서 남은 정거장이 2에서 1로 바뀐 바로 그 좌표. 앞 정류장 355m, 뒤 339m 로
+  // 뒤가 16m 더 가깝지만 어느 쪽에도 도착하지 않았다. 여기서 넘어가면 하차벨이
+  // 목적지 539m 앞에서 울린다.
+  const result = await updateTripStatus(
+    "trip-real-001",
+    {
+      requestId: "loc-mid",
+      latitude: 37.2474126,
+      longitude: 126.9685964,
+      recordedAt: "2026-09-04T10:50:46+09:00",
+      source: "GPS",
+    },
+    {
+      findTripProgressData: async () => ({ trip: realTrip, status: realStatusAt(1) }),
+      findLocationLogByRequestId: async () => null,
+      saveStatusAndLocation: async () => {},
+      now: () => "2026-09-04T10:50:47+09:00",
+    },
+  );
+
+  assert.equal(result.httpStatus, 200);
+  const body = result.body as Record<string, unknown>;
+  assert.equal(
+    (body.currentStation as { stationName: string }).stationName,
+    "서수원주민편익시설",
+    "중간 지점에서는 직전 정류장에 머물러야 한다",
+  );
+  assert.equal(body.remainingStations, 2);
+  assert.equal(body.shouldTriggerBell, false, "중간 지점에서 하차벨이 울리면 안 된다");
+});
+
+test("정류장 반경 안에 들어오면 그때 다음 정류장으로 넘긴다", async () => {
+  const result = await updateTripStatus(
+    "trip-real-001",
+    {
+      requestId: "loc-arrived",
+      latitude: REAL_ROUTE.stationList[2]!.latitude,
+      longitude: REAL_ROUTE.stationList[2]!.longitude,
+      recordedAt: "2026-09-04T10:52:00+09:00",
+      source: "GPS",
+    },
+    {
+      findTripProgressData: async () => ({ trip: realTrip, status: realStatusAt(1) }),
+      findLocationLogByRequestId: async () => null,
+      saveStatusAndLocation: async () => {},
+      now: () => "2026-09-04T10:52:01+09:00",
+    },
+  );
+
+  const body = result.body as Record<string, unknown>;
+  assert.equal(
+    (body.currentStation as { stationName: string }).stationName,
+    "오목천동삼거리.남광하우스토리아파트",
+  );
+  assert.equal(body.remainingStations, 1);
+  assert.equal(body.shouldTriggerBell, true, "실제 도착했을 때는 하차벨이 울려야 한다");
+});
+
+test("출발 직후 직전 정류장이 없고 반경 밖이면 탑승 정류장에서 센다", async () => {
+  // currentStation 이 null 인 상태에서 정류장 사이에 있으면 기준이 없다.
+  // 첫 정류장(탑승 정류장)에서 시작해야 남은 정거장이 전체 수로 나온다.
+  const result = await updateTripStatus(
+    "trip-real-001",
+    {
+      requestId: "loc-start",
+      latitude: 37.2474126,
+      longitude: 126.9685964,
+      recordedAt: "2026-09-04T10:41:00+09:00",
+      source: "GPS",
+    },
+    {
+      findTripProgressData: async () => ({
+        trip: realTrip,
+        status: { ...realStatusAt(0), currentStation: null },
+      }),
+      findLocationLogByRequestId: async () => null,
+      saveStatusAndLocation: async () => {},
+      now: () => "2026-09-04T10:41:01+09:00",
+    },
+  );
+
+  const body = result.body as Record<string, unknown>;
+  assert.equal(
+    (body.currentStation as { stationName: string }).stationName,
+    "고색역.고색초교.태산아파트",
+  );
+  assert.equal(body.remainingStations, 3);
+});
+
+test("반경 경계: 49m 는 도착, 51m 는 미도착으로 갈린다", async () => {
+  // 반경이 실제로 판정을 가르는지 경계에서 고정한다. 상수를 바꿀 때 이 테스트가
+  // 함께 깨져야 값이 조용히 흔들리지 않는다.
+  const target = REAL_ROUTE.stationList[2]!;
+  // 위도 1도 = 약 111km. 49m / 51m 를 위도 차이로 만든다.
+  const inside = { lat: target.latitude + 49 / 111_000, lon: target.longitude };
+  const outside = { lat: target.latitude + 51 / 111_000, lon: target.longitude };
+
+  const run = (lat: number, lon: number, requestId: string) =>
+    updateTripStatus(
+      "trip-real-001",
+      { requestId, latitude: lat, longitude: lon, recordedAt: "2026-09-04T10:52:00+09:00", source: "GPS" },
+      {
+        findTripProgressData: async () => ({ trip: realTrip, status: realStatusAt(1) }),
+        findLocationLogByRequestId: async () => null,
+        saveStatusAndLocation: async () => {},
+        now: () => "2026-09-04T10:52:01+09:00",
+      },
+    );
+
+  const near = (await run(inside.lat, inside.lon, "loc-49")).body as Record<string, unknown>;
+  assert.equal(
+    (near.currentStation as { stationName: string }).stationName,
+    "오목천동삼거리.남광하우스토리아파트",
+    "49m 는 도착으로 인정해야 한다",
+  );
+
+  const far = (await run(outside.lat, outside.lon, "loc-51")).body as Record<string, unknown>;
+  assert.equal(
+    (far.currentStation as { stationName: string }).stationName,
+    "서수원주민편익시설",
+    "51m 는 아직 도착이 아니므로 직전 정류장에 머물러야 한다",
+  );
+});
+
+test("정류장을 놓쳐도 뒤로 가지 않고 한 칸씩 따라잡는다", async () => {
+  // 버스가 [1] 반경을 통과해 버려 표본이 하나도 안 들어온 상황. 다음 표본이 [2]
+  // 반경에서 잡히면 FORWARD_JUMP_CLAMPED 로 [1] 까지만 올린다. 진행이 뒤로 가거나
+  // 멈추지 않는다는 것을 고정한다.
+  const first = await updateTripStatus(
+    "trip-real-001",
+    {
+      requestId: "loc-skip-1",
+      latitude: REAL_ROUTE.stationList[2]!.latitude,
+      longitude: REAL_ROUTE.stationList[2]!.longitude,
+      recordedAt: "2026-09-04T10:52:00+09:00",
+      source: "GPS",
+    },
+    {
+      findTripProgressData: async () => ({
+        trip: realTrip,
+        status: { ...realStatusAt(0), currentStation: REAL_ROUTE.stationList[0]! },
+      }),
+      findLocationLogByRequestId: async () => null,
+      saveStatusAndLocation: async () => {},
+      now: () => "2026-09-04T10:52:01+09:00",
+    },
+  );
+  const firstBody = first.body as Record<string, unknown>;
+  assert.equal(
+    (firstBody.currentStation as { stationName: string }).stationName,
+    "서수원주민편익시설",
+    "한 번에 두 칸 뛰지 않고 한 칸만 올린다",
+  );
+
+  // 같은 정류장 반경 안에서 표본이 한 번 더 들어오면 그때 따라잡는다.
+  const second = await updateTripStatus(
+    "trip-real-001",
+    {
+      requestId: "loc-skip-2",
+      latitude: REAL_ROUTE.stationList[2]!.latitude,
+      longitude: REAL_ROUTE.stationList[2]!.longitude,
+      recordedAt: "2026-09-04T10:52:03+09:00",
+      source: "GPS",
+    },
+    {
+      findTripProgressData: async () => ({ trip: realTrip, status: realStatusAt(1) }),
+      findLocationLogByRequestId: async () => null,
+      saveStatusAndLocation: async () => {},
+      now: () => "2026-09-04T10:52:04+09:00",
+    },
+  );
+  const secondBody = second.body as Record<string, unknown>;
+  assert.equal(
+    (secondBody.currentStation as { stationName: string }).stationName,
+    "오목천동삼거리.남광하우스토리아파트",
+    "같은 반경에서 표본이 한 번 더 오면 따라잡는다",
+  );
+  assert.equal(secondBody.remainingStations, 1);
+});
+
+test("반경 밖 좌표가 크게 튀어도 진행이 뒤로 가지 않는다", async () => {
+  // 목적지에서 1km 가까이 떨어진 좌표. 반경 밖이므로 직전 정류장을 유지해야 하고,
+  // 진행이 초기화되거나 뒤로 가면 안 된다.
+  const result = await updateTripStatus(
+    "trip-real-001",
+    {
+      requestId: "loc-spike",
+      latitude: 37.2600,
+      longitude: 126.9900,
+      recordedAt: "2026-09-04T10:53:00+09:00",
+      source: "GPS",
+    },
+    {
+      findTripProgressData: async () => ({ trip: realTrip, status: realStatusAt(2) }),
+      findLocationLogByRequestId: async () => null,
+      saveStatusAndLocation: async () => {},
+      now: () => "2026-09-04T10:53:01+09:00",
+    },
+  );
+
+  const body = result.body as Record<string, unknown>;
+  assert.equal(
+    (body.currentStation as { stationName: string }).stationName,
+    "오목천동삼거리.남광하우스토리아파트",
+    "튄 좌표로 진행을 되돌리지 않는다",
+  );
+  assert.equal(body.remainingStations, 1);
+});
+
 test("marks the trip TRIP_DONE when the destination station is reached", async () => {
   const saved: unknown[] = [];
 
