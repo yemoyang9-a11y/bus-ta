@@ -69,7 +69,10 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
         return status;
       },
       getPosition: async () => {
-        const location = await Location.getCurrentPositionAsync({});
+        const location = await Location.getCurrentPositionAsync({
+          accuracy: Location.Accuracy.High,
+        });
+
         return {
           latitude: location.coords.latitude,
           longitude: location.coords.longitude,
