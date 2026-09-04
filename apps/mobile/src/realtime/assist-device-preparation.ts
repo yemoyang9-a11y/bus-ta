@@ -93,6 +93,10 @@ export function createAssistDevicePreparation(
       try {
         await dependencies.setTargetBeacon(beaconData.targetBeaconId);
         if (!isActiveTrip(tripId)) return;
+        // 지팡이가 무엇을 찾을지 알게 됐다. 이제 스캔 명령을 받을 수 있다.
+        // 서버의 스캔 시작 신호가 이 시점보다 먼저 도착했을 수 있으므로, 화면이
+        // 이 값의 변화를 보고 그때 startBeaconScan() 을 실행한다.
+        dependencies.dispatch({ type: 'SET_CANE_READY', ready: true });
       } catch {
         if (isActiveTrip(tripId)) {
           dependencies.notifyFailure(

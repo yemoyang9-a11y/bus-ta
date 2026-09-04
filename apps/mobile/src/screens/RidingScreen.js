@@ -8,6 +8,7 @@ import { useTrip } from '../state/TripContext';
 import { isScreenTripActive } from '../state/trip-transition';
 import { useRealtime } from '../realtime/RealtimeProvider';
 import { startBeaconScan, stopBeaconScan } from '../ble/bleManager';
+import { canStartBeaconScan } from '../ble/beacon-scan-gate';
 
 const INITIAL_STATUS = {
   currentStation: null,
@@ -124,13 +125,22 @@ export default function RidingScreen({ route, navigation }) {
   }, [status.guideMessage, status.remainingStations, isConnected]);
 
   // 효린님 확인(2026-08-28): shouldScanBeacon이 true이고 아직 스캔 중이 아니면 자동으로
-  // startBeaconScan()을 호출한다. 음성 경로에서는 아직 RouteListScreen 즉시 시작 로직이
-  // 남아있으므로 중복 시작 방지는 startBeaconScan/connectAll 쪽 멱등성에 맡긴다.
+  // startBeaconScan()을 호출한다. 스캔을 시작하는 곳은 앱 전체에서 여기 하나다.
+  //
+  // 예모님 지적(2026-09-04, PR #47 P1): 서버 신호가 지팡이 준비보다 먼저 도착할 수
+  // 있다. 그때 startBeaconScan()은 BLE_NOT_CONNECTED로 실패하는데, 실패해도
+  // beaconScanActive는 false 그대로이고 shouldScanBeacon도 계속 true라서 이 effect의
+  // 의존값이 바뀌지 않는다. 그러면 다시 시도되지 않고 스캔이 영영 안 켜진다.
+  // 그래서 caneReady를 조건과 의존값에 함께 넣는다. 신호가 먼저 와도 준비가 끝나는
+  // 순간 값이 바뀌면서 그때 시작된다.
   useEffect(() => {
     if (
-      status.shouldScanBeacon &&
-      !state.beaconScanActive &&
-      !startingBeaconScanRef.current
+      canStartBeaconScan({
+        shouldScanBeacon: status.shouldScanBeacon,
+        caneReady: state.caneReady,
+        beaconScanActive: state.beaconScanActive,
+        starting: startingBeaconScanRef.current,
+      })
     ) {
       startingBeaconScanRef.current = true;
 
@@ -151,7 +161,7 @@ export default function RidingScreen({ route, navigation }) {
           startingBeaconScanRef.current = false;
         });
     }
-  }, [status.shouldScanBeacon, state.beaconScanActive]);
+  }, [status.shouldScanBeacon, state.caneReady, state.beaconScanActive]);
 
   // 정민님 확인(2026-08-12): 탑승 완료 시 비콘 스캔 중지
   useEffect(() => {

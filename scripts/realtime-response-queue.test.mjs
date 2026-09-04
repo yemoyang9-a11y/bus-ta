@@ -247,6 +247,9 @@ test('운행이 시작되면 보조기기 준비를 한 번 실행한다', async
   assert.equal(beaconLookupCount, 1);
   assert.equal(connectCount, 1);
   assert.deepEqual(dispatches, [
+    // 지팡이가 대상 비콘을 알게 된 순간을 알린다. 서버의 스캔 시작 신호가 준비보다
+    // 먼저 도착했을 때 화면이 이 값의 변화를 보고 그때 스캔을 시작한다.
+    { type: 'SET_CANE_READY', ready: true },
     { type: 'SET_BLE_MOCK_STATUS', isMock: false },
   ]);
 });
@@ -325,6 +328,9 @@ test('이전 운행의 늦은 보조기기 결과는 새 운행에 반영하지 
   assert.equal(connectCount, 2);
   assert.deepEqual(notifications, []);
   assert.deepEqual(dispatches, [
+    // 지팡이가 대상 비콘을 알게 된 순간을 알린다. 서버의 스캔 시작 신호가 준비보다
+    // 먼저 도착했을 때 화면이 이 값의 변화를 보고 그때 스캔을 시작한다.
+    { type: 'SET_CANE_READY', ready: true },
     { type: 'SET_BLE_MOCK_STATUS', isMock: false },
   ]);
 });

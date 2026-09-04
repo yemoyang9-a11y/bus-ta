@@ -26,6 +26,9 @@ const initialState = {
   lastInjectedStatus: null,
   bleIsMock: null,
   beaconScanActive: false,
+  // 지팡이 연결과 대상 비콘 지정이 끝났는지. 서버의 스캔 시작 신호가 준비보다 먼저
+  // 도착할 수 있어서, 준비 완료를 별도 값으로 들고 있어야 그때 스캔을 시작할 수 있다.
+  caneReady: false,
 };
 
 function tripReducer(state, action) {
@@ -104,6 +107,13 @@ function tripReducer(state, action) {
       return {
         ...state,
         beaconScanActive: action.active,
+      };
+
+    case 'SET_CANE_READY':
+      // 지팡이가 대상 비콘을 알게 됐다. 이제 스캔 명령을 받을 수 있다.
+      return {
+        ...state,
+        caneReady: action.ready,
       };
 
     // 운행만 종료하고, 유효한 기존 목적지·후보 노선(및 TTL, 안내 기록)은 유지한다.
