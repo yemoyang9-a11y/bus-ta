@@ -250,6 +250,14 @@ export default function RidingScreen({ route, navigation }) {
   }, [boardingConfirmedAt, state.beaconScanActive]);
 
   // 탑승이 확정되면 하차벨 보드를 연결한다.
+  //
+  // 예전에는 운행을 만들 때 지팡이와 함께 한 번에 연결했는데, 그 시점의 하차벨 보드는
+  // 아직 오지 않은 버스 안이라 BLE 범위 밖이었다. 반드시 실패했고 다시 찾지 않았다.
+  // 2026-09-04 실차에서 두 번 다 여기서 막혀, 하차 화면이 연결 없음을 보고 1초 만에
+  // 실패 처리했다. 지금은 버스 안에 있는 것이 확실한 이 시점에 연결한다.
+  //
+  // 연결할 보드 이름은 서버가 노선별로 내려준 targetBeaconId 를 쓴다. 노선을 바꾸면
+  // 보드도 바뀌기 때문에, 앱에 이름을 박아 두면 DB 만 바뀌었을 때 어긋난다.
   useEffect(() => {
     if (
       !boardingConfirmedAt ||
@@ -259,10 +267,28 @@ export default function RidingScreen({ route, navigation }) {
       return;
     }
 
-    connectingBellRef.current = true;
-    const attemptTripId = tripId;
     const targetBeaconId = state.targetBeaconId;
 
+    if (!targetBeaconId) {
+      console.log(
+        '[BLE] targetBeaconId 없음 - 하차벨 연결을 시작하지 않음',
+      );
+      dispatch({
+        type: 'SET_BELL_CONNECTED',
+        connected: false,
+      });
+      Speech.speak(
+        '하차벨 정보를 확인하지 못했습니다. 내리기 전에 기사님께 직접 말씀해 주세요.',
+        { language: 'ko' },
+      );
+      return;
+    }
+
+    connectingBellRef.current = true;
+    const attemptTripId = tripId;
+
+    // 재시도를 기다리는 동안 운행이 끝나거나 바뀔 수 있다.
+    // 렌더 당시 값이 아니라 ref 로 최신 값을 본다.
     const isStillWanted = () =>
       !stoppedRef.current &&
       isScreenTripActive(activeTripIdRef.current, attemptTripId);

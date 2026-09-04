@@ -33,6 +33,7 @@ export default function AlightScreen({ route, navigation }) {
 
   const unsubscribeRef = useRef(() => {});
   const timeoutIdRef = useRef(null);
+  const bellResultReceivedRef = useRef(false);
   const isMountedRef = useRef(true);
 
   useFocusEffect(
@@ -89,9 +90,21 @@ export default function AlightScreen({ route, navigation }) {
 
   const requestActualBellStop = async () => {
     const isMock = state.bleIsMock ?? true;
+    const targetBeaconId = state.targetBeaconId;
+    bellResultReceivedRef.current = false;
+
+    // 현재 운행의 targetBeaconId를 모르면 기본 BUS_35_001로 추측해 연결하지 않는다.
+    if (!targetBeaconId) {
+      console.log('[BLE] targetBeaconId 없음 - 하차벨 재연결/전송을 시작하지 않음');
+      finalizeBellOutcome('fail', true);
+      return;
+    }
 
     const handleBellResult = (result) => {
       console.log('[BLE] 하차벨 결과 Notify 수신:', result);
+
+      // sendStopRequestWithReconnect 반환보다 Notify가 먼저 올 수 있으므로 기록한다.
+      bellResultReceivedRef.current = true;
 
       if (timeoutIdRef.current) {
         clearTimeout(timeoutIdRef.current);
@@ -107,7 +120,7 @@ export default function AlightScreen({ route, navigation }) {
     // 여기서 반복하지는 않는다.
     const { sent, unsubscribe } = await sendStopRequestWithReconnect({
       isConnected: isBellConnected,
-      connect: () => connectBell(state.targetBeaconId ?? undefined),
+      connect: () => connectBell(targetBeaconId),
       subscribeResult: () => subscribeBellResult(handleBellResult),
       sendStopRequest,
     });
@@ -124,6 +137,12 @@ export default function AlightScreen({ route, navigation }) {
       // 실제 하차벨이 동작하지 않았으므로 mock 으로 기록한다.
       console.log('하차벨 STOP_REQUEST 전송 실패 - 결과를 기다리지 않고 실패 처리');
       finalizeBellOutcome('fail', true);
+      return;
+    }
+
+    // 아주 빠른 Notify가 위 await가 끝나기 전에 왔다면 뒤늦게 timeout을 만들지 않는다.
+    if (bellResultReceivedRef.current) {
+      unsubscribe();
       return;
     }
 

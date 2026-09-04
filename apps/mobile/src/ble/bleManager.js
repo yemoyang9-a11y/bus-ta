@@ -31,16 +31,34 @@ const runStopBeaconScanSingleFlight = createSingleFlight();
 function scanAndConnect(deviceName) {
   return new Promise((resolve) => {
     let settled = false;
+    let scanTimeout = null;
+    let connectTimeout = null;
 
     const finish = (result) => {
       if (settled) return;
+
       settled = true;
-      clearTimeout(timeout);
+
+      if (scanTimeout) {
+        clearTimeout(scanTimeout);
+        scanTimeout = null;
+      }
+
+      if (connectTimeout) {
+        clearTimeout(connectTimeout);
+        connectTimeout = null;
+      }
+
       manager.stopDeviceScan();
       resolve(result);
     };
 
-    const timeout = setTimeout(() => finish(null), 10000);
+    // 장치를 찾기 위한 스캔 제한 시간.
+    // 장치를 발견하면 이 타이머는 즉시 종료하고 연결용 타이머로 분리한다.
+    scanTimeout = setTimeout(() => {
+      console.log('[BLE] 장치 스캔 시간 초과:', deviceName);
+      finish(null);
+    }, 10000);
 
     manager.startDeviceScan(null, null, async (error, device) => {
       if (error) {
@@ -49,35 +67,60 @@ function scanAndConnect(deviceName) {
         return;
       }
 
-      if (device?.name === deviceName) {
-        manager.stopDeviceScan(); // 연결 시도 중 다른 콜백이 겹치지 않도록 즉시 스캔 중단
+      if (device?.name !== deviceName || settled) {
+        return;
+      }
 
-        try {
-          const connected = await device.connect();
-          await connected.discoverAllServicesAndCharacteristics();
-          connectedDevices.set(deviceName, connected);
+      // 장치를 찾았으므로 더 이상 "스캔 시간 초과"가 연결 시도를 종료하면 안 된다.
+      if (scanTimeout) {
+        clearTimeout(scanTimeout);
+        scanTimeout = null;
+      }
 
-          // 예모님 지적(2026-09-04): 여기서 Map 에 넣기만 하고 빼는 곳이 연결 해제
-          // 함수뿐이라, 버스 안에서 연결이 끊겨도 Map 에는 그대로 남았다. 그러면
-          // isBellConnected() 가 true 를 돌려주고 재연결을 건너뛰어, 정작 명령을
-          // 보낼 때 실패한다. 끊기는 순간 Map 에서 지운다.
-          connected.onDisconnected(() => {
-            if (connectedDevices.get(deviceName) === connected) {
-              connectedDevices.delete(deviceName);
-              console.log('[BLE] 연결 끊김:', deviceName);
-            }
-          });
+      manager.stopDeviceScan();
 
-          finish(connected);
-        } catch (connectError) {
-          console.log('[BLE] 연결 실패:', deviceName, connectError);
-          finish(null);
+      // 연결 및 서비스 탐색은 스캔과 별도의 제한 시간을 사용한다.
+      connectTimeout = setTimeout(() => {
+        console.log('[BLE] 장치 연결 시간 초과:', deviceName);
+        finish(null);
+      }, 10000);
+
+      try {
+        const connected = await device.connect();
+        await connected.discoverAllServicesAndCharacteristics();
+
+        // 연결 timeout이 먼저 끝났다면 뒤늦은 성공을 현재 연결로 채택하지 않는다.
+        if (settled) {
+          try {
+            await connected.cancelConnection();
+          } catch (disconnectError) {
+            console.log(
+              '[BLE] 시간 초과 후 늦은 연결 해제 실패:',
+              deviceName,
+              disconnectError,
+            );
+          }
+          return;
         }
+
+        connectedDevices.set(deviceName, connected);
+
+        // 실제 BLE 연결이 끊기는 순간 Map에서도 제거한다.
+        connected.onDisconnected(() => {
+          if (connectedDevices.get(deviceName) === connected) {
+            connectedDevices.delete(deviceName);
+            console.log('[BLE] 연결 끊김:', deviceName);
+          }
+        });
+
+        finish(connected);
+      } catch (connectError) {
+        console.log('[BLE] 연결 실패:', deviceName, connectError);
+        finish(null);
       }
     });
   });
 }
-
 // 진행 중인 연결 요청. 같은 기기를 두 화면이 동시에 찾으면 스캔을 두 번 시작하지 않고
 // 먼저 시작한 요청의 결과를 함께 기다린다.
 const inFlightConnects = new Map();
@@ -163,14 +206,15 @@ export async function connectCane() {
  *   넘기면 이번 운행의 대상으로 기억해 두고, 이후 STOP_REQUEST 도 같은 이름으로 보낸다.
  */
 export async function connectBell(targetBeaconId) {
-  // 예모님 지적(2026-09-04): 이 변수는 모듈 전역이라 운행이 끝나도 남는다. 예전에는
-  // targetBeaconId 가 없을 때 이전 값을 그대로 썼고, 그러면 다음 운행에서 비콘 조회가
-  // 실패했을 때 이전 버스의 보드에 붙으러 갔다. 값이 없으면 이전 값이 아니라 기본값으로
-  // 되돌린다.
-  bellDeviceName = targetBeaconId || DEFAULT_BELL_DEVICE_NAME;
+  // targetBeaconId가 없으면 기본 하차벨 이름으로 추측해서 연결하지 않는다.
+  // 서버가 현재 운행의 보드를 명확하게 지정한 경우에만 연결해야 다른 버스의
+  // 하차벨에 잘못 연결되는 것을 막을 수 있다.
   if (!targetBeaconId) {
-    console.log('[BLE] targetBeaconId 없음 - 기본 하차벨 이름 사용:', bellDeviceName);
+    console.log('[BLE] targetBeaconId 없음 - 하차벨 연결 중단');
+    return null;
   }
+
+  bellDeviceName = targetBeaconId;
   return connectOneByName(bellDeviceName);
 }
 
