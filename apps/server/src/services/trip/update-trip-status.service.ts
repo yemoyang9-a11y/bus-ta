@@ -193,6 +193,41 @@ const defaultNow = () => new Date().toISOString();
 const defaultGenerateBellRequestId = () => `bell-${randomUUID()}`;
 const STALE_LOCATION_GAP_MS = 60_000;
 
+/**
+ * 정류장에 도착했다고 인정할 반경(km).
+ *
+ * 이 값이 없을 때는 "가장 가까운 정류장"을 그대로 현재 위치로 삼았다. 그러면 버스가
+ * 두 정류장 사이 중간을 넘는 순간 다음 정류장으로 넘어간다. 실측(2026-09-04, 35번)에서
+ * 앞 정류장 355m / 뒤 정류장 339m 지점, 즉 16m 차이로 정류장 하나가 통째로 넘어갔고
+ * 남은 정거장이 2에서 1로 바뀌면서 하차벨이 목적지 539m 앞에서 울렸다. 정류장 간격이
+ * 700m 안팎이므로 중간 지점은 350m 부근이고, 이 거리는 "도착"이라고 부를 수 없다.
+ *
+ * 값은 실측으로 정했다. 같은 운행 표본 165개에서 실제로 정차한 정류장까지 최소
+ * 거리는 0~11m 였고 50m 안에 든 표본이 정류장마다 9~97개였다. 이 노선은 정류장
+ * 간격이 157m 인 구간도 있어 반경을 크게 잡으면 두 정류장이 겹친다.
+ *
+ * TODO(한계, 시연 뒤 재검토): 이 수정은 "일찍 울리는 것"만 막는다. 완결이 아니다.
+ *
+ * 버스가 정류장을 그냥 통과해 반경 안에 표본이 하나도 안 들어오면 그 정류장을 놓친다.
+ * 그때는 다음 정류장 반경에서 잡히지만 FORWARD_JUMP_CLAMPED 가 한 칸씩만 올리므로,
+ * 같은 정류장 반경 안에서 표본이 두 번 이상 들어와야 따라잡는다. 정류장마다 표본이
+ * 한 개씩만 들어오면 계속 한 칸 뒤처지고, 목적지에 도착해서야 하차벨이 울린다.
+ *
+ * 이 방향을 택한 이유는 두 실패의 무게가 다르기 때문이다. 일찍 울리면 사용자가
+ * 목적지 한참 전에 내린다. 늦게 울리면 한 정거장 더 가서 내린다. 앞을 못 보는
+ * 사용자에게는 뒤쪽이 덜 위험하다.
+ *
+ * 남은 확인:
+ * - 50m 가 다른 노선에서도 맞는지 (정류장 간격이 좁거나 넓은 구간)
+ * - 정류장을 놓쳤을 때 따라잡는 로직을 표본 수에 의존하지 않게 바꿀지
+ *   (예: 반경 안에서 잡혔으면 신뢰하고 클램프를 건너뛰기)
+ *
+ * 근거 데이터: 2026-09-04 35번 실차, 표본 165개. 실제로 정차한 정류장까지 최소
+ * 거리 0~11m, 50m 안에 든 표본이 정류장마다 9~97개. 앱은 watchPositionAsync +
+ * Accuracy.High 로 연속 수신한다(#48).
+ */
+const STATION_ARRIVAL_RADIUS_KM = 0.05;
+
 export async function updateTripStatus(
   tripId: string,
   input: unknown,
@@ -513,21 +548,31 @@ function calculateProgress(
   isStale: boolean,
 ) {
   const stationList = progressData.trip.stationList;
-  const nearestIndex = findNearestStationIndex(stationList, location.latitude, location.longitude);
+  const arrivedIndex = findArrivedStationIndex(stationList, location.latitude, location.longitude);
   const previousIndex = findStationIndex(stationList, progressData.status.currentStation);
-  let acceptedIndex = nearestIndex;
+  let acceptedIndex: number;
   let locationAccepted = true;
   let reason: LocationLogCreateRecord["reason"] = null;
 
-  if (previousIndex >= 0 && nearestIndex < previousIndex) {
+  if (arrivedIndex < 0) {
+    // 어느 정류장 반경에도 없다 = 정류장 사이를 지나는 중이다. 진행을 바꾸지 않고
+    // 직전 정류장에 머문다. 운행 시작 직후라 직전 값이 없으면 탑승 정류장에서 센다.
+    //
+    // 이 경우는 운행 대부분을 차지하므로 reason 을 남기지 않는다. 남기면 정상 주행이
+    // 전부 "사유 있음"으로 기록돼 BACKWARD/CLAMPED 같은 실제 이상 신호가 묻힌다.
+    acceptedIndex = previousIndex >= 0 ? previousIndex : 0;
+  } else if (previousIndex >= 0 && arrivedIndex < previousIndex) {
     acceptedIndex = previousIndex;
     locationAccepted = false;
     reason = "BACKWARD_STATION_IGNORED";
-  } else if (previousIndex >= 0 && nearestIndex > previousIndex + 1 && isStale) {
+  } else if (previousIndex >= 0 && arrivedIndex > previousIndex + 1 && isStale) {
+    acceptedIndex = arrivedIndex;
     reason = "FORWARD_GAP_RECOVERED";
-  } else if (previousIndex >= 0 && nearestIndex > previousIndex + 1) {
+  } else if (previousIndex >= 0 && arrivedIndex > previousIndex + 1) {
     acceptedIndex = previousIndex + 1;
     reason = "FORWARD_JUMP_CLAMPED";
+  } else {
+    acceptedIndex = arrivedIndex;
   }
 
   const currentStation = stationList[acceptedIndex] ?? null;
@@ -620,8 +665,14 @@ function hasInconsistentBoardingState(progressData: TripProgressData) {
   );
 }
 
-function findNearestStationIndex(stationList: Station[], latitude: number, longitude: number) {
-  let nearestIndex = 0;
+/**
+ * 지금 도착해 있는 정류장의 인덱스. 반경 안에 아무것도 없으면 -1 을 돌려준다.
+ *
+ * "가장 가까운 정류장"이 아니라 "도착한 정류장"을 찾는다. 둘의 차이가 실제 오작동을
+ * 만들었다 — 가장 가까운 것만 보면 정류장 사이 중간 지점에서 다음 정류장으로 넘어간다.
+ */
+function findArrivedStationIndex(stationList: Station[], latitude: number, longitude: number) {
+  let nearestIndex = -1;
   let nearestDistance = Number.POSITIVE_INFINITY;
 
   stationList.forEach((station, index) => {
@@ -632,7 +683,7 @@ function findNearestStationIndex(stationList: Station[], latitude: number, longi
     }
   });
 
-  return nearestIndex;
+  return nearestDistance <= STATION_ARRIVAL_RADIUS_KM ? nearestIndex : -1;
 }
 
 function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number) {
