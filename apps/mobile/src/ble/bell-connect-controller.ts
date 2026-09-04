@@ -41,14 +41,14 @@ export type BellConnectDeps = {
 /**
  * 최초 1회 + 재시도 2회.
  *
- * 한 번의 시도가 최대 10초(스캔 제한 시간)이고 대기가 1초·2초이므로, 최악이라도
- * 33초 안에 끝난다. 가장 짧은 시연 구간(정류장 4개)보다 짧아서 하차 판단 전에
- * 결론이 난다.
+ * 한 번의 시도가 최대 10초(스캔 제한 시간)이고 각 실패 후 대기가 2초이므로,
+ * 최악의 경우 약 34초 안에 끝난다. 가장 짧은 시연 구간(정류장 4개)보다 짧아서
+ * 하차 판단 전에 결론이 난다.
  */
 export const MAX_BELL_CONNECT_ATTEMPTS = 3;
 
-/** 재시도 간격(ms). 1초 → 2초. */
-export const BELL_CONNECT_RETRY_DELAYS_MS = [1000, 2000];
+/** 재시도 간격(ms). 각 연결 실패 후 2초. */
+export const BELL_CONNECT_RETRY_DELAYS_MS = [2000, 2000];
 
 /**
  * 하차벨 연결 해제를 제한된 횟수만큼 재시도한다.
@@ -81,33 +81,67 @@ export async function disconnectBellWithRetry(deps: {
 export async function connectBellWithRetry(
   deps: BellConnectDeps,
 ): Promise<void> {
+  console.log('[BLE] 하차벨 연결 시작');
+
   for (let attempt = 0; attempt < MAX_BELL_CONNECT_ATTEMPTS; attempt += 1) {
-    if (!deps.isStillWanted()) return;
+    if (!deps.isStillWanted()) {
+      console.log('[BLE] 하차벨 연결 중단 - 더 이상 현재 운행에서 필요하지 않음');
+      return;
+    }
+
+    console.log(
+      `[BLE] 하차벨 연결 시도 ${attempt + 1}/${MAX_BELL_CONNECT_ATTEMPTS}`,
+    );
 
     let connected: unknown = null;
+
     try {
       connected = await deps.connectBell();
-    } catch {
+    } catch (error) {
+      console.log(
+        `[BLE] 하차벨 연결 오류 ${attempt + 1}/${MAX_BELL_CONNECT_ATTEMPTS}:`,
+        error,
+      );
       connected = null;
     }
 
     if (connected) {
+      console.log(
+        `[BLE] 하차벨 연결 성공 ${attempt + 1}/${MAX_BELL_CONNECT_ATTEMPTS}`,
+      );
+
       // 연결됐다. 다만 스캔이 도는 동안 운행이 끝났을 수 있으므로 다시 묻는다.
       if (deps.isStillWanted()) {
         deps.onConnected();
       } else {
+        console.log(
+          '[BLE] 하차벨 연결은 성공했지만 운행이 이미 끝남 - 연결 정리 시작',
+        );
         await deps.onConnectedTooLate();
       }
+
       return;
     }
 
+    console.log(
+      `[BLE] 하차벨 연결 실패 ${attempt + 1}/${MAX_BELL_CONNECT_ATTEMPTS}`,
+    );
+
     const isLastAttempt = attempt === MAX_BELL_CONNECT_ATTEMPTS - 1;
+
     if (isLastAttempt) {
       // 상한까지 실패했다. 조용히 끝내면 사용자는 내릴 때가 되어서야 하차벨이
       // 안 눌린다는 것을 알게 된다.
-      if (deps.isStillWanted()) deps.onGaveUp();
+      console.log('[BLE] 하차벨 연결 최종 실패');
+
+      if (deps.isStillWanted()) {
+        deps.onGaveUp();
+      }
+
       return;
     }
+
+    console.log('[BLE] 하차벨 연결 재시도 전 2초 대기');
 
     await deps.wait(BELL_CONNECT_RETRY_DELAYS_MS[attempt] ?? 2000);
   }

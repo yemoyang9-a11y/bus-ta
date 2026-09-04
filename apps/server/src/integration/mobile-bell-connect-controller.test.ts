@@ -75,7 +75,7 @@ test("버스 안에서 한 번 실패해도 다시 시도해 연결한다", asyn
 
   assert.equal(attempt, 2);
   assert.equal(calls.connected, 1);
-  assert.deepEqual(calls.waits, [1000]);
+  assert.deepEqual(calls.waits, [2000]);
   assert.equal(calls.gaveUp, 0);
 });
 
@@ -110,7 +110,7 @@ test("상한까지 실패하면 조용히 끝내지 않고 알린다", async () 
   assert.equal(calls.connected, 0);
   // 사용자가 내릴 때가 되어서야 벨이 안 눌린다는 것을 알면 늦는다.
   assert.equal(calls.gaveUp, 1);
-  assert.deepEqual(calls.waits, [1000, 2000]);
+  assert.deepEqual(calls.waits, [2000, 2000]);
 });
 
 test("기다리는 사이 운행이 끝나면 더 시도하지 않는다", async () => {
@@ -206,7 +206,7 @@ test("연결 해제가 한 번 실패해도 다시 시도해 끊는다", async (
 
   assert.equal(attempt, 2);
   assert.equal(gaveUp, 0);
-  assert.deepEqual(waits, [1000]);
+  assert.deepEqual(waits, [2000]);
 });
 
 test("연결 해제가 상한까지 실패하면 알린다", async () => {

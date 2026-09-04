@@ -39,55 +39,111 @@ export type BellCommandOutcome = {
 const noop = () => undefined;
 
 async function ensureConnected(deps: BellCommandDeps): Promise<boolean> {
-  if (await deps.isConnected()) return true;
+  let connected = false;
+
+  try {
+    connected = await deps.isConnected();
+  } catch (error) {
+    console.log('[BLE] 하차벨 실제 연결 상태 확인 실패:', error);
+  }
+
+  console.log('[BLE] 하차벨 실제 연결 상태:', connected);
+
+  if (connected) return true;
+
+  console.log('[BLE] 하차벨 미연결 - 재연결 시작');
 
   try {
     await deps.connect();
-  } catch {
+  } catch (error) {
+    console.log('[BLE] 하차벨 재연결 오류:', error);
     return false;
   }
 
-  return deps.isConnected();
+  try {
+    connected = await deps.isConnected();
+  } catch (error) {
+    console.log('[BLE] 하차벨 재연결 후 상태 확인 실패:', error);
+    return false;
+  }
+
+  console.log('[BLE] 하차벨 재연결 결과:', connected);
+
+  return connected;
 }
 
 export async function sendStopRequestWithReconnect(
   deps: BellCommandDeps,
 ): Promise<BellCommandOutcome> {
+  console.log('[BLE] STOP_REQUEST 처리 시작');
+
   if (!(await ensureConnected(deps))) {
+    console.log('[BLE] 하차벨 연결 실패 - STOP_REQUEST 전송하지 않음');
     return { sent: false, unsubscribe: noop };
   }
 
   let unsubscribe: () => void;
+
   try {
     unsubscribe = deps.subscribeResult();
-  } catch {
+    console.log('[BLE] 하차벨 결과 Notify 구독 완료');
+  } catch (error) {
+    console.log('[BLE] 하차벨 결과 Notify 구독 실패:', error);
     return { sent: false, unsubscribe: noop };
   }
 
   try {
+    console.log('[BLE] STOP_REQUEST 전송 1/2');
     await deps.sendStopRequest();
+    console.log('[BLE] STOP_REQUEST 전송 성공 1/2');
+
     return { sent: true, unsubscribe };
-  } catch {
-    // 첫 전송이 실패했다. 연결이 끊겨서일 수 있으므로 확인하고 다시 붙은 뒤 한 번 더.
+  } catch (error) {
+    console.log(
+      '[BLE] STOP_REQUEST 전송 실패 1/2 - 재연결 후 1회 재시도:',
+      error,
+    );
+
     unsubscribe();
   }
 
   if (!(await ensureConnected(deps))) {
+    console.log(
+      '[BLE] STOP_REQUEST 재시도 전 하차벨 연결 복구 실패 - 전송 중단',
+    );
     return { sent: false, unsubscribe: noop };
   }
 
   let retryUnsubscribe: () => void;
+
   try {
     retryUnsubscribe = deps.subscribeResult();
-  } catch {
+    console.log('[BLE] STOP_REQUEST 재시도용 Notify 구독 완료');
+  } catch (error) {
+    console.log('[BLE] STOP_REQUEST 재시도용 Notify 구독 실패:', error);
     return { sent: false, unsubscribe: noop };
   }
 
   try {
+    console.log('[BLE] STOP_REQUEST 재전송 2/2');
     await deps.sendStopRequest();
-    return { sent: true, unsubscribe: retryUnsubscribe };
-  } catch {
+    console.log('[BLE] STOP_REQUEST 재전송 성공 2/2');
+
+    return {
+      sent: true,
+      unsubscribe: retryUnsubscribe,
+    };
+  } catch (error) {
+    console.log(
+      '[BLE] STOP_REQUEST 재전송 최종 실패 - 추가 재전송하지 않음:',
+      error,
+    );
+
     retryUnsubscribe();
-    return { sent: false, unsubscribe: noop };
+
+    return {
+      sent: false,
+      unsubscribe: noop,
+    };
   }
 }
