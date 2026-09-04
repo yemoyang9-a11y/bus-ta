@@ -8,7 +8,14 @@ const CHARACTERISTIC_UUID = '4fa45541-8201-11e5-8223-0002a5d5c51b';
 
 const CANE_DEVICE_NAME = 'White_cane';
 // 정민님 확정(2026-08-12): 이 보드가 버스 비콘+하차벨 겸용이라 이름 하나로 둘 다 처리(MOCK 제거)
-const BELL_DEVICE_NAME = 'BUS_1551_001';
+//
+// 노선을 바꾸면 보드 이름도 바뀌므로 기본값으로만 쓴다. 실제로는 서버가 노선별로
+// 내려주는 targetBeaconId 를 넘겨 쓴다. 2026-09-04 에 시연 노선을 35 번으로 바꾸면서
+// DB 는 BUS_35_001 로 바뀌었는데 이 상수는 그대로라 하차벨이 붙지 못했다.
+const DEFAULT_BELL_DEVICE_NAME = 'BUS_1551_001';
+
+// 이번 운행에서 쓸 하차벨 보드 이름. 운행마다 서버 값으로 갱신한다.
+let bellDeviceName = DEFAULT_BELL_DEVICE_NAME;
 
 const manager = new BleManager();
 
@@ -87,7 +94,32 @@ async function connectByNames(deviceNames) {
  * 연결됐는지 결과 Map으로 확인해야 한다.
  */
 export async function connectAll() {
-  return connectByNames([CANE_DEVICE_NAME, BELL_DEVICE_NAME]);
+  return connectByNames([CANE_DEVICE_NAME, bellDeviceName]);
+}
+
+/**
+ * 스마트지팡이만 연결한다. 운행을 만드는 시점에 쓴다.
+ *
+ * 하차벨 보드를 여기서 같이 찾지 않는 이유는 물리적으로 아직 없기 때문이다.
+ * 사용자는 정류장에서 기다리는 중이고 버스는 오지 않았다. 그 시점에 10초 찾고
+ * 실패로 확정하면, 정작 버스에 탄 뒤에는 다시 찾지 않아 하차벨이 영영 안 붙는다.
+ * (2026-09-04 실차에서 두 번 다 이렇게 실패했다.)
+ */
+export async function connectCane() {
+  return connectOneByName(CANE_DEVICE_NAME);
+}
+
+/**
+ * 하차벨(버스 비콘 겸용) 보드를 연결한다. 탑승이 확정된 뒤에 쓴다.
+ *
+ * @param {string} [targetBeaconId] 서버가 노선별로 내려준 보드 이름.
+ *   넘기면 이번 운행의 대상으로 기억해 두고, 이후 STOP_REQUEST 도 같은 이름으로 보낸다.
+ */
+export async function connectBell(targetBeaconId) {
+  if (targetBeaconId) {
+    bellDeviceName = targetBeaconId;
+  }
+  return connectOneByName(bellDeviceName);
 }
 
 /** 스마트지팡이(White_cane) 연결 여부를 확인한다. */
@@ -95,9 +127,14 @@ export function isCaneConnected() {
   return connectedDevices.has(CANE_DEVICE_NAME);
 }
 
-/** 하차벨(BUS_1551_001, 버스 비콘 겸용) 연결 여부를 확인한다. */
+/** 하차벨(버스 비콘 겸용) 연결 여부를 확인한다. */
 export function isBellConnected() {
-  return connectedDevices.has(BELL_DEVICE_NAME);
+  return connectedDevices.has(bellDeviceName);
+}
+
+/** 이번 운행에서 쓰는 하차벨 보드 이름. 연결 해제나 진단에 쓴다. */
+export function getBellDeviceName() {
+  return bellDeviceName;
 }
 
 /**
@@ -186,7 +223,7 @@ export function subscribeCaneState(onState) {
 
 /** 하차벨에 STOP_REQUEST를 전송한다. */
 export async function sendStopRequest() {
-  await writeCommand(BELL_DEVICE_NAME, 'STOP_REQUEST');
+  await writeCommand(bellDeviceName, 'STOP_REQUEST');
 }
 
 /**
@@ -195,7 +232,7 @@ export async function sendStopRequest() {
  * @returns {() => void} 구독 해제 함수
  */
 export function subscribeBellResult(onResult) {
-  const device = connectedDevices.get(BELL_DEVICE_NAME);
+  const device = connectedDevices.get(bellDeviceName);
   if (!device) {
     throw new Error('BLE_NOT_CONNECTED: 하차벨에 연결되어 있지 않습니다.');
   }

@@ -30,6 +30,11 @@ export const initialState = {
   // 지팡이 연결과 대상 비콘 지정이 끝났는지. 서버의 스캔 시작 신호가 준비보다 먼저
   // 도착할 수 있어서, 준비 완료를 별도 값으로 들고 있어야 그때 스캔을 시작할 수 있다.
   caneReady: false,
+  // 이번 노선의 하차벨(버스 비콘 겸용) 보드 이름. 서버가 노선별로 내려준다.
+  // 탑승이 확정된 뒤 이 이름으로 하차벨을 연결한다.
+  targetBeaconId: null as string | null,
+  // 하차벨 연결 시도의 결과. null 이면 아직 시도하지 않았다는 뜻이다.
+  bellConnected: null as boolean | null,
 };
 
 export type TripState = typeof initialState;
@@ -137,6 +142,18 @@ export function tripReducer(state: TripState, action: TripAction): TripState {
       return {
         ...state,
         caneReady: action.ready as boolean,
+      };
+
+    case "SET_TARGET_BEACON_ID":
+      return {
+        ...state,
+        targetBeaconId: action.targetBeaconId as string | null,
+      };
+
+    case "SET_BELL_CONNECTED":
+      return {
+        ...state,
+        bellConnected: action.connected as boolean | null,
       };
 
     // 운행만 종료하고, 유효한 기존 목적지·후보 노선(및 TTL, 안내 기록)은 유지한다.

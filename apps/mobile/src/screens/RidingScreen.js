@@ -7,9 +7,10 @@ import { apiClient, ApiError } from '../api/client';
 import { useTrip } from '../state/TripContext';
 import { isScreenTripActive } from '../state/trip-transition';
 import { useRealtime } from '../realtime/RealtimeProvider';
-import { startBeaconScan, stopBeaconScan } from '../ble/bleManager';
+import { connectBell, disconnect, getBellDeviceName, startBeaconScan, stopBeaconScan } from '../ble/bleManager';
 import { canStartBeaconScan } from '../ble/beacon-scan-gate';
 import { startBeaconScanWithRetry, stopBeaconScanWithRetry } from '../ble/beacon-scan-controller';
+import { connectBellWithRetry } from '../ble/bell-connect-controller';
 
 const INITIAL_STATUS = {
   currentStation: null,
@@ -36,6 +37,7 @@ export default function RidingScreen({ route, navigation }) {
   const locationSubscriptionRef = useRef(null);
   const stoppingBeaconScanRef = useRef(false);
   const startingBeaconScanRef = useRef(false);
+  const connectingBellRef = useRef(false);
   const patchInFlightRef = useRef(false);
   const arrivalPollFailureCountRef = useRef(0);
 
@@ -233,6 +235,62 @@ export default function RidingScreen({ route, navigation }) {
         });
     }
   }, [boardingConfirmedAt, state.beaconScanActive]);
+
+  // 탑승이 확정되면 하차벨 보드를 연결한다.
+  //
+  // 예전에는 운행을 만들 때 지팡이와 함께 한 번에 연결했는데, 그 시점의 하차벨 보드는
+  // 아직 오지 않은 버스 안이라 BLE 범위 밖이었다. 반드시 실패했고 다시 찾지 않았다.
+  // 2026-09-04 실차에서 두 번 다 여기서 막혀, 하차 화면이 연결 없음을 보고 1초 만에
+  // 실패 처리했다. 지금은 버스 안에 있는 것이 확실한 이 시점에 연결한다.
+  //
+  // 연결할 보드 이름은 서버가 노선별로 내려준 targetBeaconId 를 쓴다. 노선을 바꾸면
+  // 보드도 바뀌기 때문에, 앱에 이름을 박아 두면 이번처럼 DB 만 바뀌었을 때 어긋난다.
+  useEffect(() => {
+    if (
+      !boardingConfirmedAt ||
+      state.bellConnected !== null ||
+      connectingBellRef.current
+    ) {
+      return;
+    }
+
+    connectingBellRef.current = true;
+    const attemptTripId = tripId;
+    const targetBeaconId = state.targetBeaconId;
+
+    // 재시도를 기다리는 동안 운행이 끝나거나 바뀔 수 있다. 렌더 당시 값이 아니라
+    // ref 로 최신 값을 본다.
+    const isStillWanted = () =>
+      !stoppedRef.current &&
+      isScreenTripActive(activeTripIdRef.current, attemptTripId);
+
+    connectBellWithRetry({
+      connectBell: () => connectBell(targetBeaconId),
+      isStillWanted,
+      onConnected: () => {
+        dispatch({ type: 'SET_BELL_CONNECTED', connected: true });
+      },
+      onConnectedTooLate: async () => {
+        // 끝난 운행에 늦게 붙었다. 다음 운행에 남지 않도록 끊는다.
+        try {
+          await disconnect(getBellDeviceName());
+        } catch (error) {
+          console.log('늦게 성공한 하차벨 연결을 끊지 못함:', error);
+        }
+      },
+      onGaveUp: () => {
+        dispatch({ type: 'SET_BELL_CONNECTED', connected: false });
+        // 조용히 넘어가면 사용자는 내릴 때가 되어서야 벨이 안 눌린다는 것을 안다.
+        Speech.speak(
+          '하차벨에 연결하지 못했습니다. 내리기 전에 기사님께 직접 말씀해 주세요.',
+          { language: 'ko' },
+        );
+      },
+      wait: waitBeforeRetry,
+    }).finally(() => {
+      connectingBellRef.current = false;
+    });
+  }, [boardingConfirmedAt, state.bellConnected, state.targetBeaconId]);
 
   // 예모님 지적(2026-08-27, P1) + 유나님 지적(2026-08-28):
   // 취소 감지 시 GPS/BLE를 즉시 중지한다.
