@@ -3,7 +3,9 @@ import test from "node:test";
 import {
   MAX_BEACON_SCAN_ATTEMPTS,
   startBeaconScanWithRetry,
+  stopBeaconScanWithRetry,
   type BeaconScanControllerDeps,
+  type BeaconScanStopDeps,
 } from "../../../mobile/src/ble/beacon-scan-controller.js";
 
 // ─────────────────────────────────────────────
@@ -132,4 +134,121 @@ test("명령이 오가는 동안 탑승하면 늦은 성공으로 스캔을 켜�
 
   assert.equal(calls.started, 0, "끝난 운행에서 스캔 중으로 표시하면 안 된다");
   assert.equal(calls.startedTooLate, 1, "켜진 스캔을 되돌릴 기회를 준다");
+});
+
+// ─────────────────────────────────────────────
+// 스캔 중지 재시도.
+//
+// 예모님 재지적(2026-09-04, PR #47 P1): 늦게 성공한 시작을 되돌리는 중지가 한 번만
+// 호출되고 실패를 무시했다. 그 중지가 실패하면 실제 지팡이는 스캔이 켜진 채인데 앱
+// 상태는 꺼짐이라, 뒤이은 탑승·취소 종료 경로도 다시 끄지 않아 영구히 어긋난다.
+// ─────────────────────────────────────────────
+
+function makeStopDeps(overrides: Partial<BeaconScanStopDeps> = {}) {
+  const calls = { attempts: 0, stopped: 0, gaveUp: 0, waits: [] as number[] };
+
+  const deps: BeaconScanStopDeps = {
+    stopBeaconScan: async () => {
+      calls.attempts += 1;
+    },
+    onStopped: () => {
+      calls.stopped += 1;
+    },
+    onGaveUp: () => {
+      calls.gaveUp += 1;
+    },
+    wait: async (ms: number) => {
+      calls.waits.push(ms);
+    },
+    ...overrides,
+  };
+
+  return { deps, calls };
+}
+
+test("중지가 첫 시도에 성공하면 스캔 꺼짐으로 표시한다", async () => {
+  const { deps, calls } = makeStopDeps();
+
+  await stopBeaconScanWithRetry(deps);
+
+  assert.equal(calls.attempts, 1);
+  assert.equal(calls.stopped, 1);
+  assert.equal(calls.gaveUp, 0);
+});
+
+test("첫 STOP_BEACON_SCAN 이 실패해도 재시도해서 성공한다", async () => {
+  let attempt = 0;
+  const { deps, calls } = makeStopDeps({
+    stopBeaconScan: async () => {
+      attempt += 1;
+      if (attempt === 1) throw new Error("GATT_ERROR");
+    },
+  });
+
+  await stopBeaconScanWithRetry(deps);
+
+  assert.equal(attempt, 2);
+  assert.equal(calls.stopped, 1, "재시도가 성공하면 꺼짐으로 표시한다");
+  assert.equal(calls.gaveUp, 0);
+  assert.deepEqual(calls.waits, [1000]);
+});
+
+test("중지가 상한까지 실패하면 꺼짐으로 표시하지 않는다", async () => {
+  // 실제 장치는 켜져 있을 수 있다. 꺼짐으로 기록하면 뒤이은 종료 경로가 다시
+  // 끄지 않아 상태와 장치가 영구히 어긋난다.
+  let attempt = 0;
+  const { deps, calls } = makeStopDeps({
+    stopBeaconScan: async () => {
+      attempt += 1;
+      throw new Error("GATT_ERROR");
+    },
+  });
+
+  await stopBeaconScanWithRetry(deps);
+
+  assert.equal(attempt, MAX_BEACON_SCAN_ATTEMPTS);
+  assert.equal(calls.stopped, 0, "성공하지 않았으므로 꺼짐으로 표시하면 안 된다");
+  assert.equal(calls.gaveUp, 1);
+});
+
+test("시작 진행 중 탑승 → 늦은 성공 → 첫 중지 실패 → 재시도 중지 성공", async () => {
+  // 예모님이 요청한 회귀 시나리오. 시작과 중지가 이어지는 전체 경로를 한 번에 본다.
+  let wanted = true;
+  let stopAttempt = 0;
+  let stopped = false;
+  let markedActiveForLaterCleanup = false;
+
+  await startBeaconScanWithRetry({
+    startBeaconScan: async () => {
+      // 명령이 오가는 동안 사용자가 버스에 탔다.
+      wanted = false;
+    },
+    isStillWanted: () => wanted,
+    onStarted: () => {
+      assert.fail("끝난 대기 구간에서 스캔 중으로 표시하면 안 된다");
+    },
+    onStartedTooLate: () =>
+      stopBeaconScanWithRetry({
+        stopBeaconScan: async () => {
+          stopAttempt += 1;
+          if (stopAttempt === 1) throw new Error("GATT_ERROR");
+          stopped = true;
+        },
+        onStopped: () => undefined,
+        onGaveUp: () => {
+          markedActiveForLaterCleanup = true;
+        },
+        wait: async () => undefined,
+      }),
+    onGaveUp: () => assert.fail("시작은 실패하지 않았다"),
+    wait: async () => undefined,
+  });
+
+  assert.equal(stopAttempt, 2, "첫 중지가 실패하면 한 번 더 시도해야 한다");
+  assert.equal(stopped, true, "재시도로 실제 스캔이 꺼져야 한다");
+  assert.equal(
+    markedActiveForLaterCleanup,
+    false,
+    "재시도가 성공했으므로 켜진 것으로 남길 필요가 없다",
+  );
 });

@@ -9,7 +9,7 @@ import { isScreenTripActive } from '../state/trip-transition';
 import { useRealtime } from '../realtime/RealtimeProvider';
 import { startBeaconScan, stopBeaconScan } from '../ble/bleManager';
 import { canStartBeaconScan } from '../ble/beacon-scan-gate';
-import { startBeaconScanWithRetry } from '../ble/beacon-scan-controller';
+import { startBeaconScanWithRetry, stopBeaconScanWithRetry } from '../ble/beacon-scan-controller';
 
 const INITIAL_STATUS = {
   currentStation: null,
@@ -73,6 +73,25 @@ export default function RidingScreen({ route, navigation }) {
   activeTripIdRef.current = state.tripId;
   const boardingConfirmedAtRef = useRef(boardingConfirmedAt);
   boardingConfirmedAtRef.current = boardingConfirmedAt;
+
+  const waitBeforeRetry = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  // 스캔 중지는 경로가 넷이다(늦은 성공 되돌리기, 탑승 확정, 취소, 운행 종료).
+  // 넷 다 첫 실패에서 멈추면 실제 장치는 켜진 채 남는다. 하나로 모아 제한 재시도한다.
+  //
+  // 실패했을 때 beaconScanActive 를 끄지 않는 것이 핵심이다. 실제로는 켜져 있을 수
+  // 있으므로 켜진 것으로 남겨 두어야 뒤이은 종료 경로가 다시 끈다.
+  const runStopBeaconScan = (label) =>
+    stopBeaconScanWithRetry({
+      stopBeaconScan,
+      onStopped: () => {
+        dispatch({ type: 'SET_BEACON_SCAN_ACTIVE', active: false });
+      },
+      onGaveUp: (error) => {
+        console.log(label, error);
+      },
+      wait: waitBeforeRetry,
+    });
 
   // 예모님 재지적(2026-08-28, P1): 취소된 이전 운행에서 stoppedRef.current = true가
   // 남아있으면, 같은 Riding 화면 인스턴스가 재사용될 때(A 취소 후 B 선택) 새 tripId로도
@@ -171,10 +190,20 @@ export default function RidingScreen({ route, navigation }) {
         onStarted: () => {
           dispatch({ type: 'SET_BEACON_SCAN_ACTIVE', active: true });
         },
-        onStartedTooLate: () => {
-          // 이미 끝난 대기 구간이다. 켜진 스캔을 되돌린다.
-          stopBeaconScan().catch(() => undefined);
-        },
+        onStartedTooLate: () =>
+          // 이미 끝난 대기 구간이다. 켜진 스캔을 되돌리고 완료를 기다린다.
+          stopBeaconScanWithRetry({
+            stopBeaconScan,
+            onStopped: () => undefined,
+            onGaveUp: (error) => {
+              console.log('늦게 성공한 스캔을 되돌리지 못함:', error);
+              // 앱은 이 스캔을 켜졌다고 기록한 적이 없다. 여기서 끝내면 실제 장치는
+              // 켜져 있는데 상태는 꺼짐이라, 탑승·취소 종료 경로도 다시 끄지 않는다.
+              // 켜진 것으로 남겨 그 경로들이 이어서 끄게 한다.
+              dispatch({ type: 'SET_BEACON_SCAN_ACTIVE', active: true });
+            },
+            wait: waitBeforeRetry,
+          }),
         onGaveUp: (error) => {
           console.log('비콘 스캔 시작을 상한까지 재시도했지만 실패:', error);
           Speech.speak(
@@ -198,19 +227,7 @@ export default function RidingScreen({ route, navigation }) {
     ) {
       stoppingBeaconScanRef.current = true;
 
-      stopBeaconScan()
-        .then(() => {
-          dispatch({
-            type: 'SET_BEACON_SCAN_ACTIVE',
-            active: false,
-          });
-        })
-        .catch((error) => {
-          console.log(
-            '비콘 스캔 중지 실패, 다음 주기에 재시도:',
-            error,
-          );
-        })
+      runStopBeaconScan('탑승 확정 후 비콘 스캔 중지를 상한까지 재시도했지만 실패:')
         .finally(() => {
           stoppingBeaconScanRef.current = false;
         });
@@ -234,19 +251,7 @@ export default function RidingScreen({ route, navigation }) {
       ) {
         stoppingBeaconScanRef.current = true;
 
-        stopBeaconScan()
-          .then(() => {
-            dispatch({
-              type: 'SET_BEACON_SCAN_ACTIVE',
-              active: false,
-            });
-          })
-          .catch((error) => {
-            console.log(
-              '취소 후 비콘 스캔 중지 실패:',
-              error,
-            );
-          })
+        runStopBeaconScan('취소 후 비콘 스캔 중지를 상한까지 재시도했지만 실패:')
           .finally(() => {
             stoppingBeaconScanRef.current = false;
           });
@@ -782,16 +787,8 @@ export default function RidingScreen({ route, navigation }) {
     stoppingBeaconScanRef.current = true;
 
     try {
-      await stopBeaconScan();
-
-      dispatch({
-        type: 'SET_BEACON_SCAN_ACTIVE',
-        active: false,
-      });
-    } catch (error) {
-      console.log(
-        '종료 시 비콘 스캔 중지 실패, 취소 감지 로직이 재시도함:',
-        error,
+      await runStopBeaconScan(
+        '종료 시 비콘 스캔 중지를 상한까지 재시도했지만 실패, 취소 감지 로직이 다시 시도함:',
       );
     } finally {
       stoppingBeaconScanRef.current = false;
