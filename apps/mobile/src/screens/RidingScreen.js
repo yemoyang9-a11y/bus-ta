@@ -11,7 +11,6 @@ import { toTripStatusSnapshot } from '../realtime/status-snapshot';
 import {
   connectBell,
   disconnect,
-  getBellDeviceName,
   startBeaconScan,
   stopBeaconScan,
 } from '../ble/bleManager';
@@ -65,8 +64,6 @@ export default function RidingScreen({ route, navigation }) {
   const boardingConfirmedAt =
     state.boardingConfirmedAt ?? status.boardingConfirmedAt;
 
-  // GPS 추적을 논리적으로만 멈추지 않고,
-  // 네이티브 watch subscription까지 실제로 해제한다.
   const stopLocationWatch = () => {
     stoppedRef.current = true;
 
@@ -81,22 +78,15 @@ export default function RidingScreen({ route, navigation }) {
     }
   };
 
-  // 비콘 스캔 재시도는 effect 가 끝난 뒤에도 이어진다. 그 사이 탑승이 확정되거나
-  // 운행이 바뀌어도 콜백이 렌더 당시의 값을 계속 보면 안 되므로 ref 로 최신 값을
-  // 들고 있는다.
   const activeTripIdRef = useRef(state.tripId);
   activeTripIdRef.current = state.tripId;
+
   const boardingConfirmedAtRef = useRef(boardingConfirmedAt);
   boardingConfirmedAtRef.current = boardingConfirmedAt;
 
   const waitBeforeRetry = (ms) =>
     new Promise((resolve) => setTimeout(resolve, ms));
 
-  // 스캔 중지는 경로가 넷이다(늦은 성공 되돌리기, 탑승 확정, 취소, 운행 종료).
-  // 넷 다 첫 실패에서 멈추면 실제 장치는 켜진 채 남는다. 하나로 모아 제한 재시도한다.
-  //
-  // 실패했을 때 beaconScanActive 를 끄지 않는 것이 핵심이다. 실제로는 켜져 있을 수
-  // 있으므로 켜진 것으로 남겨 두어야 뒤이은 종료 경로가 다시 끈다.
   const runStopBeaconScan = (label) =>
     stopBeaconScanWithRetry({
       stopBeaconScan,
@@ -109,10 +99,6 @@ export default function RidingScreen({ route, navigation }) {
       wait: waitBeforeRetry,
     });
 
-  // 예모님 재지적(2026-08-28, P1): 취소된 이전 운행에서 stoppedRef.current = true가
-  // 남아있으면, 같은 Riding 화면 인스턴스가 재사용될 때(A 취소 후 B 선택) 새 tripId로도
-  // GPS 추적이 계속 멈춰있는 상태가 된다. tripId가 바뀔 때마다 정지 관련 ref들을
-  // 새 운행 기준으로 초기화한다.
   useEffect(() => {
     stoppedRef.current = false;
     bellHandledRef.current = false;
@@ -137,7 +123,6 @@ export default function RidingScreen({ route, navigation }) {
     }
   })();
 
-  // 최초 진입 안내
   useFocusEffect(
     React.useCallback(() => {
       if (isConnected) return;
@@ -155,7 +140,6 @@ export default function RidingScreen({ route, navigation }) {
     }, [isConnected]),
   );
 
-  // 정류장·상태 바뀔 때마다 TTS
   useEffect(() => {
     if (isConnected) return;
 
@@ -168,15 +152,6 @@ export default function RidingScreen({ route, navigation }) {
     }
   }, [status.guideMessage, status.remainingStations, isConnected]);
 
-  // 효린님 확인(2026-08-28): shouldScanBeacon이 true이고 아직 스캔 중이 아니면 자동으로
-  // startBeaconScan()을 호출한다. 스캔을 시작하는 곳은 앱 전체에서 여기 하나다.
-  //
-  // 예모님 지적(2026-09-04, PR #47 P1): 서버 신호가 지팡이 준비보다 먼저 도착할 수
-  // 있다. 그때 startBeaconScan()은 BLE_NOT_CONNECTED로 실패하는데, 실패해도
-  // beaconScanActive는 false 그대로이고 shouldScanBeacon도 계속 true라서 이 effect의
-  // 의존값이 바뀌지 않는다. 그러면 다시 시도되지 않고 스캔이 영영 안 켜진다.
-  // 그래서 caneReady를 조건과 의존값에 함께 넣는다. 신호가 먼저 와도 준비가 끝나는
-  // 순간 값이 바뀌면서 그때 시작된다.
   useEffect(() => {
     if (
       canStartBeaconScan({
@@ -232,7 +207,6 @@ export default function RidingScreen({ route, navigation }) {
     state.beaconScanActive,
   ]);
 
-  // 정민님 확인(2026-08-12): 탑승 완료 시 비콘 스캔 중지
   useEffect(() => {
     if (
       boardingConfirmedAt &&
@@ -249,15 +223,7 @@ export default function RidingScreen({ route, navigation }) {
     }
   }, [boardingConfirmedAt, state.beaconScanActive]);
 
-  // 탑승이 확정되면 하차벨 보드를 연결한다.
-  //
-  // 예전에는 운행을 만들 때 지팡이와 함께 한 번에 연결했는데, 그 시점의 하차벨 보드는
-  // 아직 오지 않은 버스 안이라 BLE 범위 밖이었다. 반드시 실패했고 다시 찾지 않았다.
-  // 2026-09-04 실차에서 두 번 다 여기서 막혀, 하차 화면이 연결 없음을 보고 1초 만에
-  // 실패 처리했다. 지금은 버스 안에 있는 것이 확실한 이 시점에 연결한다.
-  //
-  // 연결할 보드 이름은 서버가 노선별로 내려준 targetBeaconId 를 쓴다. 노선을 바꾸면
-  // 보드도 바뀌기 때문에, 앱에 이름을 박아 두면 DB 만 바뀌었을 때 어긋난다.
+  // 탑승 확정 후 하차벨 보드를 연결한다.
   useEffect(() => {
     if (
       !boardingConfirmedAt ||
@@ -270,8 +236,15 @@ export default function RidingScreen({ route, navigation }) {
     const targetBeaconId = state.targetBeaconId;
 
     if (!targetBeaconId) {
+      if (!state.beaconPreparationCompleted) {
+        console.log(
+          '[BLE] targetBeaconId 준비 중 - 비콘 조회 완료까지 하차벨 연결 대기',
+        );
+        return;
+      }
+
       console.log(
-        '[BLE] targetBeaconId 없음 - 하차벨 연결을 시작하지 않음',
+        '[BLE] 비콘 준비 완료 후에도 targetBeaconId 없음 - 하차벨 연결을 시작하지 않음',
       );
       dispatch({
         type: 'SET_BELL_CONNECTED',
@@ -287,8 +260,6 @@ export default function RidingScreen({ route, navigation }) {
     connectingBellRef.current = true;
     const attemptTripId = tripId;
 
-    // 재시도를 기다리는 동안 운행이 끝나거나 바뀔 수 있다.
-    // 렌더 당시 값이 아니라 ref 로 최신 값을 본다.
     const isStillWanted = () =>
       !stoppedRef.current &&
       isScreenTripActive(activeTripIdRef.current, attemptTripId);
@@ -306,8 +277,7 @@ export default function RidingScreen({ route, navigation }) {
 
       onConnectedTooLate: () =>
         disconnectBellWithRetry({
-          disconnectBell: () =>
-            disconnect(getBellDeviceName()),
+          disconnectBell: () => disconnect(targetBeaconId),
           onGaveUp: (error) => {
             console.log(
               '늦게 성공한 하차벨 연결을 상한까지 끊지 못함:',
@@ -337,9 +307,9 @@ export default function RidingScreen({ route, navigation }) {
     boardingConfirmedAt,
     state.bellConnected,
     state.targetBeaconId,
+    state.beaconPreparationCompleted,
   ]);
 
-  // 취소 감지 시 GPS/BLE를 즉시 중지한다.
   const isThisTripStillActive =
     isScreenTripActive(state.tripId, tripId);
 
@@ -365,7 +335,6 @@ export default function RidingScreen({ route, navigation }) {
     state.beaconScanActive,
   ]);
 
-  // 1정거장 남았을 때 TTS 출력 후 하차 안내 화면 전환
   useEffect(() => {
     if (
       status.shouldTriggerBell === true &&
@@ -393,7 +362,6 @@ export default function RidingScreen({ route, navigation }) {
     }
   }, [status, isConnected]);
 
-  // 실제 GPS 위치를 연속 구독한다.
   useEffect(() => {
     let cancelled = false;
 
@@ -621,7 +589,6 @@ export default function RidingScreen({ route, navigation }) {
     };
   }, [tripId]);
 
-  // WAITING_BUS 동안 서버가 알려준 주기로 GET /status를 반복 호출한다.
   useEffect(() => {
     if (
       currentTripStatus !== 'WAITING_BUS'
@@ -701,7 +668,6 @@ export default function RidingScreen({ route, navigation }) {
     tripId,
   ]);
 
-  // PATCH /api/trips/{tripId}/status 호출
   const patchStatus = async (
     location,
     callbackReceivedAt = Date.now(),

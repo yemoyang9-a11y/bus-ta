@@ -97,3 +97,28 @@ test("비콘 조회에 실패해도 지팡이 연결은 시도한다", async () 
   assert.equal(calls.caneConnects, 1);
   assert.deepEqual(calls.failures, ["CANE:BEACON_LOOKUP_FAILED"]);
 });
+
+test("비콘 준비 완료는 targetBeaconId를 상태에 남긴 뒤 표시한다", async () => {
+  const { preparation, calls } = makePreparation();
+
+  await preparation.prepare({ tripId: TRIP_ID, routeNo: "35" });
+
+  const targetIndex = calls.dispatched.findIndex(
+    (action) => action.type === "SET_TARGET_BEACON_ID",
+  );
+  const completedIndex = calls.dispatched.findIndex(
+    (action) => action.type === "SET_BEACON_PREPARATION_COMPLETED",
+  );
+
+  assert.notEqual(targetIndex, -1);
+  assert.notEqual(completedIndex, -1);
+
+  // 탑승 확정이 먼저 도착한 경우 RidingScreen은 준비 완료를 기다린다.
+  // 따라서 targetBeaconId를 먼저 저장하고 그 뒤에 준비 완료를 알려야 한다.
+  assert.ok(targetIndex < completedIndex);
+
+  assert.equal(
+    calls.dispatched[completedIndex]?.completed,
+    true,
+  );
+});

@@ -146,6 +146,7 @@ export type AppAction =
   | { type: "SET_CANE_READY"; ready: boolean }
   | { type: "SET_BEACON_SCAN_ACTIVE"; active: boolean }
   | { type: "SET_TARGET_BEACON_ID"; targetBeaconId: string | null }
+  | { type: "SET_BEACON_PREPARATION_COMPLETED"; completed: boolean }
   | { type: "SET_BELL_CONNECTED"; connected: boolean | null }
   | {
       // 예모님 지적(2026-08-28): 음성 end_trip(사용자 취소) 성공 시,

@@ -17,6 +17,11 @@ const DEFAULT_BELL_DEVICE_NAME = 'BUS_35_001';
 // 이번 운행에서 쓸 하차벨 보드 이름. 운행마다 서버 값으로 갱신한다.
 let bellDeviceName = DEFAULT_BELL_DEVICE_NAME;
 
+// 실제로 현재 연결에 성공한 하차벨 보드 이름.
+// bellDeviceName은 다음 운행의 targetBeaconId로 먼저 바뀔 수 있으므로,
+// 실제 연결 해제 대상은 별도로 기억한다.
+let connectedBellDeviceName = null;
+
 const manager = new BleManager();
 
 // 연결된 기기를 device name별로 보관
@@ -33,6 +38,7 @@ function scanAndConnect(deviceName) {
     let settled = false;
     let scanTimeout = null;
     let connectTimeout = null;
+    let connectingDevice = null;
 
     const finish = (result) => {
       if (settled) return;
@@ -54,7 +60,6 @@ function scanAndConnect(deviceName) {
     };
 
     // 장치를 찾기 위한 스캔 제한 시간.
-    // 장치를 발견하면 이 타이머는 즉시 종료하고 연결용 타이머로 분리한다.
     scanTimeout = setTimeout(() => {
       console.log('[BLE] 장치 스캔 시간 초과:', deviceName);
       finish(null);
@@ -71,7 +76,14 @@ function scanAndConnect(deviceName) {
         return;
       }
 
-      // 장치를 찾았으므로 더 이상 "스캔 시간 초과"가 연결 시도를 종료하면 안 된다.
+      // 같은 장치가 스캔 콜백으로 여러 번 들어와도 연결은 한 번만 시도한다.
+      if (connectingDevice) {
+        return;
+      }
+
+      connectingDevice = device;
+
+      // 장치를 찾았으므로 스캔 제한 시간은 더 이상 적용하지 않는다.
       if (scanTimeout) {
         clearTimeout(scanTimeout);
         scanTimeout = null;
@@ -79,17 +91,36 @@ function scanAndConnect(deviceName) {
 
       manager.stopDeviceScan();
 
-      // 연결 및 서비스 탐색은 스캔과 별도의 제한 시간을 사용한다.
+      // 연결 및 서비스 탐색 제한 시간.
+      //
+      // 단순히 Promise만 null로 끝내면 device.connect()가 네이티브에서 계속 진행될
+      // 수 있다. 제한 시간을 넘기면 실제 BLE 연결 시도도 취소한다.
       connectTimeout = setTimeout(() => {
-        console.log('[BLE] 장치 연결 시간 초과:', deviceName);
+        console.log('[BLE] 장치 연결 시간 초과 - 연결 취소:', deviceName);
+
+        // 먼저 현재 연결 요청을 실패로 끝낸다.
+        // cancelConnection() 완료를 기다리느라 다음 연결 요청을 막지 않는다.
         finish(null);
+
+        Promise.resolve()
+          .then(() => connectingDevice?.cancelConnection())
+          .then(() => {
+            console.log('[BLE] 시간 초과 연결 취소 완료:', deviceName);
+          })
+          .catch((disconnectError) => {
+            console.log(
+              '[BLE] 시간 초과 연결 취소 실패:',
+              deviceName,
+              disconnectError,
+            );
+          });
       }, 10000);
 
       try {
         const connected = await device.connect();
-        await connected.discoverAllServicesAndCharacteristics();
 
-        // 연결 timeout이 먼저 끝났다면 뒤늦은 성공을 현재 연결로 채택하지 않는다.
+        // timeout/cancel과 거의 동시에 connect()가 성공할 수 있다.
+        // 이미 이 요청이 끝났다면 절대로 현재 연결로 채택하지 않고 다시 해제한다.
         if (settled) {
           try {
             await connected.cancelConnection();
@@ -103,24 +134,52 @@ function scanAndConnect(deviceName) {
           return;
         }
 
+        await connected.discoverAllServicesAndCharacteristics();
+
+        // 서비스 탐색을 기다리는 동안에도 timeout이 발생할 수 있다.
+        if (settled) {
+          try {
+            await connected.cancelConnection();
+          } catch (disconnectError) {
+            console.log(
+              '[BLE] 시간 초과 후 늦은 서비스 탐색 연결 해제 실패:',
+              deviceName,
+              disconnectError,
+            );
+          }
+          return;
+        }
+
         connectedDevices.set(deviceName, connected);
 
-        // 실제 BLE 연결이 끊기는 순간 Map에서도 제거한다.
+        // 실제 BLE 연결이 끊기는 순간 Map과 실제 하차벨 연결 기록을 함께 제거한다.
         connected.onDisconnected(() => {
           if (connectedDevices.get(deviceName) === connected) {
             connectedDevices.delete(deviceName);
+
+            if (connectedBellDeviceName === deviceName) {
+              connectedBellDeviceName = null;
+            }
+
             console.log('[BLE] 연결 끊김:', deviceName);
           }
         });
 
         finish(connected);
       } catch (connectError) {
+        // timeout이 먼저 처리된 뒤 cancelConnection() 때문에 connect()가 reject된
+        // 경우에는 이미 실패 처리가 끝났으므로 중복 로그/처리를 하지 않는다.
+        if (settled) {
+          return;
+        }
+
         console.log('[BLE] 연결 실패:', deviceName, connectError);
         finish(null);
       }
     });
   });
 }
+
 // 진행 중인 연결 요청. 같은 기기를 두 화면이 동시에 찾으면 스캔을 두 번 시작하지 않고
 // 먼저 시작한 요청의 결과를 함께 기다린다.
 const inFlightConnects = new Map();
@@ -152,6 +211,7 @@ function connectOneByName(deviceName) {
       inFlightConnects.delete(deviceName);
     }
   });
+
   inFlightConnects.set(deviceName, tracked);
   return tracked;
 }
@@ -170,6 +230,7 @@ async function connectByNames(deviceNames) {
 
   for (const name of deviceNames) {
     const connected = await connectOneByName(name);
+
     if (connected) {
       found.set(name, connected);
     }
@@ -184,7 +245,13 @@ async function connectByNames(deviceNames) {
  * 연결됐는지 결과 Map으로 확인해야 한다.
  */
 export async function connectAll() {
-  return connectByNames([CANE_DEVICE_NAME, bellDeviceName]);
+  const found = await connectByNames([CANE_DEVICE_NAME, bellDeviceName]);
+
+  if (found.has(bellDeviceName)) {
+    connectedBellDeviceName = bellDeviceName;
+  }
+
+  return found;
 }
 
 /**
@@ -214,8 +281,61 @@ export async function connectBell(targetBeaconId) {
     return null;
   }
 
-  bellDeviceName = targetBeaconId;
-  return connectOneByName(bellDeviceName);
+  const requestedBellDeviceName = targetBeaconId;
+
+  // 이전 운행의 하차벨이 실제로 연결돼 있는데 새 운행의 대상이 달라졌다면,
+  // 새 장치 이름으로 전역 상태를 바꾸기 전에 이전 실제 연결부터 정확히 끊는다.
+  if (
+    connectedBellDeviceName &&
+    connectedBellDeviceName !== requestedBellDeviceName
+  ) {
+    const previousBellDeviceName = connectedBellDeviceName;
+
+    console.log(
+      '[BLE] 이전 하차벨 연결 정리 후 새 하차벨 연결:',
+      previousBellDeviceName,
+      '->',
+      requestedBellDeviceName,
+    );
+
+    await disconnect(previousBellDeviceName);
+  }
+
+  bellDeviceName = requestedBellDeviceName;
+
+  const connected = await connectOneByName(requestedBellDeviceName);
+
+  if (!connected) {
+    return null;
+  }
+
+  // 연결을 기다리는 동안 다른 운행이 시작돼 목표 보드가 바뀔 수 있다.
+  // 그런 늦은 성공은 현재 운행의 연결로 채택하지 않는다.
+  if (bellDeviceName !== requestedBellDeviceName) {
+    console.log(
+      '[BLE] 이전 대상 하차벨이 늦게 연결됨 - 연결 정리:',
+      requestedBellDeviceName,
+    );
+
+    try {
+      await connected.cancelConnection();
+    } catch (disconnectError) {
+      console.log(
+        '[BLE] 늦은 하차벨 연결 해제 실패:',
+        requestedBellDeviceName,
+        disconnectError,
+      );
+    } finally {
+      if (connectedDevices.get(requestedBellDeviceName) === connected) {
+        connectedDevices.delete(requestedBellDeviceName);
+      }
+    }
+
+    return null;
+  }
+
+  connectedBellDeviceName = requestedBellDeviceName;
+  return connected;
 }
 
 /** 스마트지팡이(White_cane) 연결 여부를 확인한다. */
@@ -231,23 +351,41 @@ export function isCaneConnected() {
  * 끊겼으면 Map 에서 지워 다음 연결이 새로 스캔하게 한다.
  */
 export async function isBellConnected() {
-  const device = connectedDevices.get(bellDeviceName);
+  const deviceName = connectedBellDeviceName ?? bellDeviceName;
+  const device = connectedDevices.get(deviceName);
+
   if (!device) return false;
 
   try {
     const connected = await device.isConnected();
-    if (!connected) connectedDevices.delete(bellDeviceName);
+
+    if (!connected) {
+      connectedDevices.delete(deviceName);
+
+      if (connectedBellDeviceName === deviceName) {
+        connectedBellDeviceName = null;
+      }
+    }
+
     return connected;
   } catch (error) {
     console.log('[BLE] 하차벨 연결 확인 실패:', error);
-    connectedDevices.delete(bellDeviceName);
+    connectedDevices.delete(deviceName);
+
+    if (connectedBellDeviceName === deviceName) {
+      connectedBellDeviceName = null;
+    }
+
     return false;
   }
 }
 
-/** 이번 운행에서 쓰는 하차벨 보드 이름. 연결 해제나 진단에 쓴다. */
+/**
+ * 현재 실제 연결된 하차벨 이름을 우선 반환한다.
+ * 실제 연결이 없다면 이번 운행의 목표 보드 이름을 반환한다.
+ */
 export function getBellDeviceName() {
-  return bellDeviceName;
+  return connectedBellDeviceName ?? bellDeviceName;
 }
 
 /**
@@ -257,15 +395,19 @@ export function getBellDeviceName() {
  */
 async function writeCommand(deviceName, payload) {
   const device = connectedDevices.get(deviceName);
+
   if (!device) {
-    throw new Error(`BLE_NOT_CONNECTED: ${deviceName}에 연결되어 있지 않습니다.`);
+    throw new Error(
+      `BLE_NOT_CONNECTED: ${deviceName}에 연결되어 있지 않습니다.`,
+    );
   }
 
   const base64Payload = Buffer.from(payload, 'utf-8').toString('base64');
+
   await device.writeCharacteristicWithResponseForService(
     SERVICE_UUID,
     CHARACTERISTIC_UUID,
-    base64Payload
+    base64Payload,
   );
 }
 
@@ -276,20 +418,30 @@ async function writeCommand(deviceName, payload) {
  * @param {string} targetBeaconId - 서버 beacons API 응답의 targetBeaconId 그대로 사용 (예: BUS_35_001)
  */
 export async function setTargetBeacon(targetBeaconId) {
-  const payload = JSON.stringify({ cmd: 'SET_TARGET_BEACON', target: targetBeaconId });
+  const payload = JSON.stringify({
+    cmd: 'SET_TARGET_BEACON',
+    target: targetBeaconId,
+  });
+
   await writeCommand(CANE_DEVICE_NAME, payload);
 }
 
 /** 지팡이에 비콘 스캔 시작을 명령한다. */
 export async function startBeaconScan() {
-  const payload = JSON.stringify({ cmd: 'START_BEACON_SCAN' });
+  const payload = JSON.stringify({
+    cmd: 'START_BEACON_SCAN',
+  });
+
   await writeCommand(CANE_DEVICE_NAME, payload);
 }
 
 /** 지팡이에 비콘 스캔 중지를 명령한다. */
 export function stopBeaconScan() {
   return runStopBeaconScanSingleFlight(() => {
-    const payload = JSON.stringify({ cmd: 'STOP_BEACON_SCAN' });
+    const payload = JSON.stringify({
+      cmd: 'STOP_BEACON_SCAN',
+    });
+
     return writeCommand(CANE_DEVICE_NAME, payload);
   });
 }
@@ -305,6 +457,7 @@ export function stopBeaconScan() {
  */
 export function subscribeCaneState(onState) {
   const device = connectedDevices.get(CANE_DEVICE_NAME);
+
   if (!device) {
     throw new Error('BLE_NOT_CONNECTED: 지팡이에 연결되어 있지 않습니다.');
   }
@@ -317,16 +470,21 @@ export function subscribeCaneState(onState) {
         console.log('지팡이 상태 Notify 오류:', error);
         return;
       }
+
       if (!characteristic?.value) return;
 
       try {
-        const jsonString = Buffer.from(characteristic.value, 'base64').toString('utf-8');
+        const jsonString = Buffer.from(
+          characteristic.value,
+          'base64',
+        ).toString('utf-8');
+
         const parsed = JSON.parse(jsonString);
         onState(parsed);
       } catch (parseError) {
         console.log('지팡이 상태 파싱 실패:', parseError);
       }
-    }
+    },
   );
 
   return () => subscription.remove();
@@ -336,7 +494,8 @@ export function subscribeCaneState(onState) {
 
 /** 하차벨에 STOP_REQUEST를 전송한다. */
 export async function sendStopRequest() {
-  await writeCommand(bellDeviceName, 'STOP_REQUEST');
+  const deviceName = connectedBellDeviceName ?? bellDeviceName;
+  await writeCommand(deviceName, 'STOP_REQUEST');
 }
 
 /**
@@ -345,7 +504,9 @@ export async function sendStopRequest() {
  * @returns {() => void} 구독 해제 함수
  */
 export function subscribeBellResult(onResult) {
-  const device = connectedDevices.get(bellDeviceName);
+  const deviceName = connectedBellDeviceName ?? bellDeviceName;
+  const device = connectedDevices.get(deviceName);
+
   if (!device) {
     throw new Error('BLE_NOT_CONNECTED: 하차벨에 연결되어 있지 않습니다.');
   }
@@ -358,16 +519,21 @@ export function subscribeBellResult(onResult) {
         console.log('하차벨 Notify 오류:', error);
         return;
       }
+
       if (!characteristic?.value) return;
 
       try {
-        const jsonString = Buffer.from(characteristic.value, 'base64').toString('utf-8');
+        const jsonString = Buffer.from(
+          characteristic.value,
+          'base64',
+        ).toString('utf-8');
+
         const parsed = JSON.parse(jsonString);
         onResult(parsed);
       } catch (parseError) {
         console.log('하차벨 결과 파싱 실패:', parseError);
       }
-    }
+    },
   );
 
   return () => subscription.remove();
@@ -376,8 +542,14 @@ export function subscribeBellResult(onResult) {
 /** 지정한 기기 연결을 해제한다. */
 export async function disconnect(deviceName) {
   const device = connectedDevices.get(deviceName);
+
   if (device) {
     await device.cancelConnection();
     connectedDevices.delete(deviceName);
+  }
+
+  // 실제로 연결돼 있던 하차벨을 해제한 경우에만 기록을 비운다.
+  if (connectedBellDeviceName === deviceName) {
+    connectedBellDeviceName = null;
   }
 }

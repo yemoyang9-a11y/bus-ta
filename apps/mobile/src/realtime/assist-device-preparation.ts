@@ -126,6 +126,13 @@ export function createAssistDevicePreparation(
       type: 'SET_BLE_MOCK_STATUS',
       isMock: beaconData?.isMock ?? false,
     });
+
+    // 비콘 조회/준비가 끝났음을 마지막에 표시한다.
+    // 이 시점부터 targetBeaconId가 null이면 아직 조회 중인 것이 아니라 실제 조회 결과가 없는 것이다.
+    dependencies.dispatch({
+      type: 'SET_BEACON_PREPARATION_COMPLETED',
+      completed: true,
+    });
   };
 
   return {
