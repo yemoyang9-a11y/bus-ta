@@ -10,6 +10,7 @@ import type {
   TripStatusResponse,
   UpdateTripRequest,
 } from "@bus-ta/shared";
+import { toSpokenRouteNo } from "@bus-ta/shared";
 import {
   clearActiveTripContext,
   clearActiveTripContextKeepSearch,
@@ -70,7 +71,7 @@ function buildCallKey(
 
 function buildFunctionResponseInstructions(name: RealtimeFunctionName): string {
   const common =
-    "방금 전달된 Function 결과만 근거로 사용자에게 짧고 명확한 한국어 음성 안내를 생성한다. Function 결과가 오기 전의 추측은 사용하지 않는다. 내부 식별자와 오류 코드는 그대로 읽지 않는다. routeNo는 먼저 하이픈(-)을 기준으로 나누고 하이픈 양쪽 숫자를 이어 붙여 전체 자릿수를 계산하지 않는다. 나뉜 각 숫자 덩어리가 네 자리 이상이면 각 숫자를 한 자리씩 읽고, 세 자리 이하면 일반적인 한국어 수 읽기 방식으로 읽는다. 알파벳, 하이픈 뒤 숫자, 괄호 안 표시는 생략하지 않는다. 숫자-숫자 형태의 routeNo를 말할 때 하이픈(-)은 반드시 '다시'라고 읽고, '대시'나 '하이픈'이라고 읽거나 생략하지 않는다.";
+    "방금 전달된 Function 결과만 근거로 사용자에게 짧고 명확한 한국어 음성 안내를 생성한다. Function 결과가 오기 전의 추측은 사용하지 않는다. 내부 식별자와 오류 코드는 그대로 읽지 않는다. 노선 번호를 말할 때는 결과의 routeNoSpoken을 그대로 읽고 뒤에 '번'을 붙인다. 발음을 직접 계산하거나 일부만 읽지 않는다. routeNoSpoken이 없을 때만 routeNo 표기를 그대로 또박또박 읽고, 그때도 하이픈 뒤 숫자·알파벳·괄호 안 표시를 생략하지 않는다. 실제 routeNo 표기는 변경하지 않는다.";
 
   if (name === "search_routes") {
     return `${common} success가 true이고 routes가 빈 배열일 때만 조건에 맞는 노선 후보가 없다고 안내한다. success가 false이면 result.message의 원인을 바꾸어 말하지 않고, 위치 확인 실패나 API 오류를 노선 없음으로 안내하지 않는다. 후보가 있으면 각 후보의 routeNo, totalTime, intervalTime을 사용해 \"OO번은 예상 소요시간이 N분이고 배차 간격은 M분입니다\" 형식으로 최대 두 개를 모두 설명하고, 마지막에 반드시 \"어떤 버스를 선택하시겠어요?\"라고 묻는다. 값이 없는 시간은 추측하지 말고 확인할 수 없다고 말한다.`;
@@ -138,7 +139,9 @@ export async function dispatchRealtimeFunctionCall(
     result = rejectStaleTripResult(event.name, result, context);
   }
 
-  const modelResult = buildModelFunctionResult(event.name, args, result, context);
+  const modelResult = withSpokenRouteNumbers(
+    buildModelFunctionResult(event.name, args, result, context),
+  );
   const candidateIdsToMark = collectCandidateIdsToMark(event.name, result, modelResult);
   // end_trip 성공 시 Context가 즉시 초기화돼도 직전 검색 후보를 잃지 않도록
   // 모델 결과를 먼저 만든 뒤 상태를 갱신한다.
@@ -200,6 +203,40 @@ function collectCandidateIdsToMark(
   }
 
   return [];
+}
+
+/**
+ * 모델이 읽을 노선 번호 발음을 결과에 실어 준다.
+ *
+ * 시연에서 AI 는 35번을 "셋다섯", 15-2번을 "일번", 82-1번을 "팔십이번"으로 말했다.
+ * 시각장애인 사용자는 이 음성만으로 버스를 고르므로, 번호가 잘리면 다른 버스를 탄다.
+ * guide.ts 의 발음 규칙을 세 차례 조였는데도 계속 틀렸다 — 프롬프트로 발음을 통제하는
+ * 방식 자체가 신뢰할 수 없다는 뜻이다.
+ *
+ * 그래서 발음을 코드로 확정해(@bus-ta/shared 의 toSpokenRouteNo) 여기서 붙이고,
+ * 모델에게는 "routeNoSpoken 을 그대로 읽어라"만 시킨다.
+ *
+ * routeNoSpoken 은 모델에게 보내는 payload 에만 있는 값이다. 서버 응답이나 공개 API
+ * 계약(docs/API_SPEC.md)에는 넣지 않는다. 실제 routeNo 표기도 바꾸지 않는다.
+ */
+function withSpokenRouteNumbers<T>(modelResult: T): T {
+  if (modelResult == null || typeof modelResult !== "object") return modelResult;
+
+  const value = modelResult as Record<string, unknown>;
+  const withSpoken: Record<string, unknown> = { ...value };
+
+  if (typeof value.routeNo === "string" && value.routeNo.length > 0) {
+    withSpoken.routeNoSpoken = toSpokenRouteNo(value.routeNo);
+  }
+
+  // 후보를 고르는 단계에서 잘못 들으면 가장 위험하다. routes·candidates 안의 노선에도 붙인다.
+  for (const key of ["routes", "candidates"]) {
+    const list = value[key];
+    if (!Array.isArray(list)) continue;
+    withSpoken[key] = list.map((item) => withSpokenRouteNumbers(item));
+  }
+
+  return withSpoken as T;
 }
 
 function buildModelFunctionResult(
