@@ -1060,3 +1060,131 @@ test("앱의 상태 조회 요청과 실제 수신값을 안전한 필드만으�
   assert.match(response, /nextArrivalRefreshInMs=30000/);
   assert.doesNotMatch(response, /https?:\/\//);
 });
+
+// ── 노선 번호 발음을 데이터로 내려준다 ──────────────────────────────
+//
+// 시연에서 AI 가 35번을 "셋다섯", 15-2번을 "일번", 82-1번을 "팔십이번"으로 말했다.
+// guide.ts 의 발음 규칙을 세 차례 조였는데도 계속 틀렸으므로, 발음을 앱이 계산해
+// Function 결과에 실어 보내고 모델에는 "그대로 읽어라"만 시킨다.
+
+test("get_trip_status 결과에 읽을 발음이 함께 실린다", async (t) => {
+  stubTripStatusFetch(t, { ...waitingStatusBody, routeNo: "15-2" });
+
+  const events = await dispatchRealtimeFunctionCall(
+    {
+      type: "response.function_call_arguments.done",
+      call_id: "call-spoken-1",
+      name: "get_trip_status",
+      arguments: JSON.stringify({ tripId: "trip-test-001" }),
+    },
+    createContext([]),
+  );
+
+  const output = readFunctionOutput(events);
+  assert.equal(output.routeNoSpoken, "십오 다시 이");
+  assert.equal(output.routeNo, "15-2", "실제 routeNo 표기는 바꾸지 않는다");
+});
+
+test("create_trip 결과에도 읽을 발음이 실린다", async (t) => {
+  const route = makeRoute(1, "82-1");
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    Response.json({
+      success: true,
+      tripId: "trip-test-002",
+      routeNo: "82-1",
+      localBusId: "local-1",
+      gbisStationId: "station-1",
+      arrivals: [],
+      tripStatus: TRIP_STATUS.WAITING_BUS,
+      bellStatus: "NOT_REQUESTED",
+      shouldTriggerBell: false,
+      createdAt: "2026-09-05T01:00:00.000Z",
+      message: "운행을 생성했습니다.",
+      timestamp: "2026-09-05T01:00:00.000Z",
+    });
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const events = await dispatchRealtimeFunctionCall(
+    {
+      type: "response.function_call_arguments.done",
+      call_id: "call-spoken-2",
+      name: "create_trip",
+      arguments: JSON.stringify({ destination: "수원역", candidateId: 1 }),
+    },
+    createContext([], { ...baseState, routeCandidates: [route] }),
+  );
+
+  const output = readFunctionOutput(events);
+  assert.equal(output.routeNoSpoken, "팔십이 다시 일");
+});
+
+test("후보 목록의 각 노선에도 발음이 실린다", async (t) => {
+  // 후보를 고르는 단계가 잘못 들으면 가장 위험하다 — 다른 버스를 타게 된다.
+  const routes = [makeRoute(1, "35"), makeRoute(2, "1551B")];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    Response.json({
+      success: true,
+      tripId: "trip-test-003",
+      tripStatus: TRIP_STATUS.CANCELLED,
+      message: "운행 안내를 종료했습니다.",
+      timestamp: "2026-09-05T01:00:00.000Z",
+    });
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const events = await dispatchRealtimeFunctionCall(
+    {
+      type: "response.function_call_arguments.done",
+      call_id: "call-spoken-3",
+      name: "end_trip",
+      arguments: JSON.stringify({ tripId: "trip-test-003", action: "CANCEL" }),
+    },
+    createContext([], {
+      ...baseState,
+      tripId: "trip-test-003",
+      routeCandidates: routes,
+      routeCandidatesExpiresAt: Date.now() + 60_000,
+    }),
+  );
+
+  const output = readFunctionOutput(events);
+  const returned = output.routes as Array<Record<string, unknown>>;
+  assert.equal(returned.length, 2);
+  assert.equal(returned[0]?.routeNoSpoken, "삼십오");
+  assert.equal(returned[1]?.routeNoSpoken, "일 오 오 일 비");
+});
+
+test("전역 프롬프트가 발음을 직접 계산하지 말고 routeNoSpoken 을 읽게 한다", () => {
+  const instructions = createRealtimeSessionUpdateEvent().session.instructions;
+
+  assert.match(instructions, /routeNoSpoken/);
+  assert.doesNotMatch(
+    instructions,
+    /각 숫자 덩어리가 네 자리 이상이면 숫자를 한 자리씩 끊어 읽는다/,
+    "발음 계산을 모델에게 맡기는 규칙이 남아 있으면 다시 틀린 발음이 나온다",
+  );
+});
+
+test("선택 전 도착 시간 질문을 거절로 끝내지 않고 선택으로 이어 준다", () => {
+  // 기존 멘트는 "노선을 선택하신 뒤에 알려드릴 수 있어요"에서 끊겨, 화면을 볼 수 없는
+  // 사용자가 다음에 무엇을 해야 하는지 알 수 없었다. 사실(선택 전에는 조회하지 않는다)은
+  // 그대로 두고, 바로 다음 행동으로 이어지게 한다.
+  const instructions = createRealtimeSessionUpdateEvent().session.instructions;
+
+  assert.doesNotMatch(
+    instructions,
+    /"도착 시간은 노선을 선택하신 뒤에 알려드릴 수 있어요\."라고 답한다/,
+    "거절로 끝나는 멘트가 남아 있으면 사용자가 다음 행동을 알 수 없다",
+  );
+  assert.match(instructions, /정해주시면 바로 도착 시간을 확인해 드릴게요/);
+  assert.match(
+    instructions,
+    /아직 조회하지 않은 도착 시간을 추측해서 말하지 않는다/,
+    "선택을 유도하면서 없는 시간을 지어내면 더 나쁘다",
+  );
+});
