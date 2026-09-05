@@ -1188,3 +1188,164 @@ test("선택 전 도착 시간 질문을 거절로 끝내지 않고 선택으로
     "선택을 유도하면서 없는 시간을 지어내면 더 나쁘다",
   );
 });
+
+// ── 후보 경계 진단 로그 ──────────────────────────────────────────────
+//
+// 시연에서 "다른 버스 없어요?"에 AI 가 "다른 버스 정보를 불러올 수 없다"고 답했다.
+// 코드 경로는 멀쩡하므로 런타임 상태 문제인데, 다음 네 가지가 구분되지 않는다.
+//   (a) 서버가 애초에 2개만 줬다(노선 번호 중복 제거)
+//   (b) 앱 상태에 후보가 저장되지 않았다
+//   (c) 후보 유효시간(5분)이 지났다
+//   (d) 모델이 함수를 아예 부르지 않았다
+// 최초 안내는 Function 결과를 모델이 직접 읽어서 말하므로, 첫 안내가 정상이었다는
+// 사실이 "앱이 후보를 저장했다"는 증거가 되지 못한다. 그래서 읽는 시점의 실제 상태를
+// 남긴다. 좌표·키·외부 URL 은 남기지 않는다.
+
+function captureConsoleLog(t: import("node:test").TestContext): string[] {
+  const lines: string[] = [];
+  t.mock.method(console, "log", (...args: unknown[]) => {
+    lines.push(args.map(String).join(" "));
+  });
+  return lines;
+}
+
+function locatedContext(actions: AppAction[], state: AppTripState = baseState): RealtimeGuideContext {
+  return {
+    getAppState: () => state,
+    getCurrentLocation: () => ({ latitude: 37.2433596, longitude: 126.9639028 }),
+    refreshCurrentLocation: async () => {},
+    dispatchAppAction: (action) => actions.push(action),
+  };
+}
+
+test("검색 결과로 후보를 몇 개 보관하는지 남긴다", async (t) => {
+  const lines = captureConsoleLog(t);
+  const routes = [makeRoute(1, "35"), makeRoute(2, "700-2"), makeRoute(3, "82-1")];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    Response.json({ success: true, destination: "수원역", routes });
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  await dispatchRealtimeFunctionCall(
+    {
+      type: "response.function_call_arguments.done",
+      call_id: "call-cand-1",
+      name: "search_routes",
+      arguments: JSON.stringify({ destination: "수원역" }),
+    },
+    locatedContext([]),
+  );
+
+  const line = lines.find((l) => l.includes("[app/candidates] search result"));
+  assert.ok(line, `검색 결과 로그가 없다: ${JSON.stringify(lines)}`);
+  assert.match(line, /routes=3/);
+  assert.match(line, /ids=\[1,2,3\]/);
+  assert.match(line, /routeNos=\[35,700-2,82-1\]/, "중복 제거로 2개만 왔는지 여기서 드러난다");
+  assert.doesNotMatch(line, /37\.24|126\.96/, "좌표를 남기면 안 된다");
+});
+
+test("다음 후보를 물어볼 때 읽은 앱 상태를 그대로 남긴다", async (t) => {
+  // 저장이 실패했는지(storedCount=0), 유효시간이 지났는지(expiresAt 과거)를 가른다.
+  const lines = captureConsoleLog(t);
+  const routes = [makeRoute(1, "35"), makeRoute(2, "700-2"), makeRoute(3, "82-1")];
+
+  await dispatchRealtimeFunctionCall(
+    {
+      type: "response.function_call_arguments.done",
+      call_id: "call-cand-2",
+      name: "get_next_route_candidates",
+      arguments: "{}",
+    },
+    createContext([], {
+      ...baseState,
+      routeCandidates: routes,
+      routeCandidatesExpiresAt: Date.now() + 60_000,
+      announcedCandidateIds: [1, 2],
+    }),
+  );
+
+  const request = lines.find((l) => l.includes("[app/candidates] next request"));
+  const result = lines.find((l) => l.includes("[app/candidates] next result"));
+
+  assert.ok(request, `요청 로그가 없다: ${JSON.stringify(lines)}`);
+  assert.match(request, /storedCount=3/);
+  assert.match(request, /announced=\[1,2\]/);
+  assert.match(request, /expiresAt=\d{4}-/, "만료 시각을 읽을 수 있어야 한다");
+
+  assert.ok(result, `결과 로그가 없다: ${JSON.stringify(lines)}`);
+  assert.match(result, /candidates=1/);
+  assert.match(result, /exhausted=false/);
+  assert.match(result, /expired=false/);
+});
+
+test("후보가 저장되지 않았으면 만료가 아니라 저장 실패로 드러난다", async (t) => {
+  const lines = captureConsoleLog(t);
+
+  await dispatchRealtimeFunctionCall(
+    {
+      type: "response.function_call_arguments.done",
+      call_id: "call-cand-3",
+      name: "get_next_route_candidates",
+      arguments: "{}",
+    },
+    createContext([], baseState),
+  );
+
+  const request = lines.find((l) => l.includes("[app/candidates] next request"));
+  const result = lines.find((l) => l.includes("[app/candidates] next result"));
+
+  assert.ok(request);
+  assert.match(request, /storedCount=0/);
+  assert.match(request, /expiresAt=none/, "값이 아예 없는 것과 과거인 것을 구분한다");
+  assert.ok(result);
+  assert.match(result, /expired=true/);
+});
+
+test("취소 후 재선택도 같은 후보 상태를 남긴다", async (t) => {
+  // 예외상황 2번은 예외상황 1번과 같은 routeCandidatesExpiresAt 을 검사한다.
+  // 원인이 하나면 두 로그가 같은 모습으로 나온다.
+  const lines = captureConsoleLog(t);
+  const routes = [makeRoute(1, "35"), makeRoute(2, "700-2")];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    Response.json({
+      success: true,
+      tripId: "trip-cand",
+      tripStatus: TRIP_STATUS.CANCELLED,
+      message: "운행 안내를 종료했습니다.",
+      timestamp: "2026-09-05T01:00:00.000Z",
+    });
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  await dispatchRealtimeFunctionCall(
+    {
+      type: "response.function_call_arguments.done",
+      call_id: "call-cand-4",
+      name: "end_trip",
+      arguments: JSON.stringify({ tripId: "trip-cand", action: "CANCEL" }),
+    },
+    createContext([], {
+      ...baseState,
+      tripId: "trip-cand",
+      routeCandidates: routes,
+      routeCandidatesExpiresAt: Date.now() + 60_000,
+      selectedRoute: routes[0]!,
+    }),
+  );
+
+  // 다른 경계와 같은 모양으로 상태 한 줄, 결과 한 줄을 남긴다.
+  const state = lines.find((l) => l.startsWith("[app/candidates] end_trip storedCount"));
+  const result = lines.find((l) => l.startsWith("[app/candidates] end_trip result"));
+
+  assert.ok(state, `취소 시점 후보 상태 로그가 없다: ${JSON.stringify(lines)}`);
+  assert.match(state, /storedCount=2/);
+  assert.match(state, /expiresAt=\d{4}-/);
+
+  assert.ok(result, `취소 후보 결과 로그가 없다: ${JSON.stringify(lines)}`);
+  assert.match(result, /expired=false/);
+  assert.match(result, /returned=1/, "취소한 노선을 뺀 나머지가 몇 개인지");
+});

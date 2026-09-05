@@ -59,6 +59,38 @@ type ModelFunctionResult =
 const inFlightCalls = new Map<string, Promise<FunctionResult>>();
 let boardingRequestSequence = 0;
 
+/**
+ * 후보 경계 진단 로그.
+ *
+ * 시연에서 "다른 버스 없어요?"에 AI 가 "다른 버스 정보를 불러올 수 없다"고 답했다.
+ * 코드 경로는 멀쩡하므로 런타임 상태 문제인데, 로그가 없으면 다음 넷이 구분되지 않는다.
+ *   (a) 서버가 애초에 2개만 줬다(노선 번호 중복 제거)
+ *   (b) 앱 상태에 후보가 저장되지 않았다
+ *   (c) 후보 유효시간(5분)이 지났다
+ *   (d) 모델이 함수를 아예 부르지 않았다 — 이때는 아래 로그가 통째로 없다
+ *
+ * 최초 안내는 모델이 Function 결과를 직접 읽어서 말한다. TripContext 를 거치지 않으므로
+ * 첫 안내가 정상이었다는 사실은 후보가 저장됐다는 증거가 되지 못한다. 그래서 읽는
+ * 시점의 실제 앱 상태를 남긴다.
+ *
+ * 좌표·API 키·외부 URL 은 남기지 않는다. candidateId·routeNo·개수·시각만 남긴다.
+ */
+function formatExpiresAt(expiresAt: number | null | undefined): string {
+  return expiresAt ? new Date(expiresAt).toISOString() : "none";
+}
+
+function logStoredCandidates(label: string, context: RealtimeGuideContext): void {
+  const appState = context.getAppState();
+  const stored = (appState.routeCandidates ?? []) as Route[];
+  console.log(
+    `[app/candidates] ${label}`,
+    `storedCount=${stored.length}`,
+    `announced=[${(appState.announcedCandidateIds ?? []).join(",")}]`,
+    `expiresAt=${formatExpiresAt(appState.routeCandidatesExpiresAt)}`,
+    `now=${new Date().toISOString()}`,
+  );
+}
+
 function buildCallKey(
   event: RealtimeFunctionCallEvent,
   context: RealtimeGuideContext,
@@ -257,6 +289,15 @@ function buildModelFunctionResult(
           .filter((route) => route.candidateId !== cancelledCandidateId)
           .slice(0, 2);
 
+    // 예외상황 2번(취소 후 재선택)은 예외상황 1번과 같은 routeCandidatesExpiresAt 을
+    // 검사한다. 원인이 하나라면 두 로그가 같은 모습으로 나온다.
+    logStoredCandidates("end_trip", context);
+    console.log(
+      "[app/candidates] end_trip result",
+      `expired=${expired}`,
+      `returned=${routes.length}`,
+    );
+
     return {
       ...(result as EndTripResponse),
       destination: appState.destination,
@@ -338,6 +379,7 @@ async function callBackendFunction(
     }
     case "get_next_route_candidates": {
       assertEmptyObject(args);
+      logStoredCandidates("next request", context);
       const appState = context.getAppState();
 
       // 예모님 지적(2026-08-28, P1): routeCandidatesExpiresAt이 TripContext에 저장만
@@ -348,6 +390,12 @@ async function callBackendFunction(
         !appState.routeCandidatesExpiresAt ||
         Date.now() > appState.routeCandidatesExpiresAt
       ) {
+        console.log(
+          "[app/candidates] next result",
+          "candidates=0",
+          "exhausted=true",
+          "expired=true",
+        );
         return {
           success: true,
           candidates: [],
@@ -362,6 +410,12 @@ async function callBackendFunction(
         .filter((route) => !announcedCandidateIds.includes(route.candidateId))
         .slice(0, 2);
 
+      console.log(
+        "[app/candidates] next result",
+        `candidates=${nextCandidates.length}`,
+        `exhausted=${nextCandidates.length === 0}`,
+        "expired=false",
+      );
       return {
         success: true,
         candidates: nextCandidates,
@@ -409,10 +463,19 @@ function updateContext(
 
   if (name === "search_routes") {
     const searchResult = result as RoutesSearchResponse;
+    const routes = searchResult.routes as Route[];
+    // 서버가 실제로 몇 개를 줬는지. 노선 번호 중복 제거로 2개만 남았다면 "다른 버스가
+    // 없다"가 정상 동작이고 고칠 버그가 없다 — 그 경우를 여기서 가른다.
+    console.log(
+      "[app/candidates] search result",
+      `routes=${routes.length}`,
+      `ids=[${routes.map((route) => route.candidateId).join(",")}]`,
+      `routeNos=[${routes.map((route) => route.routeNo).join(",")}]`,
+    );
     context.dispatchAppAction({
       type: "SET_DESTINATION_AND_ROUTES",
       destination: searchResult.destination,
-      routes: searchResult.routes as Route[],
+      routes,
     });
     return;
   }
