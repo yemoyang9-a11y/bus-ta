@@ -48,7 +48,7 @@ export default function AlightScreen({ route, navigation }) {
           isMock: bleIsMock ?? true,
           flow: createBellStopSession({
             isConnected: () => targetBeaconId ? isBellConnected() : Promise.resolve(false),
-            connect: () => targetBeaconId ? connectBell(targetBeaconId) : Promise.resolve(null),
+            connect: () => targetBeaconId ? connectBell(targetBeaconId, tripId) : Promise.resolve(null),
             subscribeResult: subscribeBellResult,
             sendStopRequest,
           }),

@@ -10,19 +10,17 @@ import { useRealtime } from '../realtime/RealtimeProvider';
 import { toTripStatusSnapshot } from '../realtime/status-snapshot';
 import {
   connectBell,
-  disconnect,
+  disconnectBellsForTrip,
   startBeaconScan,
   stopBeaconScan,
 } from '../ble/bleManager';
+import { createAssistDeviceStatusEvent } from '../realtime/assist-device-status';
 import { canStartBeaconScan } from '../ble/beacon-scan-gate';
 import {
   startBeaconScanWithRetry,
   stopBeaconScanWithRetry,
 } from '../ble/beacon-scan-controller';
-import {
-  connectBellWithRetry,
-  disconnectBellWithRetry,
-} from '../ble/bell-connect-controller';
+import { connectBellWithRetry } from '../ble/bell-connect-controller';
 
 const INITIAL_STATUS = {
   currentStation: null,
@@ -59,7 +57,13 @@ export default function RidingScreen({ route, navigation }) {
   const locationPatchSkippedCountRef = useRef(0);
 
   const { state, dispatch } = useTrip();
-  const { session, isConnected } = useRealtime();
+  const {
+    session,
+    isConnected,
+    notifyFailure,
+    getActiveTripId,
+  } = useRealtime();
+
   const currentTripStatus = state.tripStatus ?? status.tripStatus;
   const boardingConfirmedAt =
     state.boardingConfirmedAt ?? status.boardingConfirmedAt;
@@ -172,29 +176,43 @@ export default function RidingScreen({ route, navigation }) {
       startBeaconScanWithRetry({
         startBeaconScan,
         isStillWanted,
+
         onStarted: () => {
-          dispatch({ type: 'SET_BEACON_SCAN_ACTIVE', active: true });
+          dispatch({
+            type: 'SET_BEACON_SCAN_ACTIVE',
+            active: true,
+          });
         },
+
         onStartedTooLate: () =>
           stopBeaconScanWithRetry({
             stopBeaconScan,
             onStopped: () => undefined,
             onGaveUp: (error) => {
-              console.log('늦게 성공한 스캔을 되돌리지 못함:', error);
-              dispatch({ type: 'SET_BEACON_SCAN_ACTIVE', active: true });
+              console.log(
+                '늦게 성공한 스캔을 되돌리지 못함:',
+                error,
+              );
+              dispatch({
+                type: 'SET_BEACON_SCAN_ACTIVE',
+                active: true,
+              });
             },
             wait: waitBeforeRetry,
           }),
+
         onGaveUp: (error) => {
           console.log(
             '비콘 스캔 시작을 상한까지 재시도했지만 실패:',
             error,
           );
+
           Speech.speak(
             '지팡이 진동 안내를 시작하지 못했습니다. 정류장에 계신 주변 분께 버스가 오면 알려 달라고 요청해 주세요.',
             { language: 'ko' },
           );
         },
+
         wait: (ms) =>
           new Promise((resolve) => setTimeout(resolve, ms)),
       }).finally(() => {
@@ -225,22 +243,14 @@ export default function RidingScreen({ route, navigation }) {
 
   // 탑승이 확정되면 하차벨 보드를 연결한다.
   //
-  // 예전에는 운행을 만들 때 지팡이와 함께 한 번에 연결했는데, 그 시점의 하차벨 보드는
-  // 아직 오지 않은 버스 안이라 BLE 범위 밖이었다. 반드시 실패했고 다시 찾지 않았다.
-  // 2026-09-04 실차에서 두 번 다 여기서 막혀, 하차 화면이 연결 없음을 보고 1초 만에
-  // 실패 처리했다. 지금은 버스 안에 있는 것이 확실한 이 시점에 연결한다.
-  //
-  // P0 수정:
-  // GPS watch 중단이나 하차 화면 이동은 "운행 취소"가 아니다. 따라서 stoppedRef를
-  // 하차벨 연결 생명주기에 사용하지 않는다. 이 연결을 시작한 운행이 여전히 현재
-  // 운행인지 여부만 확인한다.
-  //
-  // 연결할 보드 이름은 서버가 노선별로 내려준 targetBeaconId를 쓴다.
+  // GPS watch 중단이나 하차 화면 이동은 운행 취소가 아니다.
+  // 실제 운행이 취소되거나 다른 운행으로 교체됐는지만 확인한다.
   useEffect(() => {
     if (
+      getActiveTripId() !== tripId ||
       !boardingConfirmedAt ||
       state.bellConnected !== null ||
-      connectingBellRef.current
+      connectingBellRef.current === tripId
     ) {
       return;
     }
@@ -258,32 +268,40 @@ export default function RidingScreen({ route, navigation }) {
       console.log(
         '[BLE] 비콘 준비 완료 후에도 targetBeaconId 없음 - 하차벨 연결을 시작하지 않음',
       );
+
       dispatch({
         type: 'SET_BELL_CONNECTED',
         connected: false,
       });
-      Speech.speak(
-        '하차벨 정보를 확인하지 못했습니다. 내리기 전에 기사님께 직접 말씀해 주세요.',
-        { language: 'ko' },
+
+      notifyFailure(
+        createAssistDeviceStatusEvent({
+          device: 'BELL',
+          reason: 'NOT_CONNECTED',
+          attempted: false,
+          retryable: false,
+        }),
       );
+
       return;
     }
 
-    connectingBellRef.current = true;
+    connectingBellRef.current = tripId;
     const attemptTripId = tripId;
 
-    // 화면 전환/GPS 중단과 하차벨 연결 생명주기를 분리한다.
-    // 이 effect가 시작된 운행이 실제로 취소되거나 다른 운행으로 교체된 경우에만
-    // 연결을 중단한다.
     const isStillWanted = () =>
-      isScreenTripActive(activeTripIdRef.current, attemptTripId);
+      isScreenTripActive(
+        getActiveTripId(),
+        attemptTripId,
+      );
 
     connectBellWithRetry({
-      connectBell: () => connectBell(targetBeaconId),
+      connectBell: () =>
+        connectBell(targetBeaconId, attemptTripId),
+
       isStillWanted,
 
       onConnected: () => {
-        // 성공 콜백 직전에도 controller가 같은 운행인지 확인한다.
         dispatch({
           type: 'SET_BELL_CONNECTED',
           connected: true,
@@ -291,42 +309,28 @@ export default function RidingScreen({ route, navigation }) {
       },
 
       onConnectedTooLate: () =>
-        // A 운행에서 시작한 연결이 B 운행으로 바뀐 뒤 늦게 성공했다면,
-        // 전역 bellDeviceName이 아니라 A가 실제 사용했던 targetBeaconId로 끊는다.
-        disconnectBellWithRetry({
-          disconnectBell: () => disconnect(targetBeaconId),
-          onGaveUp: (error) => {
-            console.log(
-              '늦게 성공한 하차벨 연결을 상한까지 끊지 못함:',
-              error,
-            );
-          },
-          wait: waitBeforeRetry,
-        }),
+        disconnectBellsForTrip(attemptTripId),
 
       onGaveUp: () => {
-        // controller가 같은 운행임을 확인한 뒤에만 이 콜백을 호출한다.
         dispatch({
           type: 'SET_BELL_CONNECTED',
           connected: false,
         });
 
-        Speech.speak(
-          '하차벨에 연결하지 못했습니다. 내리기 전에 기사님께 직접 말씀해 주세요.',
-          { language: 'ko' },
+        notifyFailure(
+          createAssistDeviceStatusEvent({
+            device: 'BELL',
+            reason: 'NOT_CONNECTED',
+            attempted: true,
+            retryable: false,
+          }),
         );
       },
 
       onCancelled: () => {
-        /**
-         * A 운행 연결 작업이 취소된 이유가 이미 B 운행으로 바뀌었기 때문이라면
-         * A의 늦은 콜백이 B의 bellConnected 상태를 false로 덮으면 안 된다.
-         *
-         * 아직 같은 운행인데 controller가 취소된 경우에만 false를 기록한다.
-         */
         if (
           isScreenTripActive(
-            activeTripIdRef.current,
+            getActiveTripId(),
             attemptTripId,
           )
         ) {
@@ -339,19 +343,22 @@ export default function RidingScreen({ route, navigation }) {
 
       wait: waitBeforeRetry,
     }).finally(() => {
-      connectingBellRef.current = false;
+      if (
+        connectingBellRef.current === attemptTripId
+      ) {
+        connectingBellRef.current = false;
+      }
     });
   }, [
     boardingConfirmedAt,
     state.bellConnected,
     state.targetBeaconId,
     state.beaconPreparationCompleted,
+    tripId,
+    state.tripId,
   ]);
 
   // 취소 감지 시 GPS/BLE를 즉시 중지한다.
-  // RESET_TRIP_KEEP_SEARCH·RESET_TRIP 모두 beaconScanActive를 그대로 보존하므로,
-  // 여기서 실제 stopBeaconScan() 성공을 확인한 뒤에만
-  // SET_BEACON_SCAN_ACTIVE(active: false)를 dispatch한다.
   const isThisTripStillActive =
     isScreenTripActive(state.tripId, tripId);
 
@@ -431,7 +438,10 @@ export default function RidingScreen({ route, navigation }) {
           permission.android?.accuracy ?? 'unknown',
       });
 
-      if (cancelled || stoppedRef.current) {
+      if (
+        cancelled ||
+        stoppedRef.current
+      ) {
         return;
       }
 

@@ -3,7 +3,7 @@ import * as Location from 'expo-location';
 import * as Speech from 'expo-speech';
 import { useTrip } from '../state/TripContext';
 import { apiClient, ApiError } from '../api/client';
-import { connectCane, setTargetBeacon } from '../ble/bleManager';
+import { connectCane, setTargetBeacon, disconnectBellsForTrip } from '../ble/bleManager';
 import { HaneumRealtimeSession } from './session';
 import { createRealtimeGuideContext } from './context';
 import { connectWithBestEffortLocation, runSingleFlight } from './connect-best-effort';
@@ -11,7 +11,7 @@ import { createLocationRefreshCoordinator } from './location-refresh';
 import { createAssistDevicePreparation } from './assist-device-preparation';
 import { getAssistDeviceFallbackMessage } from './assist-device-status';
 import type { RealtimeWebRTCTransport } from './webrtc-transport';
-import type { AppAction, AppTripState } from './types';
+import type { AppAction, AppTripState, AssistDeviceStatusChangedEvent } from './types';
 
 export type RealtimeConnectionStatus = 'idle' | 'connecting' | 'connected' | 'error';
 
@@ -23,6 +23,8 @@ type RealtimeContextValue = {
   connectionStatus: RealtimeConnectionStatus;
   connectionError: string | null;
   connect: () => Promise<void>;
+  notifyFailure: (event: AssistDeviceStatusChangedEvent) => void;
+  getActiveTripId: () => string | null;
 };
 
 const RealtimeContext = createContext<RealtimeContextValue | null>(null);
@@ -99,6 +101,24 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
   }
 
   const assistPreparationRef = useRef<ReturnType<typeof createAssistDevicePreparation> | null>(null);
+  const notifyFailure = (event: AssistDeviceStatusChangedEvent) => {
+    const deliveredToRealtime =
+      sessionRef.current?.notifyAssistDeviceStatusChange(event) ?? false;
+    if (!deliveredToRealtime) {
+      Speech.speak(getAssistDeviceFallbackMessage(event), { language: 'ko' });
+    }
+  };
+  const getActiveTripId = () => stateRef.current.tripStatus === 'CANCELLED' ? null : stateRef.current.tripId;
+
+  // Provider는 Riding → Alight 이동에도 유지된다. 실제 운행 변경에만 GATT를 정리한다.
+  const activeBellTripId = getActiveTripId();
+  useEffect(() => {
+    const ownerTripId = activeBellTripId;
+    return () => {
+      if (ownerTripId) void disconnectBellsForTrip(ownerTripId);
+    };
+  }, [activeBellTripId]);
+
   if (!assistPreparationRef.current) {
     assistPreparationRef.current = createAssistDevicePreparation({
       getActiveTripId: () => stateRef.current.tripId,
@@ -107,13 +127,7 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
         error instanceof ApiError ? error.errorCode : undefined,
       connectCane,
       setTargetBeacon,
-      notifyFailure: (event) => {
-        const deliveredToRealtime =
-          sessionRef.current?.notifyAssistDeviceStatusChange(event) ?? false;
-        if (!deliveredToRealtime) {
-          Speech.speak(getAssistDeviceFallbackMessage(event), { language: 'ko' });
-        }
-      },
+      notifyFailure,
       dispatch: (action) => dispatchRef.current(action),
     });
   }
@@ -164,6 +178,8 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
         connectionStatus,
         connectionError,
         connect,
+        notifyFailure,
+        getActiveTripId,
       }}
     >
       {children}
