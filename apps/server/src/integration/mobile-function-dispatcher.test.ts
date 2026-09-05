@@ -1060,3 +1060,480 @@ test("앱의 상태 조회 요청과 실제 수신값을 안전한 필드만으�
   assert.match(response, /nextArrivalRefreshInMs=30000/);
   assert.doesNotMatch(response, /https?:\/\//);
 });
+
+// ── 노선 번호 발음을 데이터로 내려준다 ──────────────────────────────
+//
+// 시연에서 AI 가 35번을 "셋다섯", 15-2번을 "일번", 82-1번을 "팔십이번"으로 말했다.
+// guide.ts 의 발음 규칙을 세 차례 조였는데도 계속 틀렸으므로, 발음을 앱이 계산해
+// Function 결과에 실어 보내고 모델에는 "그대로 읽어라"만 시킨다.
+
+test("get_trip_status 결과에 읽을 발음이 함께 실린다", async (t) => {
+  stubTripStatusFetch(t, { ...waitingStatusBody, routeNo: "15-2" });
+
+  const events = await dispatchRealtimeFunctionCall(
+    {
+      type: "response.function_call_arguments.done",
+      call_id: "call-spoken-1",
+      name: "get_trip_status",
+      arguments: JSON.stringify({ tripId: "trip-test-001" }),
+    },
+    createContext([]),
+  );
+
+  const output = readFunctionOutput(events);
+  assert.equal(output.routeNoSpoken, "십오 다시 이");
+  // 원본 표기는 모델에게 보내지 않는다. 보이면 모델이 그걸 제 방식으로 읽는다.
+  // "실제 표기를 바꾸지 않는다"는 불변식은 앱 상태 쪽 테스트가 지킨다.
+  assert.equal("routeNo" in output, false);
+});
+
+test("create_trip 결과에도 읽을 발음이 실린다", async (t) => {
+  const route = makeRoute(1, "82-1");
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    Response.json({
+      success: true,
+      tripId: "trip-test-002",
+      routeNo: "82-1",
+      localBusId: "local-1",
+      gbisStationId: "station-1",
+      arrivals: [],
+      tripStatus: TRIP_STATUS.WAITING_BUS,
+      bellStatus: "NOT_REQUESTED",
+      shouldTriggerBell: false,
+      createdAt: "2026-09-05T01:00:00.000Z",
+      message: "운행을 생성했습니다.",
+      timestamp: "2026-09-05T01:00:00.000Z",
+    });
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const events = await dispatchRealtimeFunctionCall(
+    {
+      type: "response.function_call_arguments.done",
+      call_id: "call-spoken-2",
+      name: "create_trip",
+      arguments: JSON.stringify({ destination: "수원역", candidateId: 1 }),
+    },
+    createContext([], { ...baseState, routeCandidates: [route] }),
+  );
+
+  const output = readFunctionOutput(events);
+  assert.equal(output.routeNoSpoken, "팔십이 다시 일");
+});
+
+test("후보 목록의 각 노선에도 발음이 실린다", async (t) => {
+  // 후보를 고르는 단계가 잘못 들으면 가장 위험하다 — 다른 버스를 타게 된다.
+  const routes = [makeRoute(1, "35"), makeRoute(2, "1551B")];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    Response.json({
+      success: true,
+      tripId: "trip-test-003",
+      tripStatus: TRIP_STATUS.CANCELLED,
+      message: "운행 안내를 종료했습니다.",
+      timestamp: "2026-09-05T01:00:00.000Z",
+    });
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const events = await dispatchRealtimeFunctionCall(
+    {
+      type: "response.function_call_arguments.done",
+      call_id: "call-spoken-3",
+      name: "end_trip",
+      arguments: JSON.stringify({ tripId: "trip-test-003", action: "CANCEL" }),
+    },
+    createContext([], {
+      ...baseState,
+      tripId: "trip-test-003",
+      routeCandidates: routes,
+      routeCandidatesExpiresAt: Date.now() + 60_000,
+    }),
+  );
+
+  const output = readFunctionOutput(events);
+  const returned = output.routes as Array<Record<string, unknown>>;
+  assert.equal(returned.length, 2);
+  assert.equal(returned[0]?.routeNoSpoken, "삼십오");
+  assert.equal(returned[1]?.routeNoSpoken, "일 오 오 일 비");
+});
+
+test("전역 프롬프트가 발음을 직접 계산하지 말고 routeNoSpoken 을 읽게 한다", () => {
+  const instructions = createRealtimeSessionUpdateEvent().session.instructions;
+
+  assert.match(instructions, /routeNoSpoken/);
+  assert.doesNotMatch(
+    instructions,
+    /각 숫자 덩어리가 네 자리 이상이면 숫자를 한 자리씩 끊어 읽는다/,
+    "발음 계산을 모델에게 맡기는 규칙이 남아 있으면 다시 틀린 발음이 나온다",
+  );
+});
+
+test("선택 전 도착 시간 질문을 거절로 끝내지 않고 선택으로 이어 준다", () => {
+  // 기존 멘트는 "노선을 선택하신 뒤에 알려드릴 수 있어요"에서 끊겨, 화면을 볼 수 없는
+  // 사용자가 다음에 무엇을 해야 하는지 알 수 없었다. 사실(선택 전에는 조회하지 않는다)은
+  // 그대로 두고, 바로 다음 행동으로 이어지게 한다.
+  const instructions = createRealtimeSessionUpdateEvent().session.instructions;
+
+  assert.doesNotMatch(
+    instructions,
+    /"도착 시간은 노선을 선택하신 뒤에 알려드릴 수 있어요\."라고 답한다/,
+    "거절로 끝나는 멘트가 남아 있으면 사용자가 다음 행동을 알 수 없다",
+  );
+  assert.match(instructions, /정해주시면 바로 도착 시간을 확인해 드릴게요/);
+  assert.match(
+    instructions,
+    /아직 조회하지 않은 도착 시간을 추측해서 말하지 않는다/,
+    "선택을 유도하면서 없는 시간을 지어내면 더 나쁘다",
+  );
+});
+
+// ── 후보 경계 진단 로그 ──────────────────────────────────────────────
+//
+// 시연에서 "다른 버스 없어요?"에 AI 가 "다른 버스 정보를 불러올 수 없다"고 답했다.
+// 코드 경로는 멀쩡하므로 런타임 상태 문제인데, 다음 네 가지가 구분되지 않는다.
+//   (a) 서버가 애초에 2개만 줬다(노선 번호 중복 제거)
+//   (b) 앱 상태에 후보가 저장되지 않았다
+//   (c) 후보 유효시간(5분)이 지났다
+//   (d) 모델이 함수를 아예 부르지 않았다
+// 최초 안내는 Function 결과를 모델이 직접 읽어서 말하므로, 첫 안내가 정상이었다는
+// 사실이 "앱이 후보를 저장했다"는 증거가 되지 못한다. 그래서 읽는 시점의 실제 상태를
+// 남긴다. 좌표·키·외부 URL 은 남기지 않는다.
+
+function captureConsoleLog(t: import("node:test").TestContext): string[] {
+  const lines: string[] = [];
+  t.mock.method(console, "log", (...args: unknown[]) => {
+    lines.push(args.map(String).join(" "));
+  });
+  return lines;
+}
+
+function locatedContext(actions: AppAction[], state: AppTripState = baseState): RealtimeGuideContext {
+  return {
+    getAppState: () => state,
+    getCurrentLocation: () => ({ latitude: 37.2433596, longitude: 126.9639028 }),
+    refreshCurrentLocation: async () => {},
+    dispatchAppAction: (action) => actions.push(action),
+  };
+}
+
+test("검색 결과로 후보를 몇 개 보관하는지 남긴다", async (t) => {
+  const lines = captureConsoleLog(t);
+  const routes = [makeRoute(1, "35"), makeRoute(2, "700-2"), makeRoute(3, "82-1")];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    Response.json({ success: true, destination: "수원역", routes });
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  await dispatchRealtimeFunctionCall(
+    {
+      type: "response.function_call_arguments.done",
+      call_id: "call-cand-1",
+      name: "search_routes",
+      arguments: JSON.stringify({ destination: "수원역" }),
+    },
+    locatedContext([]),
+  );
+
+  const line = lines.find((l) => l.includes("[app/candidates] search result"));
+  assert.ok(line, `검색 결과 로그가 없다: ${JSON.stringify(lines)}`);
+  assert.match(line, /routes=3/);
+  assert.match(line, /ids=\[1,2,3\]/);
+  assert.match(line, /routeNos=\[35,700-2,82-1\]/, "중복 제거로 2개만 왔는지 여기서 드러난다");
+  assert.doesNotMatch(line, /37\.24|126\.96/, "좌표를 남기면 안 된다");
+});
+
+test("다음 후보를 물어볼 때 읽은 앱 상태를 그대로 남긴다", async (t) => {
+  // 저장이 실패했는지(storedCount=0), 유효시간이 지났는지(expiresAt 과거)를 가른다.
+  const lines = captureConsoleLog(t);
+  const routes = [makeRoute(1, "35"), makeRoute(2, "700-2"), makeRoute(3, "82-1")];
+
+  await dispatchRealtimeFunctionCall(
+    {
+      type: "response.function_call_arguments.done",
+      call_id: "call-cand-2",
+      name: "get_next_route_candidates",
+      arguments: "{}",
+    },
+    createContext([], {
+      ...baseState,
+      routeCandidates: routes,
+      routeCandidatesExpiresAt: Date.now() + 60_000,
+      announcedCandidateIds: [1, 2],
+    }),
+  );
+
+  const request = lines.find((l) => l.includes("[app/candidates] next request"));
+  const result = lines.find((l) => l.includes("[app/candidates] next result"));
+
+  assert.ok(request, `요청 로그가 없다: ${JSON.stringify(lines)}`);
+  assert.match(request, /storedCount=3/);
+  assert.match(request, /announced=\[1,2\]/);
+  assert.match(request, /expiresAt=\d{4}-/, "만료 시각을 읽을 수 있어야 한다");
+
+  assert.ok(result, `결과 로그가 없다: ${JSON.stringify(lines)}`);
+  assert.match(result, /candidates=1/);
+  assert.match(result, /exhausted=false/);
+  assert.match(result, /expired=false/);
+});
+
+test("후보가 저장되지 않았으면 만료가 아니라 저장 실패로 드러난다", async (t) => {
+  const lines = captureConsoleLog(t);
+
+  await dispatchRealtimeFunctionCall(
+    {
+      type: "response.function_call_arguments.done",
+      call_id: "call-cand-3",
+      name: "get_next_route_candidates",
+      arguments: "{}",
+    },
+    createContext([], baseState),
+  );
+
+  const request = lines.find((l) => l.includes("[app/candidates] next request"));
+  const result = lines.find((l) => l.includes("[app/candidates] next result"));
+
+  assert.ok(request);
+  assert.match(request, /storedCount=0/);
+  assert.match(request, /expiresAt=none/, "값이 아예 없는 것과 과거인 것을 구분한다");
+  assert.ok(result);
+  assert.match(result, /expired=true/);
+});
+
+test("취소 후 재선택도 같은 후보 상태를 남긴다", async (t) => {
+  // 예외상황 2번은 예외상황 1번과 같은 routeCandidatesExpiresAt 을 검사한다.
+  // 원인이 하나면 두 로그가 같은 모습으로 나온다.
+  const lines = captureConsoleLog(t);
+  const routes = [makeRoute(1, "35"), makeRoute(2, "700-2")];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    Response.json({
+      success: true,
+      tripId: "trip-cand",
+      tripStatus: TRIP_STATUS.CANCELLED,
+      message: "운행 안내를 종료했습니다.",
+      timestamp: "2026-09-05T01:00:00.000Z",
+    });
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  await dispatchRealtimeFunctionCall(
+    {
+      type: "response.function_call_arguments.done",
+      call_id: "call-cand-4",
+      name: "end_trip",
+      arguments: JSON.stringify({ tripId: "trip-cand", action: "CANCEL" }),
+    },
+    createContext([], {
+      ...baseState,
+      tripId: "trip-cand",
+      routeCandidates: routes,
+      routeCandidatesExpiresAt: Date.now() + 60_000,
+      selectedRoute: routes[0]!,
+    }),
+  );
+
+  // 다른 경계와 같은 모양으로 상태 한 줄, 결과 한 줄을 남긴다.
+  const state = lines.find((l) => l.startsWith("[app/candidates] end_trip storedCount"));
+  const result = lines.find((l) => l.startsWith("[app/candidates] end_trip result"));
+
+  assert.ok(state, `취소 시점 후보 상태 로그가 없다: ${JSON.stringify(lines)}`);
+  assert.match(state, /storedCount=2/);
+  assert.match(state, /expiresAt=\d{4}-/);
+
+  assert.ok(result, `취소 후보 결과 로그가 없다: ${JSON.stringify(lines)}`);
+  assert.match(result, /expired=false/);
+  assert.match(result, /returned=1/, "취소한 노선을 뺀 나머지가 몇 개인지");
+});
+
+// ── 모델에게 원본 노선 번호를 보여주지 않는다 ────────────────────
+//
+// 2026-09-05 실기기: routeNoSpoken 을 함께 실어 보내고 "그대로 읽어라"라고 지시했는데도
+// 모델이 M4101 을 "엠 사천 일공일"처럼 제 방식으로 발음했다. 우리 변환 함수는
+// "엠 사 일 공 일" 을 만들므로 그 소리가 나올 수 없다 — 모델이 옆에 있는 원본
+// routeNo 를 보고 직접 발음한 것이다.
+//
+// "이 필드 말고 저 필드를 읽어라"는 결국 또 하나의 지시였다. 같은 방식으로 세 번
+// 실패했으므로, 모델이 원본 표기를 아예 못 보게 한다. 보지 못한 문자열은 발음할 수 없다.
+//
+// 앱 상태에는 원본이 그대로 남아야 한다. 화면 표시와 create_trip 요청 본문이 그것을 쓴다.
+
+test("모델 payload 에는 원본 routeNo 가 없고 발음형만 있다", async (t) => {
+  const routes = [makeRoute(1, "M4101"), makeRoute(2, "720-1")];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => Response.json({ success: true, destination: "수원역", routes });
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const events = await dispatchRealtimeFunctionCall(
+    {
+      type: "response.function_call_arguments.done",
+      call_id: "call-hide-1",
+      name: "search_routes",
+      arguments: JSON.stringify({ destination: "수원역" }),
+    },
+    locatedContext([]),
+  );
+
+  const payload = readFunctionOutput(events);
+  const returned = payload.routes as Array<Record<string, unknown>>;
+
+  assert.equal(returned[0]?.routeNoSpoken, "엠 사 일 공 일");
+  assert.equal(returned[1]?.routeNoSpoken, "칠백이십 다시 일");
+  for (const route of returned) {
+    assert.equal(
+      "routeNo" in route,
+      false,
+      `원본 표기가 남아 있으면 모델이 그걸 읽는다: ${JSON.stringify(route)}`,
+    );
+  }
+  assert.doesNotMatch(JSON.stringify(payload), /M4101|720-1/, "payload 어디에도 원본이 없어야 한다");
+});
+
+test("앱 상태에는 원본 routeNo 가 그대로 남는다", async (t) => {
+  // 화면 표시와 create_trip 요청 본문은 실제 표기를 써야 한다. 발음형을 저장하면
+  // 서버에 "칠백이십 다시 일"이 노선 번호로 전달된다.
+  const routes = [makeRoute(1, "M4101")];
+  const actions: AppAction[] = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => Response.json({ success: true, destination: "수원역", routes });
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  await dispatchRealtimeFunctionCall(
+    {
+      type: "response.function_call_arguments.done",
+      call_id: "call-hide-2",
+      name: "search_routes",
+      arguments: JSON.stringify({ destination: "수원역" }),
+    },
+    locatedContext(actions),
+  );
+
+  const stored = actions.find((a) => a.type === "SET_DESTINATION_AND_ROUTES") as
+    | { routes: Array<{ routeNo: string }> }
+    | undefined;
+  assert.ok(stored, "후보가 앱 상태에 저장돼야 한다");
+  assert.equal(stored.routes[0]?.routeNo, "M4101");
+});
+
+test("운행 상태 조회 결과에도 원본 routeNo 를 남기지 않는다", async (t) => {
+  stubTripStatusFetch(t, { ...waitingStatusBody, routeNo: "720-1" });
+
+  const events = await dispatchRealtimeFunctionCall(
+    {
+      type: "response.function_call_arguments.done",
+      call_id: "call-hide-3",
+      name: "get_trip_status",
+      arguments: JSON.stringify({ tripId: "trip-test-001" }),
+    },
+    createContext([]),
+  );
+
+  const payload = readFunctionOutput(events);
+  assert.equal(payload.routeNoSpoken, "칠백이십 다시 일");
+  assert.equal("routeNo" in payload, false);
+});
+
+test("create_trip 은 모델에게 candidateId 와 destination 만 요구한다", () => {
+  // 원본 표기를 감췄으므로 모델은 routeNo·localBusId·정류장 목록을 채울 수 없다.
+  // 어차피 Dispatcher 가 앱 상태의 실제 후보에서 다시 만들어 쓰던 값들이라,
+  // 스키마에 남겨 두면 모델이 없는 값을 지어내게만 한다.
+  const tools = createRealtimeSessionUpdateEvent().session.tools as ReadonlyArray<{
+    name: string;
+    parameters: { required: readonly string[]; properties: Record<string, unknown> };
+  }>;
+  const createTrip = tools.find((tool) => tool.name === "create_trip");
+
+  assert.ok(createTrip);
+  assert.deepEqual([...createTrip.parameters.required].sort(), ["candidateId", "destination"]);
+  for (const gone of ["routeNo", "localBusId", "gbisStationId", "stationList"]) {
+    assert.equal(
+      gone in createTrip.parameters.properties,
+      false,
+      `${gone} 은 Dispatcher 가 채우므로 모델에게 묻지 않는다`,
+    );
+  }
+});
+
+test("안내 문장 안에 박힌 원본 노선 번호도 발음형으로 바꾼다", async (t) => {
+  // 서버의 guideMessage 는 `${routeNo}번은 예상 소요시간이 …` 형태다(services/guide.ts).
+  // routeNo 필드만 지우면 모델은 이 문장에서 원본을 읽는다. 실기기에서 720-1 을
+  // "721"로, 35 를 "셋다섯"으로 말한 것이 바로 원본을 직접 읽은 결과다.
+  const routes = [
+    { ...makeRoute(1, "720-1"), guideMessage: "720-1번은 예상 소요시간이 30분이고 배차 간격은 15분입니다." },
+    { ...makeRoute(2, "35"), guideMessage: "35번은 예상 소요시간이 21분이고 배차 간격은 11분입니다." },
+  ];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => Response.json({ success: true, destination: "수원역", routes });
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const events = await dispatchRealtimeFunctionCall(
+    {
+      type: "response.function_call_arguments.done",
+      call_id: "call-leak-1",
+      name: "search_routes",
+      arguments: JSON.stringify({ destination: "수원역" }),
+    },
+    locatedContext([]),
+  );
+
+  const payload = readFunctionOutput(events);
+  const returned = payload.routes as Array<Record<string, unknown>>;
+
+  assert.equal(
+    returned[0]?.guideMessage,
+    "칠백이십 다시 일 번은 예상 소요시간이 30분이고 배차 간격은 15분입니다.",
+  );
+  assert.equal(
+    returned[1]?.guideMessage,
+    "삼십오 번은 예상 소요시간이 21분이고 배차 간격은 11분입니다.",
+  );
+  assert.doesNotMatch(
+    JSON.stringify(payload),
+    /720-1|"35"|35번/,
+    "payload 어느 필드에도 원본 표기가 남으면 안 된다",
+  );
+});
+
+test("문장 속 다른 숫자는 건드리지 않는다", async (t) => {
+  // 35번 노선의 안내 문장에는 "35분"이 함께 나올 수 있다. 문자열을 통째로 치환하면
+  // 소요시간까지 "삼십오분"으로 바뀌어, 노선 번호를 고치려다 시간을 망친다.
+  const routes = [
+    {
+      ...makeRoute(1, "35"),
+      guideMessage: "35번은 예상 소요시간이 35분이고 배차 간격은 35분입니다.",
+    },
+  ];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => Response.json({ success: true, destination: "수원역", routes });
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const events = await dispatchRealtimeFunctionCall(
+    {
+      type: "response.function_call_arguments.done",
+      call_id: "call-leak-2",
+      name: "search_routes",
+      arguments: JSON.stringify({ destination: "수원역" }),
+    },
+    locatedContext([]),
+  );
+
+  const returned = (readFunctionOutput(events).routes as Array<Record<string, unknown>>)[0];
+  assert.equal(
+    returned?.guideMessage,
+    "삼십오 번은 예상 소요시간이 35분이고 배차 간격은 35분입니다.",
+  );
+});

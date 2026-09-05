@@ -143,3 +143,38 @@ curl -X POST "$URL" -H "Content-Type: application/json" \
 - 재발 방지 방법: 한글 목적지로 API 를 테스트할 때는 항상 stdin 또는 파일로 본문을 넘긴다.
   "같은 요청인데 결과가 달라졌다"고 판단하기 전에, 요청을 보낸 **명령 형태가 정말 같았는지**
   먼저 대조한다.
+
+## "다른 버스 없어요?"에 AI가 다른 후보를 안내하지 못한다
+
+- 증상: 노선 후보 2개를 안내받은 뒤 "다른 버스 없어요?"라고 물으면 AI가
+  "다른 버스 정보를 불러올 수 없다"고 답한다(2026-09-05 시연).
+- 아직 원인이 확정되지 않았다. 코드 경로(`search_routes` → `SET_DESTINATION_AND_ROUTES`
+  저장 → `MARK_CANDIDATES_ANNOUNCED` → `get_next_route_candidates`)는 모두 이어져
+  있으므로 런타임 상태 문제이며, 다음 네 가지가 구분되지 않는다.
+
+  | 가능성 | 실제로는 |
+  | --- | --- |
+  | (a) 서버가 애초에 2개만 줬다 | 고칠 버그 없음. `selectRouteCandidates`가 **노선 번호 기준으로 중복을 제거**한다. ODsay가 같은 노선을 여러 경로로 돌려주면 5개를 요청해도 서로 다른 번호는 2개만 남을 수 있다 |
+  | (b) 앱 상태에 후보가 저장되지 않았다 | `routeCandidates`가 비어 `expired`로 판정된다 |
+  | (c) 후보 유효시간(5분)이 지났다 | `routeCandidatesExpiresAt`이 과거다 |
+  | (d) 모델이 함수를 부르지 않았다 | 아래 로그가 통째로 없다 |
+
+- **최초 안내가 정상이었다는 사실은 후보가 저장됐다는 증거가 아니다.** 첫 안내는 모델이
+  Function 결과를 직접 읽어서 말하므로 TripContext를 거치지 않는다. 저장이 실패해도
+  첫 안내는 멀쩡하게 들리고 후속 질문에서만 무너진다.
+- 확인 방법: 다음 로그를 순서대로 본다.
+
+```text
+[app/candidates] search result   routes=5 ids=[1,2,3,4,5] routeNos=[35,700-2,...]
+[app/candidates] next request    storedCount=5 announced=[1,2] expiresAt=<ISO> now=<ISO>
+[app/candidates] next result     candidates=2 exhausted=false expired=false
+```
+
+- 판정:
+  - `routes=2` → (a). 중복 제거 때문이며 "다른 버스가 없다"가 정상 동작이다.
+  - `storedCount=0`, `expiresAt=none` → (b). 저장 dispatch가 앱 상태에 닿지 않았다.
+  - `expiresAt`이 `now`보다 과거 → (c). 음성 대화는 TTS가 느려 5분이 생각보다 빨리 찬다.
+  - 로그가 아예 없음 → (d). 모델이 `get_next_route_candidates`를 호출하지 않았다.
+- 예외상황 2번(취소 후 재선택)도 같은 `routeCandidatesExpiresAt`을 검사하므로
+  `[app/candidates] end_trip` 로그가 같은 모습이면 원인이 하나다.
+- 로그에는 candidateId·routeNo·개수·시각만 남긴다. 좌표와 API 키는 남기지 않는다.
