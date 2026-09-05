@@ -295,14 +295,20 @@ export async function connectBell(targetBeaconId) {
   }
 
   const requestedBellDeviceName = targetBeaconId;
+  const previousBellDeviceName = connectedBellDeviceName;
+  // await 전에 대상을 갱신해 이전 dead target으로 명령이 나가지 않게 한다.
+  bellDeviceName = requestedBellDeviceName;
+  if (previousBellDeviceName !== requestedBellDeviceName) {
+    connectedBellDeviceName = null;
+  }
 
   // 이전 운행의 하차벨이 실제로 연결돼 있는데 새 운행의 대상이 달라졌다면,
-  // 새 장치 이름으로 전역 상태를 바꾸기 전에 이전 실제 연결부터 정확히 끊는다.
+  // 캡처한 이전 실제 연결을 정리하되 해제 실패가 새 연결을 막지 않게 한다.
   if (
-    connectedBellDeviceName &&
-    connectedBellDeviceName !== requestedBellDeviceName
+    previousBellDeviceName &&
+    previousBellDeviceName !== requestedBellDeviceName
   ) {
-    const previousBellDeviceName = connectedBellDeviceName;
+    const previousDevice = connectedDevices.get(previousBellDeviceName);
 
     console.log(
       '[BLE] 이전 하차벨 연결 정리 후 새 하차벨 연결:',
@@ -311,12 +317,44 @@ export async function connectBell(targetBeaconId) {
       requestedBellDeviceName,
     );
 
-    await disconnect(previousBellDeviceName);
+    try {
+      await disconnect(previousBellDeviceName);
+    } catch (error) {
+      console.log('[BLE] 이전 하차벨 해제 실패 - 새 대상 연결 계속:', error);
+    } finally {
+      if (connectedDevices.get(previousBellDeviceName) === previousDevice) {
+        connectedDevices.delete(previousBellDeviceName);
+      }
+    }
   }
 
-  bellDeviceName = requestedBellDeviceName;
+  if (bellDeviceName !== requestedBellDeviceName) return null;
 
-  const connected = await connectOneByName(requestedBellDeviceName);
+  const cached = connectedDevices.get(requestedBellDeviceName);
+  let connected = null;
+  if (cached) {
+    try {
+      if (await cached.isConnected()) connected = cached;
+    } catch (error) {
+      console.log('[BLE] 기존 하차벨 연결 확인 실패:', error);
+    }
+    if (!connected) {
+      if (connectedDevices.get(requestedBellDeviceName) === cached) {
+        connectedDevices.delete(requestedBellDeviceName);
+        if (connectedBellDeviceName === requestedBellDeviceName) {
+          connectedBellDeviceName = null;
+        }
+      }
+      try {
+        await cached.cancelConnection();
+      } catch (error) {
+        console.log('[BLE] stale 하차벨 정리 실패 - 재연결 계속:', error);
+      }
+    }
+  }
+
+  if (bellDeviceName !== requestedBellDeviceName) return null;
+  connected = connected ?? await connectOneByName(requestedBellDeviceName);
 
   if (!connected) {
     return null;
