@@ -265,9 +265,25 @@ function withSpokenRouteNumbers<T>(modelResult: T): T {
   const value = modelResult as Record<string, unknown>;
   const forModel: Record<string, unknown> = { ...value };
 
-  if (typeof value.routeNo === "string" && value.routeNo.length > 0) {
-    forModel.routeNoSpoken = toSpokenRouteNo(value.routeNo);
+  const routeNo = value.routeNo;
+  if (typeof routeNo === "string" && routeNo.length > 0) {
+    const spoken = toSpokenRouteNo(routeNo);
+    forModel.routeNoSpoken = spoken;
     delete forModel.routeNo;
+
+    // 필드를 지우는 것만으로는 부족하다. 서버가 만든 안내 문장이 원본을 문장 안에
+    // 들고 있다 — services/guide.ts 의 `${routeNo}번은 예상 소요시간이 …`.
+    // 실기기에서 모델이 720-1 을 "721"로, 35 를 "셋다섯"으로 말한 것이 이 문장을
+    // 직접 읽은 결과다. 같은 객체의 문자열 필드에서도 원본을 걷어낸다.
+    //
+    // "번"이 붙은 자리만 바꾼다. 문자열을 통째로 치환하면 35번 노선의 "35분"까지
+    // "삼십오분"이 되어, 노선 번호를 고치려다 소요시간을 망친다.
+    const spokenLabel = `${routeNo}번`;
+    for (const [key, field] of Object.entries(forModel)) {
+      if (typeof field === "string" && field.includes(spokenLabel)) {
+        forModel[key] = field.split(spokenLabel).join(`${spoken} 번`);
+      }
+    }
   }
 
   // 후보를 고르는 단계에서 잘못 들으면 가장 위험하다. routes·candidates 안의 노선도 같다.

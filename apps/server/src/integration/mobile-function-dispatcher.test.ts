@@ -1463,3 +1463,77 @@ test("create_trip 은 모델에게 candidateId 와 destination 만 요구한다"
     );
   }
 });
+
+test("안내 문장 안에 박힌 원본 노선 번호도 발음형으로 바꾼다", async (t) => {
+  // 서버의 guideMessage 는 `${routeNo}번은 예상 소요시간이 …` 형태다(services/guide.ts).
+  // routeNo 필드만 지우면 모델은 이 문장에서 원본을 읽는다. 실기기에서 720-1 을
+  // "721"로, 35 를 "셋다섯"으로 말한 것이 바로 원본을 직접 읽은 결과다.
+  const routes = [
+    { ...makeRoute(1, "720-1"), guideMessage: "720-1번은 예상 소요시간이 30분이고 배차 간격은 15분입니다." },
+    { ...makeRoute(2, "35"), guideMessage: "35번은 예상 소요시간이 21분이고 배차 간격은 11분입니다." },
+  ];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => Response.json({ success: true, destination: "수원역", routes });
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const events = await dispatchRealtimeFunctionCall(
+    {
+      type: "response.function_call_arguments.done",
+      call_id: "call-leak-1",
+      name: "search_routes",
+      arguments: JSON.stringify({ destination: "수원역" }),
+    },
+    locatedContext([]),
+  );
+
+  const payload = readFunctionOutput(events);
+  const returned = payload.routes as Array<Record<string, unknown>>;
+
+  assert.equal(
+    returned[0]?.guideMessage,
+    "칠백이십 다시 일 번은 예상 소요시간이 30분이고 배차 간격은 15분입니다.",
+  );
+  assert.equal(
+    returned[1]?.guideMessage,
+    "삼십오 번은 예상 소요시간이 21분이고 배차 간격은 11분입니다.",
+  );
+  assert.doesNotMatch(
+    JSON.stringify(payload),
+    /720-1|"35"|35번/,
+    "payload 어느 필드에도 원본 표기가 남으면 안 된다",
+  );
+});
+
+test("문장 속 다른 숫자는 건드리지 않는다", async (t) => {
+  // 35번 노선의 안내 문장에는 "35분"이 함께 나올 수 있다. 문자열을 통째로 치환하면
+  // 소요시간까지 "삼십오분"으로 바뀌어, 노선 번호를 고치려다 시간을 망친다.
+  const routes = [
+    {
+      ...makeRoute(1, "35"),
+      guideMessage: "35번은 예상 소요시간이 35분이고 배차 간격은 35분입니다.",
+    },
+  ];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => Response.json({ success: true, destination: "수원역", routes });
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const events = await dispatchRealtimeFunctionCall(
+    {
+      type: "response.function_call_arguments.done",
+      call_id: "call-leak-2",
+      name: "search_routes",
+      arguments: JSON.stringify({ destination: "수원역" }),
+    },
+    locatedContext([]),
+  );
+
+  const returned = (readFunctionOutput(events).routes as Array<Record<string, unknown>>)[0];
+  assert.equal(
+    returned?.guideMessage,
+    "삼십오 번은 예상 소요시간이 35분이고 배차 간격은 35분입니다.",
+  );
+});
