@@ -6,6 +6,13 @@ import ts from 'typescript';
 import { createSingleFlight } from '../../../mobile/src/ble/single-flight.js';
 import { disconnectBellWithRetry } from '../../../mobile/src/ble/bell-connect-controller.js';
 
+test('BLE 테스트 화면의 시연 대상 문자열은 한 곳에서만 정의한다', () => {
+  const source = readFileSync(new URL('../../../mobile/src/screens/BleTestScreen.js', import.meta.url), 'utf8');
+  assert.equal(source.match(/BUS_35_001/g)?.length, 1);
+  assert.match(source, /const TEST_TARGET_BEACON_ID = 'BUS_35_001'/);
+  assert.match(source, /setTargetBeacon\(TEST_TARGET_BEACON_ID\)/);
+});
+
 // 실제 bleManager 소스를 실행하고 native BLE 경계만 대체한다.
 function setup(autoScan = true) {
   const calls = { scans: 0, stops: 0, overlaps: 0, connects: [] as string[], writes: [] as string[], monitors: [] as string[] };

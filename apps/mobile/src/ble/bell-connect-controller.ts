@@ -76,6 +76,9 @@ export const MAX_BELL_CONNECT_ATTEMPTS = 2;
 /** 첫 실패 후 한 번만 2초 대기한다. */
 export const BELL_CONNECT_RETRY_DELAYS_MS = [2000];
 
+/** 해제 정책은 연결 정책과 독립적으로 유지한다. 최초 1회 + 재시도 1회. */
+export const MAX_BELL_DISCONNECT_ATTEMPTS = 2;
+
 /**
  * 하차벨 연결 해제를 제한된 횟수만큼 재시도한다.
  *
@@ -87,13 +90,13 @@ export async function disconnectBellWithRetry(deps: {
   onGaveUp: (error: unknown) => void;
   wait: (ms: number) => Promise<void>;
 }): Promise<void> {
-  for (let attempt = 0; attempt < MAX_BELL_CONNECT_ATTEMPTS; attempt += 1) {
+  for (let attempt = 0; attempt < MAX_BELL_DISCONNECT_ATTEMPTS; attempt += 1) {
     try {
       await deps.disconnectBell();
       return;
     } catch (error) {
       const isLastAttempt =
-        attempt === MAX_BELL_CONNECT_ATTEMPTS - 1;
+        attempt === MAX_BELL_DISCONNECT_ATTEMPTS - 1;
 
       if (isLastAttempt) {
         deps.onGaveUp(error);

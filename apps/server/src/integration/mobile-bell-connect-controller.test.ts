@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   MAX_BELL_CONNECT_ATTEMPTS,
+  MAX_BELL_DISCONNECT_ATTEMPTS,
   connectBellWithRetry,
   disconnectBellWithRetry,
   type BellConnectDeps,
@@ -250,12 +251,14 @@ test("연결 해제가 상한까지 실패하면 알린다", async () => {
     wait: async () => undefined,
   });
 
-  assert.equal(attempt, MAX_BELL_CONNECT_ATTEMPTS);
+  assert.equal(attempt, MAX_BELL_DISCONNECT_ATTEMPTS);
+  assert.equal(attempt, 2);
   assert.equal(gaveUp, 1);
 });
 
 test("운행 A 연결 중 B 운행으로 바뀌면 A의 늦은 성공을 연결 완료로 처리하지 않는다", async () => {
   let activeTripId = "trip-A";
+  let connectAttempts = 0;
   const attemptTripId = "trip-A";
 
   let resolveConnection:
@@ -267,18 +270,18 @@ test("운행 A 연결 중 B 운행으로 바뀌면 A의 늦은 성공을 연결 
   });
 
   const { deps, calls } = makeDeps({
-    connectBell: async () => connection,
+    connectBell: async () => {
+      connectAttempts += 1;
+      return connection;
+    },
 
     // 실제 RidingScreen과 같은 원리:
     // 연결 시도를 시작한 운행 A가 아직 현재 운행인지 확인한다.
     isStillWanted: () => activeTripId === attemptTripId,
-
-    onConnectedTooLate: () => {
-      calls.connectedTooLate += 1;
-    },
   });
 
   const connecting = connectBellWithRetry(deps);
+  assert.equal(connectAttempts, 1);
 
   // A의 BLE 연결이 끝나기 전에 사용자가 A를 취소하고 B 운행을 시작한다.
   activeTripId = "trip-B";
@@ -295,7 +298,8 @@ test("운행 A 연결 중 B 운행으로 바뀌면 A의 늦은 성공을 연결 
   assert.equal(calls.connectedTooLate, 1);
 
   // B 운행에서 A 연결을 재시도하거나 정상 성공으로 처리해서도 안 된다.
-  assert.equal(calls.attempts, 0);
+  assert.equal(connectAttempts, 1);
+  assert.deepEqual(calls.waits, []);
   assert.equal(calls.gaveUp, 0);
 
   // BLE 연결 자체는 성공한 뒤 운행이 바뀐 경우이므로
