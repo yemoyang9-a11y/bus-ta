@@ -66,7 +66,8 @@ function setup() {
     targetBeaconId: 'BUS_A', beaconPreparationCompleted: true, beaconScanActive: false };
   let delivered = true;
   let realtime: any;
-  const calls = { events: [] as any[], speech: [] as string[], releases: [] as string[], connects: 0, actions: [] as any[] };
+  const calls = { events: [] as any[], speech: [] as string[], releases: [] as string[], connects: 0, actions: [] as any[],
+    caneReleases: [] as Array<{ beaconScanActive: boolean }>, caneDisconnects: 0 };
   const shared = {
     'expo-speech': { speak: (message: string) => calls.speech.push(message), stop() {} },
     'expo-location': { requestForegroundPermissionsAsync: () => new Promise(() => {}) },
@@ -75,6 +76,9 @@ function setup() {
     '../ble/bleManager': {
       connectBell: async () => { calls.connects++; return null; },
       disconnectBellsForTrip: async (tripId: string) => { calls.releases.push(tripId); },
+      stopBeaconScan: async () => {},
+      startBeaconScan: async () => {},
+      disconnectCane: async () => { calls.caneDisconnects++; },
     },
   };
   const Provider = load('../../../mobile/src/realtime/RealtimeProvider.tsx', {
@@ -99,6 +103,15 @@ function setup() {
     '../realtime/status-snapshot': statusSnapshot,
     '../ble/beacon-scan-gate': { canStartBeaconScan: () => false },
     '../ble/beacon-scan-controller': {},
+    // 탑승이 확정되면 화면이 지팡이를 놓아주는지 여기서 확인한다. 실제 중지·해지
+    // 순서는 mobile-cane-release-controller.test.ts 가 따로 검증한다.
+    '../ble/cane-release-controller': {
+      releaseCaneAfterBoarding: async (deps: any) => {
+        calls.caneReleases.push({ beaconScanActive: deps.beaconScanActive });
+        await deps.disconnectCane();
+        deps.onReleased();
+      },
+    },
     '../ble/bell-connect-controller': bellController,
   }).default;
   return {
@@ -159,5 +172,23 @@ test('대상 정보가 없는 bell 실패도 공식 경로로 attempted=false를
   assert.equal(app.calls.events[0].device, 'BELL');
   assert.equal(app.calls.events[0].attempted, false);
   assert.deepEqual(app.calls.speech, []);
+  app.dispose();
+});
+
+test('탑승이 확정되면 화면이 지팡이 연결을 놓아준다', async () => {
+  // 승차 안내(버스 접근 진동)가 끝났는데 BLE 연결이 남으면 지팡이 배터리를 계속 쓴다.
+  // 지금까지 화면은 비콘 스캔만 멈추고 연결은 그대로 뒀다.
+  const app = setup();
+  app.provider();
+  app.screen();
+  await flush();
+
+  assert.equal(app.calls.caneReleases.length, 1, '탑승 확정 시 한 번 놓아준다');
+  assert.equal(app.calls.caneDisconnects, 1);
+  assert.equal(
+    app.calls.releases.length,
+    0,
+    '하차벨은 하차까지 필요하므로 여기서 정리하지 않는다',
+  );
   app.dispose();
 });
