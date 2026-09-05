@@ -5,6 +5,7 @@ import { runInNewContext } from 'node:vm';
 import ts from 'typescript';
 import * as assistStatus from '../../../mobile/src/realtime/assist-device-status.js';
 import * as bellController from '../../../mobile/src/ble/bell-connect-controller.js';
+import * as statusSnapshot from '../../../mobile/src/realtime/status-snapshot.js';
 
 const flush = async () => { for (let i = 0; i < 50; i++) await Promise.resolve(); };
 
@@ -86,12 +87,16 @@ function setup() {
     './assist-device-status': assistStatus,
   }).RealtimeProvider;
   const Screen = load('../../../mobile/src/screens/RidingScreen.js', {
-    ...shared, react: screenHooks.React,
+    ...shared,
+    react: screenHooks.React,
     'react-native': { StyleSheet: { create: (value: unknown) => value } },
     '@react-navigation/native': { useFocusEffect() {} },
-    '../state/trip-transition': { isScreenTripActive: (active: string, screen: string) => active === screen },
+    '../state/trip-transition': {
+      isScreenTripActive: (active: string, screen: string) => active === screen,
+    },
     '../realtime/RealtimeProvider': { useRealtime: () => realtime },
     '../realtime/assist-device-status': assistStatus,
+    '../realtime/status-snapshot': statusSnapshot,
     '../ble/beacon-scan-gate': { canStartBeaconScan: () => false },
     '../ble/beacon-scan-controller': {},
     '../ble/bell-connect-controller': bellController,
