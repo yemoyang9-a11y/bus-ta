@@ -111,7 +111,7 @@ test('pending 중 start 재호출은 동일 promise와 write 한 번만 사용�
   await flush();
   assert.equal(flow.start(), first);
   assert.equal(sends, 1);
-  notify('SUCCESS'); // write 반환보다 빠른 Notify
+  notify('SUCCESS'); // write 시작 뒤, 반환 전 빠른 Notify는 현재 요청의 결과다.
   assert.deepEqual(await first, { outcome: 'success', sendFailed: false });
   pending.resolve();
   await flush();
@@ -140,14 +140,19 @@ test('cleanup 뒤 재진입과 stale Notify/write는 새 세션을 덮지 않는
   assert.equal(current.calls.removes, 1);
 });
 
-test('구독 함수가 동기 Notify를 호출해도 구독을 정확히 한 번 해제한다', async () => {
+test('STOP_REQUEST 시작 전 동기 Notify는 무시하고 실제 write를 수행한다', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
   let removes = 0;
   const { flow, calls } = setup({ subscribeResult: (callback: (value: { result: string }) => void) => {
     callback({ result: 'SUCCESS' });
     return () => { removes++; };
   } });
-  assert.deepEqual(await flow.start(), { outcome: 'success', sendFailed: false });
+  let completed = false;
+  const result = flow.start().then((value) => { completed = true; return value; });
   await flush();
+  assert.equal(calls.sends, 1);
+  assert.equal(completed, false);
+  t.mock.timers.tick(BELL_RESULT_TIMEOUT_MS);
+  assert.deepEqual(await result, { outcome: 'fail', sendFailed: false });
   assert.equal(removes, 1);
-  assert.equal(calls.sends, 0);
 });
