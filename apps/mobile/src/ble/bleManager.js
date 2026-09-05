@@ -36,8 +36,8 @@ const runStopBeaconScanSingleFlight = createSingleFlight();
 function scanAndConnect(deviceName) {
   return new Promise((resolve) => {
     let settled = false;
-    let scanTimeout = null;
-    let connectTimeout = null;
+    let timedOut = false;
+    let attemptTimeout = null;
     let connectingDevice = null;
 
     const finish = (result) => {
@@ -45,25 +45,63 @@ function scanAndConnect(deviceName) {
 
       settled = true;
 
-      if (scanTimeout) {
-        clearTimeout(scanTimeout);
-        scanTimeout = null;
-      }
-
-      if (connectTimeout) {
-        clearTimeout(connectTimeout);
-        connectTimeout = null;
+      if (attemptTimeout) {
+        clearTimeout(attemptTimeout);
+        attemptTimeout = null;
       }
 
       manager.stopDeviceScan();
       resolve(result);
     };
 
-    // 장치를 찾기 위한 스캔 제한 시간.
-    scanTimeout = setTimeout(() => {
-      console.log('[BLE] 장치 스캔 시간 초과:', deviceName);
-      finish(null);
-    }, 10000);
+    // P0 수정:
+    // 스캔 10초 + 연결/서비스 탐색 10초를 각각 기다리면 한 번의 BLE 시도가
+    // 최대 약 20초까지 늘어난다. 재시도까지 합치면 시연의 하차 판정보다
+    // 연결 루프가 더 오래 살아 있을 수 있다.
+    //
+    // 따라서 "스캔"과 "연결"에 별도 timeout을 두지 않고,
+    // 한 번의 scanAndConnect 전체에 8초의 단일 시간 예산을 둔다.
+    //
+    // controller는 최대 2회, 중간 대기 2초이므로:
+    //   8초 + 2초 + 8초 = 최악 약 18초
+    // 안에 연결 성공/실패가 확정된다.
+    attemptTimeout = setTimeout(async () => {
+      if (settled) {
+        return;
+      }
+
+      timedOut = true;
+
+      console.log(
+        '[BLE] 장치 연결 전체 시간 초과 - 연결 시도 취소:',
+        deviceName,
+      );
+
+      // 장치를 아직 발견하지 못했다면 취소할 네이티브 연결이 없다.
+      if (!connectingDevice) {
+        finish(null);
+        return;
+      }
+
+      // 이미 connect/discover 단계라면 기존 네이티브 연결을 먼저 취소한다.
+      // 취소가 끝나기 전에 finish(null) 하면 다음 재시도가 기존 연결과 겹칠 수 있다.
+      try {
+        await connectingDevice.cancelConnection();
+
+        console.log(
+          '[BLE] 시간 초과 연결 취소 완료:',
+          deviceName,
+        );
+      } catch (disconnectError) {
+        console.log(
+          '[BLE] 시간 초과 연결 취소 실패:',
+          deviceName,
+          disconnectError,
+        );
+      } finally {
+        finish(null);
+      }
+    }, 8000);
 
     manager.startDeviceScan(null, null, async (error, device) => {
       if (error) {
@@ -83,45 +121,16 @@ function scanAndConnect(deviceName) {
 
       connectingDevice = device;
 
-      // 장치를 찾았으므로 스캔 제한 시간은 더 이상 적용하지 않는다.
-      if (scanTimeout) {
-        clearTimeout(scanTimeout);
-        scanTimeout = null;
-      }
-
+      // 장치를 찾았어도 전체 8초 deadline은 해제하지 않는다.
+      // 스캔에서 사용한 시간을 제외한 남은 시간만 connect/discover에 사용할 수 있다.
       manager.stopDeviceScan();
-
-      // 연결 및 서비스 탐색 제한 시간.
-      //
-      // 단순히 Promise만 null로 끝내면 device.connect()가 네이티브에서 계속 진행될
-      // 수 있다. 제한 시간을 넘기면 실제 BLE 연결 시도도 취소한다.
-      connectTimeout = setTimeout(() => {
-        console.log('[BLE] 장치 연결 시간 초과 - 연결 취소:', deviceName);
-
-        // 먼저 현재 연결 요청을 실패로 끝낸다.
-        // cancelConnection() 완료를 기다리느라 다음 연결 요청을 막지 않는다.
-        finish(null);
-
-        Promise.resolve()
-          .then(() => connectingDevice?.cancelConnection())
-          .then(() => {
-            console.log('[BLE] 시간 초과 연결 취소 완료:', deviceName);
-          })
-          .catch((disconnectError) => {
-            console.log(
-              '[BLE] 시간 초과 연결 취소 실패:',
-              deviceName,
-              disconnectError,
-            );
-          });
-      }, 10000);
 
       try {
         const connected = await device.connect();
 
         // timeout/cancel과 거의 동시에 connect()가 성공할 수 있다.
-        // 이미 이 요청이 끝났다면 절대로 현재 연결로 채택하지 않고 다시 해제한다.
-        if (settled) {
+        // 이미 요청이 끝났다면 현재 연결로 채택하지 않고 다시 해제한다.
+        if (settled || timedOut) {
           try {
             await connected.cancelConnection();
           } catch (disconnectError) {
@@ -136,8 +145,8 @@ function scanAndConnect(deviceName) {
 
         await connected.discoverAllServicesAndCharacteristics();
 
-        // 서비스 탐색을 기다리는 동안에도 timeout이 발생할 수 있다.
-        if (settled) {
+        // 서비스 탐색 중 전체 deadline이 지나갔을 수도 있다.
+        if (settled || timedOut) {
           try {
             await connected.cancelConnection();
           } catch (disconnectError) {
@@ -168,12 +177,16 @@ function scanAndConnect(deviceName) {
         finish(connected);
       } catch (connectError) {
         // timeout이 먼저 처리된 뒤 cancelConnection() 때문에 connect()가 reject된
-        // 경우에는 이미 실패 처리가 끝났으므로 중복 로그/처리를 하지 않는다.
-        if (settled) {
+        // 경우에는 이미 실패 처리가 끝났으므로 중복 처리하지 않는다.
+        if (settled || timedOut) {
           return;
         }
 
-        console.log('[BLE] 연결 실패:', deviceName, connectError);
+        console.log(
+          '[BLE] 연결 실패:',
+          deviceName,
+          connectError,
+        );
         finish(null);
       }
     });
