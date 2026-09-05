@@ -1082,7 +1082,9 @@ test("get_trip_status 결과에 읽을 발음이 함께 실린다", async (t) =>
 
   const output = readFunctionOutput(events);
   assert.equal(output.routeNoSpoken, "십오 다시 이");
-  assert.equal(output.routeNo, "15-2", "실제 routeNo 표기는 바꾸지 않는다");
+  // 원본 표기는 모델에게 보내지 않는다. 보이면 모델이 그걸 제 방식으로 읽는다.
+  // "실제 표기를 바꾸지 않는다"는 불변식은 앱 상태 쪽 테스트가 지킨다.
+  assert.equal("routeNo" in output, false);
 });
 
 test("create_trip 결과에도 읽을 발음이 실린다", async (t) => {
@@ -1348,4 +1350,116 @@ test("취소 후 재선택도 같은 후보 상태를 남긴다", async (t) => {
   assert.ok(result, `취소 후보 결과 로그가 없다: ${JSON.stringify(lines)}`);
   assert.match(result, /expired=false/);
   assert.match(result, /returned=1/, "취소한 노선을 뺀 나머지가 몇 개인지");
+});
+
+// ── 모델에게 원본 노선 번호를 보여주지 않는다 ────────────────────
+//
+// 2026-09-05 실기기: routeNoSpoken 을 함께 실어 보내고 "그대로 읽어라"라고 지시했는데도
+// 모델이 M4101 을 "엠 사천 일공일"처럼 제 방식으로 발음했다. 우리 변환 함수는
+// "엠 사 일 공 일" 을 만들므로 그 소리가 나올 수 없다 — 모델이 옆에 있는 원본
+// routeNo 를 보고 직접 발음한 것이다.
+//
+// "이 필드 말고 저 필드를 읽어라"는 결국 또 하나의 지시였다. 같은 방식으로 세 번
+// 실패했으므로, 모델이 원본 표기를 아예 못 보게 한다. 보지 못한 문자열은 발음할 수 없다.
+//
+// 앱 상태에는 원본이 그대로 남아야 한다. 화면 표시와 create_trip 요청 본문이 그것을 쓴다.
+
+test("모델 payload 에는 원본 routeNo 가 없고 발음형만 있다", async (t) => {
+  const routes = [makeRoute(1, "M4101"), makeRoute(2, "720-1")];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => Response.json({ success: true, destination: "수원역", routes });
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const events = await dispatchRealtimeFunctionCall(
+    {
+      type: "response.function_call_arguments.done",
+      call_id: "call-hide-1",
+      name: "search_routes",
+      arguments: JSON.stringify({ destination: "수원역" }),
+    },
+    locatedContext([]),
+  );
+
+  const payload = readFunctionOutput(events);
+  const returned = payload.routes as Array<Record<string, unknown>>;
+
+  assert.equal(returned[0]?.routeNoSpoken, "엠 사 일 공 일");
+  assert.equal(returned[1]?.routeNoSpoken, "칠백이십 다시 일");
+  for (const route of returned) {
+    assert.equal(
+      "routeNo" in route,
+      false,
+      `원본 표기가 남아 있으면 모델이 그걸 읽는다: ${JSON.stringify(route)}`,
+    );
+  }
+  assert.doesNotMatch(JSON.stringify(payload), /M4101|720-1/, "payload 어디에도 원본이 없어야 한다");
+});
+
+test("앱 상태에는 원본 routeNo 가 그대로 남는다", async (t) => {
+  // 화면 표시와 create_trip 요청 본문은 실제 표기를 써야 한다. 발음형을 저장하면
+  // 서버에 "칠백이십 다시 일"이 노선 번호로 전달된다.
+  const routes = [makeRoute(1, "M4101")];
+  const actions: AppAction[] = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => Response.json({ success: true, destination: "수원역", routes });
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  await dispatchRealtimeFunctionCall(
+    {
+      type: "response.function_call_arguments.done",
+      call_id: "call-hide-2",
+      name: "search_routes",
+      arguments: JSON.stringify({ destination: "수원역" }),
+    },
+    locatedContext(actions),
+  );
+
+  const stored = actions.find((a) => a.type === "SET_DESTINATION_AND_ROUTES") as
+    | { routes: Array<{ routeNo: string }> }
+    | undefined;
+  assert.ok(stored, "후보가 앱 상태에 저장돼야 한다");
+  assert.equal(stored.routes[0]?.routeNo, "M4101");
+});
+
+test("운행 상태 조회 결과에도 원본 routeNo 를 남기지 않는다", async (t) => {
+  stubTripStatusFetch(t, { ...waitingStatusBody, routeNo: "720-1" });
+
+  const events = await dispatchRealtimeFunctionCall(
+    {
+      type: "response.function_call_arguments.done",
+      call_id: "call-hide-3",
+      name: "get_trip_status",
+      arguments: JSON.stringify({ tripId: "trip-test-001" }),
+    },
+    createContext([]),
+  );
+
+  const payload = readFunctionOutput(events);
+  assert.equal(payload.routeNoSpoken, "칠백이십 다시 일");
+  assert.equal("routeNo" in payload, false);
+});
+
+test("create_trip 은 모델에게 candidateId 와 destination 만 요구한다", () => {
+  // 원본 표기를 감췄으므로 모델은 routeNo·localBusId·정류장 목록을 채울 수 없다.
+  // 어차피 Dispatcher 가 앱 상태의 실제 후보에서 다시 만들어 쓰던 값들이라,
+  // 스키마에 남겨 두면 모델이 없는 값을 지어내게만 한다.
+  const tools = createRealtimeSessionUpdateEvent().session.tools as ReadonlyArray<{
+    name: string;
+    parameters: { required: readonly string[]; properties: Record<string, unknown> };
+  }>;
+  const createTrip = tools.find((tool) => tool.name === "create_trip");
+
+  assert.ok(createTrip);
+  assert.deepEqual([...createTrip.parameters.required].sort(), ["candidateId", "destination"]);
+  for (const gone of ["routeNo", "localBusId", "gbisStationId", "stationList"]) {
+    assert.equal(
+      gone in createTrip.parameters.properties,
+      false,
+      `${gone} 은 Dispatcher 가 채우므로 모델에게 묻지 않는다`,
+    );
+  }
 });
