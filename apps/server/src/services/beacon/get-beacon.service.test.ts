@@ -79,3 +79,26 @@ test("returns 500 DB_ERROR when the beacon repository fails", async () => {
     timestamp: "2026-07-01T15:00:04+09:00",
   });
 });
+
+test("returns BUS_35_001 for the current demo route 35", async () => {
+  const route35 = DEMO_BEACONS.find((beacon) => beacon.routeNo === "35");
+
+  assert.ok(route35);
+
+  const result = await getBeaconByRoute("35", {
+    findByRouteNo: (routeNo) => repository.findByRouteNo(routeNo),
+    now: () => "2026-09-05T14:00:00+09:00",
+  });
+
+  assert.equal(result.httpStatus, 200);
+  if (result.httpStatus !== 200) return;
+
+  assert.deepEqual(result.body, {
+    success: true,
+    routeNo: "35",
+    targetBeaconId: "BUS_35_001",
+    isMock: false,
+    message: "비콘 정보를 조회했습니다.",
+    timestamp: "2026-09-05T14:00:00+09:00",
+  });
+});

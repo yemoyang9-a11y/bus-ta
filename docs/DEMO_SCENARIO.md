@@ -43,7 +43,7 @@
 6. `remainingStations = 1`이고 `bellStatus = NOT_REQUESTED`이면 백엔드가 `bellRequestId`와 `STOP_REQUEST`를 생성합니다.
 7. 백엔드는 `bellStatus = PENDING`, `shouldTriggerBell = true`를 반환합니다.
 8. 앱은 하차 안내 화면으로 전환하고 TTS 안내를 출력합니다.
-9. 앱은 실제 BLE 하차벨에 `STOP_REQUEST`를 전달하고 결과(Notify)를 기다립니다. BLE 연결이 없으면 즉시 실패로 처리합니다.
+9. 앱은 실제 BLE 하차벨에 `STOP_REQUEST`를 전달하고 결과(Notify)를 기다립니다. 하차벨 연결은 탑승확정 직후에 이미 시도해 둔 상태이며, 명령 전송 직전에 연결이 끊겼으면 한 번 더 연결한 뒤 보냅니다. 그래도 연결이 없으면 즉시 실패로 처리합니다.
 10. 앱은 `POST /api/trips/{tripId}/bell/result`로 결과를 저장합니다. 이때 `isMock`은 서버가 제공한 값과 실제 BLE 연결 성공 여부를 함께 반영한 값입니다(2026-08-13 확정).
 11. 이후 `GET /api/trips/{tripId}/status`에서 `shouldTriggerBell = false`를 확인합니다.
 

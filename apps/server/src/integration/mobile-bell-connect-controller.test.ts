@@ -1,0 +1,308 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import {
+  MAX_BELL_CONNECT_ATTEMPTS,
+  MAX_BELL_DISCONNECT_ATTEMPTS,
+  connectBellWithRetry,
+  disconnectBellWithRetry,
+  type BellConnectDeps,
+} from "../../../mobile/src/ble/bell-connect-controller.js";
+
+// ─────────────────────────────────────────────
+// 하차벨 연결을 탑승 확정 뒤로 옮기면서 생긴 재시도.
+//
+// 2026-09-04 실차 시험에서 하차벨이 두 번 다 울리지 않았다. 운행을 만드는 시점에
+// 지팡이와 함께 연결을 시도했는데, 그때 하차벨 보드는 아직 오지 않은 버스 안이라
+// BLE 범위 밖이었다. 실패한 뒤 다시 찾는 코드가 없어 그 운행 내내 연결이 없었고,
+// 하차 화면은 연결 없음을 보고 1초 만에 실패로 확정했다.
+// ─────────────────────────────────────────────
+
+function makeDeps(overrides: Partial<BellConnectDeps> = {}) {
+  const calls = {
+    attempts: 0,
+    connected: 0,
+    connectedTooLate: 0,
+    gaveUp: 0,
+    cancelled: 0,
+    waits: [] as number[],
+  };
+
+  const deps: BellConnectDeps = {
+    connectBell: async () => {
+      calls.attempts += 1;
+      return { id: "bell" };
+    },
+    isStillWanted: () => true,
+    onConnected: () => {
+      calls.connected += 1;
+    },
+    onConnectedTooLate: () => {
+      calls.connectedTooLate += 1;
+    },
+    onGaveUp: () => {
+      calls.gaveUp += 1;
+    },
+    onCancelled: () => {
+      calls.cancelled += 1;
+    },
+    // 테스트에서는 기다리지 않는다. 실제 지연은 controller 상수가 갖고 있다.
+    wait: async (ms: number) => {
+      calls.waits.push(ms);
+    },
+    ...overrides,
+  };
+
+  return { deps, calls };
+}
+
+test("한 번에 연결되면 재시도하지 않는다", async () => {
+  const { deps, calls } = makeDeps();
+
+  await connectBellWithRetry(deps);
+
+  assert.equal(calls.attempts, 1);
+  assert.equal(calls.connected, 1);
+  assert.equal(calls.waits.length, 0);
+  assert.equal(calls.gaveUp, 0);
+});
+
+test("버스 안에서 한 번 실패해도 다시 시도해 연결한다", async () => {
+  let attempt = 0;
+  const { deps, calls } = makeDeps({
+    // bleManager 의 연결은 못 찾으면 null 을 돌려준다. 실패는 예외가 아니다.
+    connectBell: async () => {
+      attempt += 1;
+      return attempt === 1 ? null : { id: "bell" };
+    },
+  });
+
+  await connectBellWithRetry(deps);
+
+  assert.equal(attempt, 2);
+  assert.equal(calls.connected, 1);
+  assert.deepEqual(calls.waits, [2000]);
+  assert.equal(calls.gaveUp, 0);
+});
+
+test("예외로 실패해도 null 과 똑같이 재시도한다", async () => {
+  let attempt = 0;
+  const { deps, calls } = makeDeps({
+    connectBell: async () => {
+      attempt += 1;
+      if (attempt === 1) throw new Error("BLE 스캔 오류");
+      return { id: "bell" };
+    },
+  });
+
+  await connectBellWithRetry(deps);
+
+  assert.equal(attempt, 2);
+  assert.equal(calls.connected, 1);
+});
+
+test("상한까지 실패하면 조용히 끝내지 않고 알린다", async () => {
+  let attempt = 0;
+  const { deps, calls } = makeDeps({
+    connectBell: async () => {
+      attempt += 1;
+      return null;
+    },
+  });
+
+  await connectBellWithRetry(deps);
+
+  assert.equal(attempt, MAX_BELL_CONNECT_ATTEMPTS);
+  assert.equal(attempt, 2);
+  assert.equal(calls.connected, 0);
+  assert.equal(calls.gaveUp, 1);
+  assert.equal(calls.cancelled, 0);
+
+  // 최대 2회이므로 첫 실패 뒤 한 번만 기다린다.
+  assert.deepEqual(calls.waits, [2000]);
+});
+
+test("기다리는 사이 운행이 끝나면 재시도하지 않고 취소를 남긴다", async () => {
+  let wanted = true;
+  let attempt = 0;
+
+  const { deps, calls } = makeDeps({
+    connectBell: async () => {
+      attempt += 1;
+      wanted = false;
+      return null;
+    },
+    isStillWanted: () => wanted,
+  });
+
+  await connectBellWithRetry(deps);
+
+  assert.equal(attempt, 1);
+
+  // 이전 구현은 여기서 그냥 return해서 아무 흔적도 남기지 않았다.
+  // 이제 명시적인 취소 결과가 호출부까지 전달돼야 한다.
+  assert.equal(calls.cancelled, 1);
+  assert.equal(calls.gaveUp, 0);
+  assert.equal(calls.connected, 0);
+
+  // 운행이 이미 끝났으므로 2초를 기다리거나 두 번째 연결을 시도하지 않는다.
+  assert.deepEqual(calls.waits, []);
+});
+
+test("늦게 연결됐는데 운행이 끝났으면 연결을 되돌린다", async () => {
+  let wanted = true;
+
+  const { deps, calls } = makeDeps({
+    connectBell: async () => {
+      wanted = false;
+      return { id: "bell" };
+    },
+    isStillWanted: () => wanted,
+  });
+
+  await connectBellWithRetry(deps);
+
+  assert.equal(calls.connected, 0);
+
+  // BLE 자체는 성공했으므로 단순 취소가 아니라 늦은 성공 정리 경로를 사용한다.
+  assert.equal(calls.connectedTooLate, 1);
+  assert.equal(calls.cancelled, 0);
+  assert.equal(calls.gaveUp, 0);
+});
+
+test("되돌리기가 끝날 때까지 기다린다", async () => {
+  let wanted = true;
+  let disconnectFinished = false;
+
+  const { deps } = makeDeps({
+    connectBell: async () => {
+      wanted = false;
+      return { id: "bell" };
+    },
+    isStillWanted: () => wanted,
+    onConnectedTooLate: async () => {
+      await Promise.resolve();
+      disconnectFinished = true;
+    },
+  });
+
+  await connectBellWithRetry(deps);
+
+  assert.equal(disconnectFinished, true);
+});
+
+test("시작할 때 이미 운행이 끝났으면 연결하지 않고 취소를 남긴다", async () => {
+  const { deps, calls } = makeDeps({
+    isStillWanted: () => false,
+  });
+
+  await connectBellWithRetry(deps);
+
+  assert.equal(calls.attempts, 0);
+  assert.equal(calls.connected, 0);
+  assert.equal(calls.gaveUp, 0);
+
+  // P0-3 회귀 방지:
+  // 시작 시점부터 필요 없는 연결도 조용히 사라져서는 안 된다.
+  assert.equal(calls.cancelled, 1);
+});
+
+// ─────────────────────────────────────────────
+// 늦게 성공한 연결 되돌리기.
+//
+// 예모님 지적(2026-09-04): 해제가 한 번 실패하면 로그만 남기고 끝나서, 끝난 운행의
+// 연결이 다음 운행까지 남는다. 앞 PR 에서 고친 "늦은 START 정리 실패"와 같은 구멍이다.
+// ─────────────────────────────────────────────
+
+test("연결 해제가 한 번 실패해도 다시 시도해 끊는다", async () => {
+  let attempt = 0;
+  let gaveUp = 0;
+  const waits: number[] = [];
+
+  await disconnectBellWithRetry({
+    disconnectBell: async () => {
+      attempt += 1;
+      if (attempt === 1) throw new Error("cancelConnection 실패");
+    },
+    onGaveUp: () => {
+      gaveUp += 1;
+    },
+    wait: async (ms) => {
+      waits.push(ms);
+    },
+  });
+
+  assert.equal(attempt, 2);
+  assert.equal(gaveUp, 0);
+  assert.deepEqual(waits, [2000]);
+});
+
+test("연결 해제가 상한까지 실패하면 알린다", async () => {
+  let attempt = 0;
+  let gaveUp = 0;
+
+  await disconnectBellWithRetry({
+    disconnectBell: async () => {
+      attempt += 1;
+      throw new Error("cancelConnection 실패");
+    },
+    onGaveUp: () => {
+      gaveUp += 1;
+    },
+    wait: async () => undefined,
+  });
+
+  assert.equal(attempt, MAX_BELL_DISCONNECT_ATTEMPTS);
+  assert.equal(attempt, 2);
+  assert.equal(gaveUp, 1);
+});
+
+test("운행 A 연결 중 B 운행으로 바뀌면 A의 늦은 성공을 연결 완료로 처리하지 않는다", async () => {
+  let activeTripId = "trip-A";
+  let connectAttempts = 0;
+  const attemptTripId = "trip-A";
+
+  let resolveConnection:
+    | ((value: { id: string }) => void)
+    | undefined;
+
+  const connection = new Promise<{ id: string }>((resolve) => {
+    resolveConnection = resolve;
+  });
+
+  const { deps, calls } = makeDeps({
+    connectBell: async () => {
+      connectAttempts += 1;
+      return connection;
+    },
+
+    // 실제 RidingScreen과 같은 원리:
+    // 연결 시도를 시작한 운행 A가 아직 현재 운행인지 확인한다.
+    isStillWanted: () => activeTripId === attemptTripId,
+  });
+
+  const connecting = connectBellWithRetry(deps);
+  assert.equal(connectAttempts, 1);
+
+  // A의 BLE 연결이 끝나기 전에 사용자가 A를 취소하고 B 운행을 시작한다.
+  activeTripId = "trip-B";
+
+  // 그 뒤 A에서 시작했던 BLE 연결이 늦게 성공한다.
+  resolveConnection?.({ id: "bell-A" });
+
+  await connecting;
+
+  // 늦게 성공한 A 연결을 B의 정상 연결로 인정하면 안 된다.
+  assert.equal(calls.connected, 0);
+
+  // 대신 A에서 시작된 늦은 연결을 정리하는 경로로 보내야 한다.
+  assert.equal(calls.connectedTooLate, 1);
+
+  // B 운행에서 A 연결을 재시도하거나 정상 성공으로 처리해서도 안 된다.
+  assert.equal(connectAttempts, 1);
+  assert.deepEqual(calls.waits, []);
+  assert.equal(calls.gaveUp, 0);
+
+  // BLE 연결 자체는 성공한 뒤 운행이 바뀐 경우이므로
+  // 일반 취소가 아니라 늦은 성공 정리 경로만 사용한다.
+  assert.equal(calls.cancelled, 0);
+});
