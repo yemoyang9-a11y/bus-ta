@@ -157,6 +157,7 @@ export async function sendStopRequestWithReconnect(
 ): Promise<BellCommandOutcome> {
   let active = true;
   let sentSuccessfully = false;
+  let writeStarted = false;
   let subscription: () => void = noop;
   const expiresAt = Date.now() + BELL_SEND_DEADLINE_MS;
   const cleanup = () => {
@@ -190,17 +191,23 @@ export async function sendStopRequestWithReconnect(
     const work = sendWithReconnect({
       isConnected: () => guarded(deps.isConnected),
       connect: () => guarded(deps.connect),
-      sendStopRequest: () => guarded(deps.sendStopRequest),
+      sendStopRequest: () => {
+        writeStarted = true;
+        return guarded(deps.sendStopRequest);
+      },
       subscribeResult: () => {
         check();
+        // 각 구독은 바로 뒤에 오는 해당 attempt의 write가 시작된 뒤에만 유효하다.
+        // 구독 등록 중 동기 Notify가 들어와도 이전/잔여 결과를 현재 요청 성공으로 보지 않는다.
+        writeStarted = false;
         let subscribed = true;
-        const remove = deps.subscribeResult(() => subscribed && !options.signal?.aborted &&
+        const remove = deps.subscribeResult(() => subscribed && writeStarted &&
+          !options.signal?.aborted &&
           (sentSuccessfully || (active && Date.now() < expiresAt)));
         subscription = () => {
           subscribed = false;
           remove();
         };
-        // 구독 등록 중 동기 Notify가 도착해 세션이 종료되는 경우도 정리한다.
         if (!active || options.signal?.aborted) cleanup();
         return cleanup;
       },
