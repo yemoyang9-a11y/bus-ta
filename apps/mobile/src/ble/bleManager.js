@@ -683,6 +683,23 @@ export async function disconnect(deviceName) {
   }
 }
 
+/**
+ * 스마트지팡이 연결을 끊는다. 탑승이 확정된 뒤에 쓴다.
+ *
+ * 승차 안내(버스 접근 진동)가 끝나면 지팡이를 붙들고 있을 이유가 없다. 하차 안내는
+ * 하차벨 보드가 맡으므로 여기서 지팡이만 놓아준다.
+ *
+ * 반드시 비콘 스캔을 멈춘 뒤에 호출한다. 스캔 중지는 지팡이에 명령을 써서
+ * 동작하므로(writeCommand), 연결을 먼저 끊으면 중지 명령이 전달되지 않아 지팡이가
+ * 탑승 뒤에도 계속 진동한다. 순서 보장은 ble/cane-release-controller.ts 가 한다.
+ *
+ * CANE_DEVICE_NAME 을 밖으로 내보내지 않는 이유는, 이름을 아는 곳이 늘어나면
+ * 오타 하나로 다른 장치를 끊게 되기 때문이다.
+ */
+export async function disconnectCane() {
+  await disconnect(CANE_DEVICE_NAME);
+}
+
 /** 화면 blur가 아니라 운행 취소/교체 때만 호출한다. 소유 운행의 대상만 정리한다. */
 export async function disconnectBellsForTrip(tripId) {
   const cleanups = [];

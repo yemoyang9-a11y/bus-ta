@@ -260,3 +260,32 @@ test('이전 disconnect reject 후에도 새 bell에 연결하고 명령/구독 
   assert.equal(await ble.connectBell('BUS_B'), next);
   assert.equal(calls.scans, 2);
 });
+
+// 탑승이 확정되면 지팡이 연결도 끊는다. 지금까지는 스캔만 멈추고 연결이 남아
+// 승차 안내가 끝난 뒤에도 지팡이 배터리를 계속 썼다.
+//
+// 호출부(화면)가 'White_cane'이라는 이름을 알 필요는 없다. 이름을 밖으로 내보내면
+// 다른 곳에서 오타로 다른 장치를 끊을 수 있으므로 전용 함수만 노출한다.
+test('disconnectCane는 지팡이 연결만 끊고 하차벨은 건드리지 않는다', async () => {
+  const { ble, device } = setup();
+  const cane = device('White_cane');
+  const bell = device('BUS_A');
+
+  await ble.connectCane();
+  await ble.connectBell('BUS_A');
+  assert.equal(ble.isCaneConnected(), true);
+
+  await ble.disconnectCane();
+
+  assert.equal(cane.cancels, 1);
+  assert.equal(ble.isCaneConnected(), false, '연결이 실제로 정리돼야 한다');
+  assert.equal(bell.cancels, 0, '하차벨은 탑승 뒤에도 하차까지 필요하다');
+  assert.equal(ble.getBellDeviceName(), 'BUS_A');
+});
+
+test('연결된 적 없는 지팡이를 끊어도 예외로 새어 나가지 않는다', async () => {
+  // 도착정보가 없어 지팡이를 붙인 적 없는 운행에서도 탑승은 확정될 수 있다.
+  const { ble } = setup();
+
+  await assert.doesNotReject(() => ble.disconnectCane());
+});

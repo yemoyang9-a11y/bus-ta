@@ -13,6 +13,7 @@ import {
   disconnectBellsForTrip,
   startBeaconScan,
   stopBeaconScan,
+  disconnectCane,
 } from '../ble/bleManager';
 import { createAssistDeviceStatusEvent } from '../realtime/assist-device-status';
 import { canStartBeaconScan } from '../ble/beacon-scan-gate';
@@ -20,6 +21,7 @@ import {
   startBeaconScanWithRetry,
   stopBeaconScanWithRetry,
 } from '../ble/beacon-scan-controller';
+import { releaseCaneAfterBoarding } from '../ble/cane-release-controller';
 import { connectBellWithRetry } from '../ble/bell-connect-controller';
 
 const INITIAL_STATUS = {
@@ -85,6 +87,8 @@ export default function RidingScreen({ route, navigation }) {
   const activeTripIdRef = useRef(state.tripId);
   activeTripIdRef.current = state.tripId;
 
+  // 지팡이 연결을 이미 놓아줬는지. 스캔이 꺼진 뒤 effect 가 다시 돌 때 중복 해지를 막는다.
+  const caneReleasedRef = useRef(false);
   const boardingConfirmedAtRef = useRef(boardingConfirmedAt);
   boardingConfirmedAtRef.current = boardingConfirmedAt;
 
@@ -225,20 +229,39 @@ export default function RidingScreen({ route, navigation }) {
     state.beaconScanActive,
   ]);
 
+  // 탑승이 확정되면 스캔을 멈추고 지팡이 연결까지 놓아준다.
+  //
+  // 승차 안내(버스 접근 진동)가 끝났는데 연결이 남으면 지팡이 배터리를 계속 쓴다.
+  // 순서는 releaseCaneAfterBoarding 이 지킨다 — 스캔 중지가 실제로 성공한 뒤에만
+  // 끊는다. 먼저 끊으면 중지 명령이 전달되지 않아 탑승 뒤에도 계속 진동한다.
   useEffect(() => {
-    if (
-      boardingConfirmedAt &&
-      state.beaconScanActive &&
-      !stoppingBeaconScanRef.current
-    ) {
-      stoppingBeaconScanRef.current = true;
+    if (!boardingConfirmedAt || stoppingBeaconScanRef.current) return;
+    if (!state.beaconScanActive && caneReleasedRef.current) return;
 
-      runStopBeaconScan(
-        '탑승 확정 후 비콘 스캔 중지를 상한까지 재시도했지만 실패:',
-      ).finally(() => {
-        stoppingBeaconScanRef.current = false;
-      });
-    }
+    stoppingBeaconScanRef.current = true;
+
+    releaseCaneAfterBoarding({
+      beaconScanActive: state.beaconScanActive,
+      stopBeaconScan,
+      disconnectCane,
+      onStopped: () => {
+        dispatch({ type: 'SET_BEACON_SCAN_ACTIVE', active: false });
+      },
+      onReleased: () => {
+        caneReleasedRef.current = true;
+      },
+      onFailed: (stage, error) => {
+        console.log(
+          stage === 'STOP'
+            ? '탑승 확정 후 비콘 스캔 중지를 상한까지 재시도했지만 실패:'
+            : '탑승 확정 후 지팡이 연결 해지 실패:',
+          error,
+        );
+      },
+      wait: waitBeforeRetry,
+    }).finally(() => {
+      stoppingBeaconScanRef.current = false;
+    });
   }, [boardingConfirmedAt, state.beaconScanActive]);
 
   // 탑승이 확정되면 하차벨 보드를 연결한다.
