@@ -26,6 +26,20 @@ Function 매핑은 `search_routes → POST /api/routes/search`, `create_trip →
 - 상태가 실제로 변했을 때만 Event Dispatcher가 Realtime 세션에 알린다.
 - `GET /status`는 조회 전용이므로 하차벨을 실행하지 않는다.
 
+### 도착정보 반복 조회
+
+대기 중에는 서버가 준 `nextArrivalRefreshInMs` 주기로 `GET /api/trips/{tripId}/status`를 다시 부른다. 주기를 앱이 스스로 정하면 서버의 GBIS 호출 정책과 어긋난다. 값이 없으면 반복하지 않으며, 서버는 `WAITING_BUS`에서만 주기를 주므로 탑승이 확정되면 폴링은 자연히 멈춘다.
+
+이 경로가 도착 예정 시간을 갱신하는 유일한 경로다. 그러므로 응답을 받으면 화면 state와 `UPDATE_TRIP_STATUS`뿐 아니라 `session.notifyStatusChange()`까지 함께 호출한다. 여기서 세션에 알리지 않으면 서버가 3분·2분을 내려줘도 AI는 `create_trip` 때의 값만 알고 있게 된다(2026-09-05 시연에서 실제로 발생). React의 `dispatch`는 비동기라 dispatch 직후 context를 다시 읽지 말고, 방금 받은 응답을 `toTripStatusSnapshot()`으로 감싸 그대로 넘긴다.
+
+앱 공통 상태(`state/trip-reducer.js`)는 `arrivals`, `arrivalStatus`, `nextArrivalRefreshInMs`, `shouldScanBeacon`을 보관한다. 이 네 필드는 대기 중 `GET /status` 응답에만 있고 3초 주기 `PATCH /status` 응답에는 없으므로, 없는 값을 그대로 덮어쓰면 방금 받은 최신 도착시간이 지워진다. 규칙은 셋이다.
+
+1. 응답에 도착정보가 있으면 그대로 최신 값으로 바꾼다.
+2. 없는데 `WAITING_BUS`도 벗어났으면(탑승 확정·운행 종료) 명시적으로 비운다.
+3. 없지만 아직 대기 중이면 직전 값을 유지한다.
+
+`realtime/event-dispatcher.ts`도 같은 규칙을 쓴다. 이 값이 임박 판정의 기준이라, PATCH 응답이 끼어들 때 잊어버리면 같은 임박 안내가 두 번 나간다.
+
 ## BLE와 접근성
 
 `GET /api/beacons?routeNo=`의 `targetBeaconId`를 스마트지팡이에 전달한다. BLE 신호 수집과 자동 탑승 여부의 최종 알고리즘 판정은 프론트 BLE 모듈이 담당한다. 자동 확정 시 `apiClient.trips.confirmBoarding(tripId, { requestId, boardingMethod: "AUTO_DETECTED", detectedAt })`를 호출하고, 서버 성공 응답만 앱 상태에 반영한다.

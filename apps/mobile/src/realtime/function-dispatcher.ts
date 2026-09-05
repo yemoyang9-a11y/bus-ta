@@ -87,17 +87,22 @@ function buildFunctionResponseInstructions(name: RealtimeFunctionName): string {
     return `${common} create_trip 성공은 실제 탑승 완료가 아니라 WAITING_BUS 상태의 탑승 대기 시작이다. 성공 결과이면 \"OO번 버스를 선택했습니다. OO 정류장에서 기다려 주세요.\"라고 routeNo와 앱이 제공한 탑승 정류장을 안내한다. arrivals의 첫 항목이 있으면 predictedArrivalMinutes를 사용해 \"버스는 약 N분 후 도착합니다.\"라고 반드시 말한다. arrivals가 비어 있으면 시간을 추측하지 말고 \"현재 실시간 버스 도착정보를 확인할 수 없습니다\"라고 반드시 말한다. 이 응답에서는 절대 \"탑승했습니다\", \"탑승 중입니다\", \"운행을 시작합니다\"라고 말하지 않는다. 두 번째 차량은 사용자가 물을 때만 안내한다.`;
   }
 
-  if (name === "confirm_boarding") {
-    return `${common} success가 true인 서버 응답을 받은 경우에만 "탑승이 확인되었습니다. 하차까지 남은 정류장을 안내하겠습니다."라고 안내한다. success가 false이면 탑승이 확인됐다고 말하지 말고 result.message의 확인된 실패 원인만 짧게 안내한 뒤 다시 시도할지 묻는다. boardingMethod, boardingConfirmedAt, tripStatus 같은 내부 필드명은 읽지 않는다.`;
+  // 도착 예정 시간 안내의 단일 기준.
+  //
+  // 예모님 확정(2026-08-27, 예외상황 3번): WAITING_BUS 의 get_trip_status 응답에는
+  // arrivals·arrivalStatus 가 포함된다. NO_VEHICLE(정상 조회, 차량 없음)과
+  // UPSTREAM_ERROR(조회 실패)를 절대 같은 문장으로 합치면 안 된다 — 조회 실패를
+  // "버스가 없다"고 안내하면 실제로는 오고 있는 버스를 사용자가 포기하게 된다.
+  //
+  // 2026-09-05 시연: AI 가 노선 선택 직후 들은 5분을 계속 반복했다. 전역 프롬프트가
+  // 도착 예정 시간을 create_trip 전용으로 묶어 두었기 때문이다. 이 Function 은 매번
+  // 서버가 갱신한 값을 들고 오므로 답변 근거를 방금 받은 결과로 못박는다.
+  if (name === "get_trip_status") {
+    return `${common} 도착 예정 시간과 남은 정류장 수는 방금 전달된 이 get_trip_status 결과만 근거로 말한다. 이전 create_trip 응답, 앞선 대화에서 안내했던 도착 시간, 앱이 기억하던 값은 절대 다시 사용하지 않는다. arrivalStatus 가 AVAILABLE 이면 arrivals의 첫 항목 predictedArrivalMinutes 를 사용해 \"버스는 약 N분 후 도착합니다\"처럼 안내한다. NO_VEHICLE 이면 조회는 됐고 지금 이 정류장에 오는 해당 노선 차량이 없다고 안내하며, 이때는 다른 노선을 제안해도 된다. NO_PREDICTION 이면 차가 없다고 단정하지 말고 도착시간 정보를 확인할 수 없다고 안내한다. UPSTREAM_ERROR 이면 \"지금은 도착 정보를 확인할 수 없습니다\"라고만 안내하고, 절대 버스가 없다거나 차량이 없다는 취지로 말하지 않으며, arrivals 에 값이 남아 있어도 그것을 방금 확인한 최신 도착시간처럼 말하지 않는다. \"버스를 놓쳤다\"는 발화 뒤에 이 결과가 왔더라도 그 발화만으로 운행 자체를 취소하지 않는다. \"몇 정류장 남았어요?\"의 뜻은 탑승 전후가 다르다. tripStatus 가 WAITING_BUS 이면 remainingStations 를 버스가 승차 정류장까지 남긴 정류장 수로 말하지 않고, 남은 정류장 수는 확인할 수 없다고 밝힌 뒤 최신 도착 예정 시간을 안내한다. tripStatus 가 ON_BUS 또는 NEAR_DESTINATION 이면 remainingStations 를 목적지까지 남은 정류장 수로 안내한다.`;
   }
 
-  // 예모님 확정(2026-08-27, 3번 "버스 놓침" 계약, exception-1-2에서 실제 구현 완료):
-  // WAITING_BUS일 때 get_trip_status 응답에 arrivals·arrivalStatus가 포함된다.
-  // arrivalStatus는 AVAILABLE(정상 조회, 차량 있음) / NO_VEHICLE(정상 조회했으나 차량 없음) /
-  // UPSTREAM_ERROR(조회 실패) 세 가지이며, 뒤의 두 상태를 절대 같은 문장으로 합치면 안 된다 —
-  // 조회 실패를 "버스가 없다"고 안내하면, 실제로는 오고 있는 버스를 사용자가 포기하게 된다.
-  if (name === "get_trip_status") {
-    return `${common} "버스를 놓쳤다"는 발화 뒤에 이 결과가 오면, 이전에 안내했던 도착 예정 시간이나 앱이 기억하던 값을 반복하지 않고 이번 결과만 사용한다. arrivalStatus가 "AVAILABLE"이면 arrivals의 첫 항목으로 다음 차 도착 예정 시간을 안내한다. arrivalStatus가 "NO_VEHICLE"이면 "지금 이 정류장에 오는 OO번이 없습니다"라고 안내하고, 이때는 다른 노선을 제안해도 된다. arrivalStatus가 "UPSTREAM_ERROR"이면 "지금은 도착 정보를 확인할 수 없습니다"라고만 안내하고, 이 경우 절대 "버스가 없다"거나 차량이 없다는 취지로 말하지 않는다. 이 발화만으로 운행 자체를 취소하지 않는다.`;
+  if (name === "confirm_boarding") {
+    return `${common} success가 true인 서버 응답을 받은 경우에만 "탑승이 확인되었습니다. 하차까지 남은 정류장을 안내하겠습니다."라고 안내한다. success가 false이면 탑승이 확인됐다고 말하지 말고 result.message의 확인된 실패 원인만 짧게 안내한 뒤 다시 시도할지 묻는다. boardingMethod, boardingConfirmedAt, tripStatus 같은 내부 필드명은 읽지 않는다.`;
   }
 
   if (name === "end_trip") {

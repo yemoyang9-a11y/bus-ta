@@ -657,3 +657,48 @@ TDD로 먼저 실패 테스트 5개(어댑터 4 + 서비스 1)를 작성해 `loo
   실제 반환 경로를 한 번은 읽어야 한다.
 - 여러 엔드포인트가 공유하는 응답 스키마에 필드를 **필수로** 추가하기 전에 그 타입의 소비자를
   전부 확인한다. 제네릭 캐스트(`request<T>()`)로 소비하는 쪽은 typecheck가 잡아주지 않는다.
+
+---
+
+## 2026-09-05 — 서버는 도착정보를 갱신하는데 AI는 계속 최초 값을 말한다
+
+**증상.** 시연 중 노선 선택 직후 AI가 "약 5분 후 도착"이라고 안내한 뒤, 실제 도착정보가
+3분·2분으로 바뀌어도 계속 5분이라고 말했다. 서버 캐시와 GBIS 조회는 정상 동작했다.
+
+**원인 — 마지막 두 구간이 끊겨 있었다.**
+
+1. `RidingScreen`의 주기 `GET /status` 폴링은 응답을 화면 state와 `UPDATE_TRIP_STATUS`에만
+   반영하고 `session.notifyStatusChange()`를 호출하지 않았다. 3초 GPS `PATCH` 경로만 세션에
+   알리고 있었는데, 도착정보는 `GET` 응답에만 실린다. 즉 **갱신값이 지나가는 유일한 경로가
+   세션에 연결되지 않은 유일한 경로**였다.
+2. 전역 프롬프트에 "도착 예정 시간은 `create_trip` 응답의 `arrivals`만 사용한다"가 남아 있어,
+   설령 최신값이 전달돼도 모델이 최초 값을 쓰도록 지시받고 있었다.
+
+**검증된 해결책.** 폴링 응답을 `toTripStatusSnapshot()`으로 감싸 세션에 직접 전달하고,
+`get_trip_status` 전용 response instructions로 "방금 받은 결과만 근거"를 못박았다. 전역
+프롬프트의 `create_trip` 전용 문장은 "선택 직후는 `create_trip`, 이후 질문은 최신
+`get_trip_status`"로 바꿨다. 서버 테스트 277/277 pass, `pnpm typecheck` 3/3, 서버 build 통과.
+
+**함께 잡은 것 — 값이 없는 응답이 최신값을 지운다.**
+도착정보 네 필드는 `GET /status`의 `WAITING_BUS` 응답에만 있고 3초 주기 `PATCH` 응답에는 없다.
+응답을 그대로 덮어쓰면 방금 받은 3분이 곧바로 `undefined`가 된다. reducer와 Event Dispatcher
+양쪽에 같은 규칙을 뒀다 — 있으면 교체, 없고 대기 상태도 벗어났으면 정리, 없지만 대기 중이면 유지.
+Event Dispatcher에서 이걸 빠뜨리면 임박 안내가 두 번 나간다(2분에 한 번, PATCH가 기억을 지운
+뒤 1분에 또 한 번).
+
+**환경 특이사항 — `tsx --test`는 `.js` 안의 JSX를 읽지 못한다.**
+`TripContext.js`는 확장자가 `.js`인데 JSX를 담고 있다. Expo는 babel-preset-expo로 처리하지만
+esbuild(=tsx)의 `.js` 로더는 JSX를 켜지 않아
+`ERROR: The JSX syntax extension is not currently enabled`로 실패한다. reducer 전이 규칙을
+테스트하려면 화면 렌더링과 분리해야 해서, `initialState`와 `tripReducer`를 JSX가 없는
+`state/trip-reducer.js`로 옮기고 `TripContext.js`는 Provider만 남겼다. 먼저 **전이를 바꾸지 않는
+순수 이동**만 하고 기존 테스트가 그대로 통과하는 것을 확인한 뒤 동작을 추가했다.
+앱 상태 로직을 테스트하고 싶은데 파일이 JSX를 품고 있으면 같은 방법을 쓴다.
+
+**교훈 일반화**
+- "서버는 맞는데 사용자에게 안 보인다"류 문제는 각 구간을 따로 보지 말고 **구간 사이의 이음매**를
+  먼저 의심한다. 여기서는 두 이음매(앱→세션, 세션→모델 지시)가 동시에 끊겨 있었다.
+- 어떤 데이터가 특정 응답에만 실린다면, 그 데이터를 소비하는 코드에는 반드시 "없는 응답이
+  왔을 때" 규칙이 있어야 한다. 없으면 `undefined` 덮어쓰기로 조용히 사라진다.
+- 진단 로그는 구간 경계마다 같은 식별자로 남겨야 쓸모가 있다. 로그 하나로는 어디서 끊겼는지
+  알 수 없다(`docs/ARRIVAL_POLLING.md`의 8단계 순서).

@@ -554,3 +554,95 @@ test("놓침 발화의 강제 재조회도 최소 간격 하한을 지킨다", a
   await cache.get(TARGET, { refresh: true });
   assert.equal(calls, 2, "최소 간격이 지나면 갱신 시점 전이라도 다시 부른다");
 });
+
+// ── 진단 로그 ─────────────────────────────────────────────────────────
+// 시연에서 "5분에서 안 바뀐다"를 봤을 때, 캐시가 계속 HIT였는지 GBIS가 같은 값을
+// 준 것인지 로그만으로 갈릴 수 있어야 한다. 대신 캐시 키에 들어가는 목적지 좌표는
+// 남기지 않는다 — 사용자 이동 정보다.
+function captureLogs(t: import("node:test").TestContext): string[] {
+  const lines: string[] = [];
+  t.mock.method(console, "log", (...args: unknown[]) => {
+    lines.push(args.map(String).join(" "));
+  });
+  return lines;
+}
+
+test("캐시 MISS 와 HIT 를 이유와 함께 남긴다", async (t) => {
+  const lines = captureLogs(t);
+  const h = buildCache([[arrival(5)]]);
+
+  await h.cache.get(TARGET);
+  await h.cache.get(TARGET);
+
+  const miss = lines.find((line) => line.includes("[server/arrival-cache] MISS"));
+  const hit = lines.find((line) => line.includes("[server/arrival-cache] HIT"));
+
+  assert.ok(miss, `MISS 로그가 없다: ${JSON.stringify(lines)}`);
+  assert.match(miss, /reason=EMPTY/);
+  assert.match(miss, /gbisStationId=233000575/);
+  assert.match(miss, /localBusId=233000011/);
+
+  assert.ok(hit, `HIT 로그가 없다: ${JSON.stringify(lines)}`);
+  assert.match(hit, /arrivalStatus=AVAILABLE/);
+  assert.match(hit, /predictedArrivalMinutes=\[5\]/);
+  assert.match(hit, /nextRefreshInMs=\d+/);
+});
+
+test("강제 재조회와 만료를 서로 다른 MISS 이유로 남긴다", async (t) => {
+  const lines = captureLogs(t);
+  const h = buildCache([[arrival(30)]]);
+
+  await h.cache.get(TARGET);
+  h.advance(ARRIVAL_POLL_MIN_MS + 1);
+  await h.cache.get(TARGET, { refresh: true });
+  h.advance(ARRIVAL_POLL_MAX_MS + 1);
+  await h.cache.get(TARGET);
+
+  const reasons = lines
+    .filter((line) => line.includes("[server/arrival-cache] MISS"))
+    .map((line) => line.match(/reason=(\w+)/)?.[1]);
+
+  assert.deepEqual(reasons, ["EMPTY", "FORCE_REFRESH", "EXPIRED"]);
+});
+
+test("캐시 로그에 목적지 좌표나 비밀값이 들어가지 않는다", async (t) => {
+  const lines = captureLogs(t);
+  const h = buildCache([[arrival(5)]]);
+
+  await h.cache.get({
+    ...TARGET,
+    destinationStation: { stationName: "수원대학교", latitude: 37.213789, longitude: 126.979749 },
+  });
+
+  const cacheLines = lines.filter((line) => line.includes("[server/arrival-cache]"));
+  assert.ok(cacheLines.length > 0);
+  for (const line of cacheLines) {
+    assert.doesNotMatch(line, /37\.213789|126\.979749/, "좌표를 남기면 안 된다");
+    assert.doesNotMatch(line, /serviceKey|https?:/i, "키와 외부 URL 을 남기면 안 된다");
+  }
+});
+
+test("동시 요청이 진행 중 조회에 합쳐진 것을 구분해서 남긴다", async (t) => {
+  // MISS 한 줄을 GBIS 호출 한 번으로 읽으면 안 되는 경우다. 합쳐졌다는 사실을
+  // 남기지 않으면 "MISS 는 둘인데 GBIS start 는 하나"가 배선 문제처럼 보인다.
+  const lines = captureLogs(t);
+  let release: (() => void) | undefined;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let calls = 0;
+  const cache = new ArrivalCache(async () => {
+    calls += 1;
+    await gate;
+    return { arrivals: [arrival(5)], arrivalStatus: "AVAILABLE" as const };
+  });
+
+  const both = Promise.all([cache.get(TARGET), cache.get(TARGET)]);
+  release?.();
+  await both;
+
+  assert.equal(calls, 1, "같은 대상의 동시 요청은 한 번만 조회한다");
+  const coalesced = lines.filter((line) => line.includes("[server/arrival-cache] COALESCED"));
+  assert.equal(coalesced.length, 1, `합쳐진 요청 로그가 없다: ${JSON.stringify(lines)}`);
+  assert.match(coalesced[0]!, /gbisStationId=233000575/);
+});

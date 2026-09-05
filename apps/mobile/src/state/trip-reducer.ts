@@ -25,6 +25,13 @@ export const initialState = {
   command: null as string | null,
   lastFunctionResult: null as unknown,
   lastInjectedStatus: null as unknown,
+  // 승차 정류장에 오는 차량 정보. 대기 중 GET /status 응답에만 실려 오고, 3초 주기
+  // PATCH /status 응답에는 없다. AI 가 "몇 분 남았어?"에 답할 때 쓰는 최신 근거이므로
+  // 화면 state 가 아니라 공통 상태에 둔다.
+  arrivals: null as unknown[] | null,
+  arrivalStatus: null as string | null,          // AVAILABLE | NO_VEHICLE | NO_PREDICTION | UPSTREAM_ERROR
+  nextArrivalRefreshInMs: null as number | null, // 다음 도착정보 조회까지 기다릴 시간(서버가 정한다)
+  shouldScanBeacon: false,                       // 서버가 판단한 비콘 스캔 시작 신호
   bleIsMock: null as boolean | null,
   beaconScanActive: false,
   // 지팡이 연결과 대상 비콘 지정이 끝났는지. 서버의 스캔 시작 신호가 준비보다 먼저
@@ -51,6 +58,60 @@ type TripAction = { type: string; [key: string]: unknown };
  * TripContext.js 는 JSX 를 갖고 있어 테스트에서 불러올 수 없었다. 그래서 reducer 를
  * 여기로 옮겨 실제 dispatch 경로를 테스트로 고정한다.
  */
+// 탑승한 뒤에는 승차 정류장의 도착정보가 의미를 잃는다. 남겨 두면 AI 가 운행 중에도
+// "버스가 3분 뒤 도착합니다"라고 말할 근거를 계속 갖게 된다.
+const CLEARED_ARRIVAL_FIELDS = {
+  arrivals: null,
+  arrivalStatus: null,
+  nextArrivalRefreshInMs: null,
+  shouldScanBeacon: false,
+} satisfies Pick<
+  TripState,
+  "arrivals" | "arrivalStatus" | "nextArrivalRefreshInMs" | "shouldScanBeacon"
+>;
+
+/**
+ * 서버 응답에서 도착정보 네 필드를 어떻게 반영할지 정한다.
+ *
+ * 이 네 필드는 대기 중 GET /status 응답에만 있고 3초 주기 PATCH /status 응답에는 없다.
+ * 없는 값을 그대로 덮어쓰면 GET 이 방금 받아 온 최신 도착시간이 곧바로 지워져, 화면과
+ * AI 가 다시 근거 없는 상태가 된다. 그래서 세 경우로 나눈다.
+ *
+ * 1. 응답에 도착정보가 있으면 그대로 최신 값으로 바꾼다.
+ * 2. 없고 대기 상태도 벗어났으면(탑승 확정·종료) 명시적으로 정리한다.
+ * 3. 없지만 아직 대기 중이면(PATCH 응답) 직전 GET 의 최신 값을 유지한다.
+ *
+ * realtime/event-dispatcher.ts 도 같은 규칙을 쓴다 — 그쪽이 임박 안내의 판정 기준이라
+ * 여기서만 유지하면 안내가 두 번 나간다.
+ */
+function resolveArrivalFields(
+  state: TripState,
+  status: Record<string, unknown>,
+): Pick<
+  TripState,
+  "arrivals" | "arrivalStatus" | "nextArrivalRefreshInMs" | "shouldScanBeacon"
+> {
+  if (status.arrivals !== undefined || status.arrivalStatus !== undefined) {
+    return {
+      arrivals: (status.arrivals as unknown[] | null) ?? null,
+      arrivalStatus: (status.arrivalStatus as string | null) ?? null,
+      nextArrivalRefreshInMs: (status.nextArrivalRefreshInMs as number | null) ?? null,
+      shouldScanBeacon: status.shouldScanBeacon === true,
+    };
+  }
+
+  if (status.tripStatus !== "WAITING_BUS") {
+    return CLEARED_ARRIVAL_FIELDS;
+  }
+
+  return {
+    arrivals: state.arrivals,
+    arrivalStatus: state.arrivalStatus,
+    nextArrivalRefreshInMs: state.nextArrivalRefreshInMs,
+    shouldScanBeacon: state.shouldScanBeacon,
+  };
+}
+
 export function tripReducer(state: TripState, action: TripAction): TripState {
   switch (action.type) {
     case "SET_DESTINATION_AND_ROUTES":
@@ -92,6 +153,7 @@ export function tripReducer(state: TripState, action: TripAction): TripState {
     case "CONFIRM_BOARDING":
       return {
         ...state,
+        ...CLEARED_ARRIVAL_FIELDS,
         tripStatus: action.tripStatus as string | null,
         boardingMethod: action.boardingMethod as string | null,
         boardingConfirmedAt: action.boardingConfirmedAt as string | null,
@@ -101,6 +163,7 @@ export function tripReducer(state: TripState, action: TripAction): TripState {
       const s = (action.status ?? {}) as Record<string, unknown>;
       return {
         ...state,
+        ...resolveArrivalFields(state, s),
         tripStatus: s.tripStatus as string | null,
         boardingMethod: s.boardingMethod as string | null,
         boardingConfirmedAt: s.boardingConfirmedAt as string | null,

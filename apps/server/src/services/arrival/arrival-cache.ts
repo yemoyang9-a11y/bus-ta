@@ -122,6 +122,17 @@ function cacheKey(target: ArrivalTarget): string {
   return `${target.gbisStationId}:${target.localBusId}:${destKey}`;
 }
 
+/**
+ * 진단 로그용 도착시간 배열.
+ *
+ * 시연에서 "5분에서 안 바뀐다"를 봤을 때, 캐시가 계속 HIT 였는지 GBIS 가 같은 값을
+ * 준 것인지 이 로그로 갈린다. 캐시 키에는 목적지 좌표가 들어가지만 로그에는 넣지
+ * 않는다 — 사용자의 이동 정보다.
+ */
+function formatMinutes(arrivals: ArrivalInfo[] | null): string {
+  return `[${(arrivals ?? []).map((arrival) => arrival.predictedArrivalMinutes).join(",")}]`;
+}
+
 function readPredictedArrivalMinutes(arrivals: ArrivalInfo[]): number | null {
   const first = arrivals[0]?.predictedArrivalMinutes;
   return typeof first === "number" && Number.isFinite(first) ? first : null;
@@ -167,8 +178,23 @@ export class ArrivalCache {
     const skipCache = options.refresh === true && !withinMinInterval;
 
     if (!skipCache && cached && at < cached.refreshAfter) {
+      console.log(
+        "[server/arrival-cache] HIT",
+        `gbisStationId=${target.gbisStationId}`,
+        `localBusId=${target.localBusId}`,
+        `arrivalStatus=${cached.arrivalStatus}`,
+        `predictedArrivalMinutes=${formatMinutes(cached.arrivals)}`,
+        `nextRefreshInMs=${Math.max(0, cached.refreshAfter - at)}`,
+      );
       return this.toSnapshot(cached.arrivals, at, cached.refreshAfter, true, cached.arrivalStatus);
     }
+
+    console.log(
+      "[server/arrival-cache] MISS",
+      `reason=${!cached ? "EMPTY" : skipCache ? "FORCE_REFRESH" : "EXPIRED"}`,
+      `gbisStationId=${target.gbisStationId}`,
+      `localBusId=${target.localBusId}`,
+    );
 
     try {
       const result = await this.fetchOnce(key, target);
@@ -267,7 +293,16 @@ export class ArrivalCache {
     target: ArrivalTarget,
   ): Promise<{ arrivals: ArrivalInfo[]; arrivalStatus: ArrivalStatus }> {
     const pending = this.inFlight.get(key);
-    if (pending) return pending;
+    if (pending) {
+      // 같은 대상에 요청이 겹쳐 진행 중인 조회를 공유했다. MISS 두 줄에 GBIS 호출은
+      // 하나인 상황이 배선 문제처럼 보이지 않게 따로 구분해 둔다.
+      console.log(
+        "[server/arrival-cache] COALESCED",
+        `gbisStationId=${target.gbisStationId}`,
+        `localBusId=${target.localBusId}`,
+      );
+      return pending;
+    }
 
     const request = this.lookup(target).finally(() => {
       this.inFlight.delete(key);

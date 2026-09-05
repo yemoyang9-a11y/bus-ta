@@ -72,10 +72,13 @@ test("a pre-confirmation GPS event stays WAITING_BUS even with one station remai
   assert.equal(events[0]?.boardingMethod, null);
   assert.equal(events[0]?.boardingConfirmedAt, null);
 
+  // 세션에 실제로 기억되는 것은 도착정보까지 확정한 스냅샷이다. GET 응답이 아직
+  // 도착정보를 준 적이 없으면 두 값은 null 로 확정된다 — 다음 PATCH 응답이 이 값을
+  // 이어받아 임박 판정 기준이 끊기지 않게 하기 위함이다.
   assert.deepEqual(actions, [
     {
       type: "SET_LAST_INJECTED_STATUS",
-      status: waitingSnapshot,
+      status: { ...waitingSnapshot, arrivalStatus: null, arrivals: null },
     },
   ]);
 });

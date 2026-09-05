@@ -108,7 +108,25 @@ export const ArrivalInfoSchema = z.object({
 });
 export type ArrivalInfo = z.infer<typeof ArrivalInfoSchema>;
 
-export const ArrivalStatusSchema = z.enum(["AVAILABLE", "NO_VEHICLE", "UPSTREAM_ERROR"]);
+/**
+ * 도착정보 "조회 결과"의 상태. 도착 차량의 속성(occupancy.type)과는 다른 층이다.
+ *
+ * - AVAILABLE: 조회 성공, 안내할 차량이 있다.
+ * - NO_VEHICLE: 조회 성공, 이 노선 레코드가 없다 = 지금 오는 차가 없다.
+ * - NO_PREDICTION: 레코드는 있는데 예상 도착 시간만 비어 있다. "차가 없다"고 단정하면 안 된다.
+ * - UPSTREAM_ERROR: 조회하지 못했거나 방향을 확인하지 못했다. 역시 "차가 없다"가 아니다.
+ *
+ * arrivals 가 빈 배열인 이유를 이 값으로 구분한다. 구분하지 않으면 GBIS 장애가
+ * "다음 버스가 없습니다"로 안내되고, 그 말을 듣고 정류장을 떠난 사용자가 실제로는
+ * 오고 있던 버스를 놓친다. 서버 내부 상수는 apps/server/src/services/arrival/arrival-status.ts,
+ * 안내 기준은 docs/ARRIVAL_POLLING.md 를 따른다.
+ */
+export const ArrivalStatusSchema = z.enum([
+  "AVAILABLE",
+  "NO_VEHICLE",
+  "NO_PREDICTION",
+  "UPSTREAM_ERROR",
+]);
 export type ArrivalStatus = z.infer<typeof ArrivalStatusSchema>;
 
 export const CreateTripResponseSchema = z.object({

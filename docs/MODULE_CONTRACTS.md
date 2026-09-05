@@ -17,15 +17,19 @@
 
 서버는 경로 검색에서 후보를 검증하고, 사용자가 선택한 후보 하나를 `POST /api/trips` 안에서 도착정보 조회에 사용한다. 후보에는 `candidateId`, `routeNo`, `localBusId`, `gbisStationId`, 정류장 목록과 좌표가 포함된다. 정류장 객체에 구버전 `stationId`, `routeDirection`, `endStationName`을 공개 계약으로 추가하지 않는다.
 
-사용자가 버스를 놓쳤다고 말하면 Dispatcher는 `GET /api/trips/{tripId}/status`를 새로 호출한다. 서버는 저장된 선택 노선 식별자로 GBIS를 재조회하고 `arrivals`와 `arrivalStatus`를 반환한다. `AVAILABLE`, `NO_VEHICLE`, `UPSTREAM_ERROR`를 구분하며, 이전 도착시간을 재사용하지 않는다. 방향 판별에 실패해 fail-closed로 접은 결과는 `NO_VEHICLE`이 아니라 `UPSTREAM_ERROR`다. 이 조회는 운행·하차벨 상태를 변경하지 않는다.
+대기 중에는 앱이 서버가 준 `nextArrivalRefreshInMs` 주기로 `GET /api/trips/{tripId}/status`를 반복 호출한다. 사용자가 버스를 놓쳤다고 말하면 Dispatcher가 `refreshArrivals=true`를 붙여 같은 엔드포인트를 호출한다. "몇 분 남았어요?" 같은 일반 질문에는 붙이지 않는다. 서버는 저장된 선택 노선 식별자로 `ArrivalCache`를 거쳐 GBIS를 조회하고 `arrivals`와 `arrivalStatus`를 반환한다. `AVAILABLE`, `NO_VEHICLE`, `NO_PREDICTION`, `UPSTREAM_ERROR` 네 값을 구분하며, 이전 도착시간을 재사용하지 않는다. 방향 판별에 실패해 fail-closed로 접은 결과는 `NO_VEHICLE`이 아니라 `UPSTREAM_ERROR`다. 이 조회는 운행·하차벨 상태를 변경하지 않는다.
+
+재조회 결과는 DB에 다시 쓰지 않는다. `trips.predicted_arrival_minutes`에는 `POST /api/trips`의 최초 값만 남고, 이후 갱신값은 서버 프로세스의 `ArrivalCache`와 앱 상태·Realtime 전달값에만 존재한다. 안내에 필요한 것은 언제나 "지금 값"이라 이력을 저장할 이유가 없다.
+
+`arrivals`, `arrivalStatus`, `nextArrivalRefreshInMs`, `shouldScanBeacon` 네 필드는 `GET /status`의 `WAITING_BUS` 응답에만 실린다. `PATCH /status` 응답에는 없으므로, 앱은 이 네 필드가 없는 응답을 받았다고 해서 직전 값을 지우지 않는다 — 대기 중이면 유지하고, 대기 상태를 벗어났으면 비운다. 탑승 전 `stopsAway`는 공개 계약에 없다. GBIS `locationNo1/2`를 올릴지는 별도 후속 작업이다.
 
 ## Realtime 연동
 
 1. 백엔드는 단기 키만 발급한다.
 2. 앱은 WebRTC 연결 뒤 instructions와 tools를 설정한다.
 3. 모델의 Function 호출은 앱 Dispatcher가 REST 요청으로 변환한다.
-4. GPS·하차벨 같은 자동 이벤트는 모델 호출을 기다리지 않고 앱이 API 처리 후 변화가 있을 때 세션에 주입한다.
-5. Realtime 세션의 대화 기억은 저장소가 아니다. `tripId`, 선택 후보 및 실제 운행 상태의 기준은 앱 상태와 백엔드 데이터다.
+4. GPS·하차벨 같은 자동 이벤트는 모델 호출을 기다리지 않고 앱이 API 처리 후 변화가 있을 때 세션에 주입한다. 도착정보 반복 조회 결과도 같은 경로로 주입하며, 주입 이벤트는 `arrivalStatus`와 `predictedArrivalMinutes`를 함께 싣는다. 다만 도착시간이 줄었다는 이유만으로는 안내를 만들지 않고, 첫 차량이 `AVAILABLE`이면서 2분 이내로 처음 들어온 경계에서만 만든다.
+5. Realtime 세션의 대화 기억은 저장소가 아니다. `tripId`, 선택 후보 및 실제 운행 상태의 기준은 앱 상태와 백엔드 데이터다. 도착 예정 시간도 마찬가지로, 노선 선택 이후의 질문에는 `create_trip` 때 들었던 값이 아니라 그 시점의 `get_trip_status` 결과만 근거가 된다.
 6. 사용자가 버스에 탔다고 명시하면 모델은 `confirm_boarding`을 호출한다. Dispatcher가 활성 `tripId`, 전용 `requestId`, `USER_CONFIRMED`를 채우며 BLE·GPS 재확인은 하지 않는다.
 7. 서버 성공 전에는 AI와 앱 모두 탑승 완료로 안내·표시하지 않는다.
 8. 탑승확정 응답의 `tripId`가 현재 활성 운행과 다르면 Dispatcher는 앱 상태에 반영하지 않고 stale 응답 오류로 처리한다.

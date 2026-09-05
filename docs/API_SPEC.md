@@ -120,6 +120,11 @@ Function은 사용자 의도를 처리하는 경로다. 자동 GPS·하차벨 �
 "차량 없음"을 뜻한다고 확인한 적이 없고 실제 캡처에도 두 순번이 모두 빈 사례가 없다.
 확인된 사실은 "도착시간 정보가 없다"까지이므로 "오는 버스가 없습니다"라고 안내하면 안 된다.
 
+재조회 결과는 DB에 다시 저장하지 않는다. `trips.predicted_arrival_minutes`에는
+`POST /api/trips`의 최초 도착시간만 남고, 이후 갱신값은 서버 프로세스의 도착정보 캐시와
+앱 상태·Realtime 전달값에만 존재한다. 대기 중 앱은 `nextArrivalRefreshInMs` 주기로 이
+엔드포인트를 반복 호출하며, `refreshArrivals=true`는 놓침 발화에만 붙인다.
+
 `arrivals`, `arrivalStatus`, `nextArrivalRefreshInMs`, `shouldScanBeacon`은 이 GET 응답의
 `WAITING_BUS` 상태에만 있다. 넷 다 같은 조건으로 실리고 빠진다 — 하나만 남겨 두면
 "왜 이건 오고 저건 안 오는지"로 계약이 헷갈린다. `PATCH /api/trips/{tripId}/status` 응답에는 포함되지 않으므로

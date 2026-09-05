@@ -237,7 +237,10 @@ class GbisResponseError extends Error {
   }
 }
 
-async function getBusArrivalByStationId(gbisStationId: string) {
+async function getBusArrivalByStationId(
+  gbisStationId: string,
+  diagnostics?: ArrivalLookupDiagnostics,
+) {
   const url = "https://apis.data.go.kr/6410000/busarrivalservice/v2/getBusArrivalListv2";
   const res = await axios.get(url, {
     params: {
@@ -250,6 +253,9 @@ async function getBusArrivalByStationId(gbisStationId: string) {
 
   const header = res.data?.response?.msgHeader;
   const resultCode = readGbisNumber(header?.resultCode);
+  // 실패로 접히기 전에도 남겨 둔다. resultCode 를 모르면 "GBIS 가 왜 값을 안 줬나"를
+  // 나중에 로그만으로 가릴 수 없다.
+  if (diagnostics) diagnostics.resultCode = String(header?.resultCode ?? "none");
 
   if (resultCode !== GBIS_RESULT_CODE_OK) {
     throw new GbisResponseError(header?.resultCode, header?.resultMessage);
@@ -508,10 +514,69 @@ function logArrivalLookupFailure(localBusId: string, error: unknown): void {
   );
 }
 
+/**
+ * 진단 로그에만 쓰는 값. 조회가 어디까지 갔는지는 반환값만으로 알 수 없어서,
+ * 실제로 받은 resultCode 와 predictTime 원본을 여기 담아 위로 올린다.
+ */
+interface ArrivalLookupDiagnostics {
+  resultCode: string;
+  predictTime1: string;
+  predictTime2: string;
+}
+
+/**
+ * GBIS 도착정보 조회를 시작·완료 로그로 감싼다.
+ *
+ * 캐시가 MISS 인데 이 로그가 없으면 캐시와 어댑터 배선 문제이고, GBIS 는 3분을
+ * 줬는데 서버 응답이 5분이면 변환·응답 문제다. 두 경우를 로그만으로 가르기 위한 것이다.
+ *
+ * serviceKey 와 전체 URL(query string 포함)은 절대 남기지 않는다.
+ */
 export async function getArrivalInfo(
   selectedCandidate: Pick<Route, "gbisStationId" | "localBusId"> & {
     destinationStation?: { stationName: string; latitude: number; longitude: number };
   },
+): Promise<ArrivalInfoResult> {
+  const { gbisStationId, localBusId } = selectedCandidate;
+  const startedAt = Date.now();
+  const diagnostics: ArrivalLookupDiagnostics = {
+    resultCode: "none",
+    predictTime1: "none",
+    predictTime2: "none",
+  };
+
+  console.log(
+    "[server/gbis] arrival request start",
+    `startedAt=${new Date(startedAt).toISOString()}`,
+    `gbisStationId=${gbisStationId}`,
+    `localBusId=${localBusId}`,
+  );
+
+  const result = await resolveArrivalInfo(selectedCandidate, diagnostics);
+
+  console.log(
+    "[server/gbis] arrival request complete",
+    `completedAt=${new Date().toISOString()}`,
+    `durationMs=${Date.now() - startedAt}`,
+    `gbisStationId=${gbisStationId}`,
+    `localBusId=${localBusId}`,
+    `resultCode=${diagnostics.resultCode}`,
+    `predictTime1=${diagnostics.predictTime1}`,
+    `predictTime2=${diagnostics.predictTime2}`,
+    `predictedArrivalMinutes=[${result.arrivals
+      .map((arrival) => arrival.predictedArrivalMinutes)
+      .join(",")}]`,
+    `arrivalStatus=${result.arrivalStatus}`,
+  );
+
+  return result;
+}
+
+async function resolveArrivalInfo(
+  selectedCandidate: Pick<Route, "gbisStationId" | "localBusId"> & {
+    destinationStation?: { stationName: string; latitude: number; longitude: number };
+  },
+  diagnostics: ArrivalLookupDiagnostics,
 ): Promise<ArrivalInfoResult> {
   const { gbisStationId, localBusId, destinationStation } = selectedCandidate;
 
@@ -525,7 +590,7 @@ export async function getArrivalInfo(
   let routeStationsLookup: RouteStationsLookup;
   try {
     [busArrivalList, routeStationsLookup] = await Promise.all([
-      getBusArrivalByStationId(gbisStationId),
+      getBusArrivalByStationId(gbisStationId, diagnostics),
       destinationStation
         ? lookupRouteStations(localBusId)
         : Promise.resolve<RouteStationsLookup>({ verified: false }),
@@ -618,6 +683,9 @@ export async function getArrivalInfo(
       arrivalStatus: ARRIVAL_STATUS.NO_VEHICLE,
     };
   }
+
+  diagnostics.predictTime1 = String(matched.predictTime1 ?? "none");
+  diagnostics.predictTime2 = String(matched.predictTime2 ?? "none");
 
   const arrivals = [
     toArrival(matched.predictTime1, matched.routeTypeCd, matched.crowded1, matched.remainSeatCnt1),

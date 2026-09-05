@@ -1,4 +1,6 @@
 import type {
+  ArrivalInfo,
+  ArrivalStatus,
   BoardingMethod,
   CreateTripRequest,
   RealtimeSessionResponse,
@@ -33,6 +35,16 @@ export type TripStatusSnapshot = {
   currentStation: { stationName: string } | null;
   bellStatus: string;
   guideMessage: string | null;
+  /**
+   * 승차 정류장에 오는 차량 정보. 대기 중 GET /status 응답에만 실려 온다.
+   *
+   * 3초 주기 PATCH /status 응답에는 이 세 필드가 아예 없어서 `undefined` 로 온다.
+   * 그때 직전 값을 지우면 임박 판정 기준이 사라지므로, event-dispatcher 가
+   * 마지막으로 확인된 값을 이어 받는다.
+   */
+  arrivalStatus?: ArrivalStatus | null;
+  arrivals?: ArrivalInfo[] | null;
+  nextArrivalRefreshInMs?: number | null;
 };
 
 // 서버 상태 변화를 세션에 알리는 시스템 이벤트
@@ -45,6 +57,12 @@ export type TripStatusChangedEvent = {
   currentStationName: string | null;
   bellStatus: string;
   guideMessage: string | null;
+  /**
+   * 이 이벤트를 만든 시점의 도착정보. 안내 판단은 배열이 비었는지가 아니라
+   * arrivalStatus 를 기준으로 한다 — 조회 실패도 빈 배열로 오기 때문이다.
+   */
+  arrivalStatus: ArrivalStatus | null;
+  predictedArrivalMinutes: number[];
 };
 
 export type AssistDevice = "CANE" | "BELL" | "BOTH";
@@ -93,6 +111,12 @@ export type AppTripState = {
   command: string | null;
   lastFunctionResult: unknown;
   lastInjectedStatus: TripStatusSnapshot | null;
+  // 대기 중 GET /status 가 갱신하는 최신 도착정보. PATCH 응답에는 없으므로
+  // reducer(state/trip-reducer.js)가 직전 값을 유지한다.
+  arrivals?: ArrivalInfo[] | null;
+  arrivalStatus?: ArrivalStatus | null;
+  nextArrivalRefreshInMs?: number | null;
+  shouldScanBeacon?: boolean;
 };
 
 export type AppAction =
