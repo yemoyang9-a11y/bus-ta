@@ -95,11 +95,36 @@ export const apiClient = {
     // 예모님 재지적(2026-08-28, P1): "버스 놓쳤어요" 발화 시 Realtime tool이 넘기는
     // refreshArrivals: true를 쿼리 파라미터로 서버에 전달해야 한다. 값이 없거나 false면
     // 기존과 동일하게 쿼리 없이 호출한다.
-    getStatus: (tripId: string, options?: { refreshArrivals?: boolean }) => {
-      const path = options?.refreshArrivals
+    //
+    // 앱이 실제로 언제 물었고 무엇을 받았는지도 함께 남긴다. 서버는 3분을 보냈는데
+    // 앱이 5분을 들고 있는 경우를 이 두 줄로 가른다. 전체 URL·좌표·키는 남기지 않는다.
+    getStatus: async (tripId: string, options?: { refreshArrivals?: boolean }) => {
+      const refreshArrivals = options?.refreshArrivals === true;
+      const path = refreshArrivals
         ? `${API_PATHS.trips.status(tripId)}?refreshArrivals=true`
         : API_PATHS.trips.status(tripId);
-      return request<TripStatusResponse>(path);
+
+      console.log(
+        "[app/arrival] status request",
+        `requestedAt=${new Date().toISOString()}`,
+        `tripId=${tripId}`,
+        `refreshArrivals=${refreshArrivals}`,
+      );
+
+      const response = await request<TripStatusResponse>(path);
+
+      console.log(
+        "[app/arrival] status response",
+        `receivedAt=${new Date().toISOString()}`,
+        `tripId=${tripId}`,
+        `arrivalStatus=${response.arrivalStatus ?? "none"}`,
+        `predictedArrivalMinutes=[${(response.arrivals ?? [])
+          .map((arrival) => arrival.predictedArrivalMinutes)
+          .join(",")}]`,
+        `nextArrivalRefreshInMs=${response.nextArrivalRefreshInMs ?? "none"}`,
+      );
+
+      return response;
     },
     end: (tripId: string, body: UpdateTripRequest) =>
       request<EndTripResponse>(API_PATHS.trips.byId(tripId), {

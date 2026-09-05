@@ -7,6 +7,7 @@ import { apiClient, ApiError } from '../api/client';
 import { useTrip } from '../state/TripContext';
 import { isScreenTripActive } from '../state/trip-transition';
 import { useRealtime } from '../realtime/RealtimeProvider';
+import { toTripStatusSnapshot } from '../realtime/status-snapshot';
 import { startBeaconScan, stopBeaconScan } from '../ble/bleManager';
 import { canStartBeaconScan } from '../ble/beacon-scan-gate';
 import { startBeaconScanWithRetry, stopBeaconScanWithRetry } from '../ble/beacon-scan-controller';
@@ -526,6 +527,14 @@ export default function RidingScreen({ route, navigation }) {
           type: 'UPDATE_TRIP_STATUS',
           status: latest,
         });
+
+        // 이 폴링이 도착 예정 시간을 갱신하는 유일한 경로다. 여기서 세션에 알리지
+        // 않으면 서버가 3분·2분을 내려줘도 AI는 create_trip 때의 값만 알고 있게 된다.
+        // dispatch는 비동기라 context를 다시 읽지 않고 방금 받은 응답을 그대로 넘긴다.
+        // session은 RealtimeProvider가 한 번 만들어 두는 값이라 클로저에 담아도 안전하다.
+        session?.notifyStatusChange(
+          toTripStatusSnapshot(latest),
+        );
       } catch (error) {
         arrivalPollFailureCountRef.current += 1;
 
@@ -653,17 +662,9 @@ export default function RidingScreen({ route, navigation }) {
         status: data,
       });
 
-      session?.notifyStatusChange({
-        tripStatus: data.tripStatus,
-        boardingMethod: data.boardingMethod,
-        boardingConfirmedAt:
-          data.boardingConfirmedAt,
-        remainingStations:
-          data.remainingStations,
-        currentStation: data.currentStation,
-        bellStatus: data.bellStatus,
-        guideMessage: data.guideMessage,
-      });
+      session?.notifyStatusChange(
+        toTripStatusSnapshot(data),
+      );
 
       // 예모님 재지적(2026-08-28, P1): TRIP_DONE·TRIP_NOT_FOUND에서도
       // RESET_TRIP_KEEP_SEARCH와 같은 이유로 실제 stopBeaconScan()이
@@ -724,20 +725,9 @@ export default function RidingScreen({ route, navigation }) {
               status: latest,
             });
 
-            session?.notifyStatusChange({
-              tripStatus: latest.tripStatus,
-              boardingMethod:
-                latest.boardingMethod,
-              boardingConfirmedAt:
-                latest.boardingConfirmedAt,
-              remainingStations:
-                latest.remainingStations,
-              currentStation:
-                latest.currentStation,
-              bellStatus: latest.bellStatus,
-              guideMessage:
-                latest.guideMessage,
-            });
+            session?.notifyStatusChange(
+              toTripStatusSnapshot(latest),
+            );
           } catch {
             // 최신 상태 조회도 실패하면 오류 화면으로
           }

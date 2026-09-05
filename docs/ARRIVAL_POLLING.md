@@ -3,9 +3,8 @@
 버스 도착 예정 시간을 언제 다시 조회할지, 스마트지팡이 비콘 스캔을 언제 켤지 정하는 정책이다.
 
 - 코드: `apps/server/src/services/arrival/arrival-poll-policy.ts`, `arrival-cache.ts`
-- 상태: 적응형 정책과 캐시는 구현되어 있으며, 예외사항 3번의 `GET /api/trips/{tripId}/status`
-  재조회 경로는 캐시를 우회해 항상 GBIS의 최신 값을 확인한다. 앱의 주기적 상태 polling에
-  캐시를 연결하는 작업은 별도 범위로 남아 있다.
+- 상태: 적응형 정책과 캐시가 구현되어 있고, 앱의 주기적 상태 polling도 캐시를 거쳐 연결돼 있다.
+  갱신된 값은 앱 공통 상태와 Realtime 세션까지 전달된다(아래 "갱신값이 AI까지 가는 길").
 
 ## 왜 필요한가
 
@@ -90,14 +89,75 @@ GBIS는 요청이 잘못돼도 HTTP 200으로 응답하고 `msgHeader.resultCode
 값을 넣으면 같은 정류장을 쓰는 다른 사용자에게 새어 나간다. 스캔 판단은 호출부가 자기 운행 상태와
 함께 `shouldScanBeacon`을 직접 호출한다.
 
-## 남은 작업 (협의 필요)
+## 갱신값이 AI까지 가는 길
 
-적응형 캐시 정책을 일반 polling에 실제로 연결하려면 다른 파트와 맞춰야 한다.
+서버가 3분·2분으로 갱신해도 그 값이 AI 음성까지 닿지 않으면 사용자에게는 아무것도 바뀌지
+않은 것과 같다. 2026-09-05 시연에서 실제로 그랬다 — 서버는 갱신하는데 AI는 계속 5분이라고
+말했다. 마지막 구간이 끊겨 있었기 때문이다. 지금은 다음 순서로 이어져 있다.
+
+```text
+앱 GET /api/trips/{tripId}/status
+→ 서버 ArrivalCache (HIT 또는 MISS)
+→ MISS이면 GBIS getBusArrivalListv2
+→ 서버 응답(arrivals·arrivalStatus·nextArrivalRefreshInMs·shouldScanBeacon)
+→ 앱 화면 state + TripContext(state/trip-reducer.js)
+→ Realtime 세션(realtime/status-snapshot.ts → realtime/event-dispatcher.ts)
+→ AI 음성
+```
+
+**갱신값은 DB가 아니라 메모리에 있다.** `trips.predicted_arrival_minutes`에는
+`POST /api/trips`의 최초 도착시간만 저장한다. 이후 재조회 결과는 서버 프로세스의
+`ArrivalCache`와 앱 상태·Realtime 전달값에만 존재한다. 매 조회마다 DB에 쓰면 3초 주기
+운행에서 쓰기량만 늘고, 안내에 필요한 것은 언제나 "지금 값"이라 이력이 필요 없다.
+
+**도착정보가 없는 응답이 최신 값을 지우지 않는다.** 네 필드는 대기 중 `GET /status`
+응답에만 있고 3초 주기 `PATCH /status` 응답에는 없다. 없는 값을 그대로 덮어쓰면 방금 받은
+3분이 곧바로 사라진다. 그래서 reducer와 Event Dispatcher가 같은 규칙을 쓴다 — 응답에
+도착정보가 있으면 최신 값으로 바꾸고, 없는데 `WAITING_BUS`도 벗어났으면(탑승 확정·종료)
+명시적으로 비우고, 없지만 아직 대기 중이면 직전 값을 유지한다.
+
+**자동 임박 안내는 경계에서 한 번만 한다.** 값이 갱신될 때마다 말하면 기다리는 내내
+떠들게 된다. 첫 차량이 `AVAILABLE`이고 2분 이내로 **처음** 들어온 순간에만 안내를 만든다.
+3분 → 2분은 안내하고, 2분 → 1분은 같은 구간이라 다시 안내하지 않는다. 사용자가 직접
+물었을 때는 이 경계와 무관하게 `get_trip_status`의 최신 결과로 답한다.
+
+## 진단 로그
+
+같은 `tripId`·`gbisStationId`·`localBusId`로 아래 순서를 이으면 어디서 끊겼는지 갈린다.
+
+```text
+1. [app/arrival] status request          (apps/mobile/src/api/client.ts)
+2. [server/trip-status] request          (services/trip/get-trip-status.service.ts)
+3. [server/arrival-cache] HIT | MISS | COALESCED
+4. [server/gbis] arrival request start   (MISS일 때만)
+5. [server/gbis] arrival request complete
+6. [server/trip-status] response
+7. [app/arrival] status response
+8. [realtime/arrival] status injection   (realtime/event-dispatcher.ts)
+```
+
+- 3번이 계속 HIT이고 시간이 줄지 않으면 캐시 갱신 조건 문제다.
+- MISS인데 4번이 없으면 캐시와 어댑터 배선 문제다.
+- 5번은 3분인데 6번이 5분이면 서버 변환·응답 문제다.
+- 6번은 3분인데 7번이 5분이면 네트워크·앱 응답 처리 문제다.
+- 7번은 3분인데 8번이 없으면 앱에서 Realtime으로 전달되지 않은 것이다.
+- 8번은 3분인데 음성이 5분이면 모델 instructions 문제다(`docs/REALTIME_GUIDE.md`).
+
+MISS 두 줄에 `[server/gbis] start`가 하나뿐인 것은 정상일 수 있다 — 동시 요청이 합쳐진
+경우이며 `COALESCED`로 구분된다.
+
+**로그에 남기지 않는 것.** `GBIS_SERVICE_KEY`를 비롯한 모든 API 키·토큰, Axios 오류 객체
+전체, 외부 API의 전체 URL과 query string, 사용자 위치 좌표, 목적지 좌표가 들어간 캐시 키
+전체. 캐시 키는 목적지 좌표를 포함하므로 로그에는 `gbisStationId`·`localBusId`만 남긴다.
+
+## 남은 작업 (협의 필요)
 
 - **`PATCH /status` 응답에 도착정보·스캔 신호를 실을지** — 응답 구조가 바뀌므로
   `docs/API_SPEC.md`, `docs/MODULE_CONTRACTS.md` 동기화와 예모·채린 확인이 필요하다.
-- **앱이 스캔 신호를 받아 `START_BEACON_SCAN`을 보내는 부분** — 프론트엔드·BLE 담당 범위다.
-  현재 스캔 시작 코드는 `RouteListScreen`(화면 터치 경로)에만 있고 `realtime/`(음성 경로)에는 없다.
+  현재는 `GET /status`만 싣고, 앱이 직전 값을 유지하는 방식으로 처리한다.
+- **탑승 전 "몇 정류장 남았는지"** — GBIS `locationNo1/2`를 공개 계약에 올리는 별도 작업이다.
+  지금 공개 계약에는 탑승 전 `stopsAway`가 없어서, 대기 중에는 정류장 수를 추측하지 않고
+  최신 도착 예정 시간으로만 안내한다.
 - **스캔 시작 시점 5분이 적절한지** — 실측이 4분 창이라 더 긴 구간의 데이터는 없다.
   지팡이가 비콘을 잡는 데 걸리는 실제 시간을 하드웨어 담당과 맞춰 조정할 수 있다.
 

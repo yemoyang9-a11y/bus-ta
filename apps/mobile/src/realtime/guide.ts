@@ -53,7 +53,10 @@ export const HANEUM_REALTIME_INSTRUCTIONS = `
 - get_next_route_candidates 결과의 candidates가 비어 있고 exhausted가 true이면 더 이상 안내할 다른 후보가 없다고 말하고, 이전 후보를 반복하거나 search_routes를 임의로 다시 호출하지 않는다.
 - payment가 없으면 요금을 말하지 않는다. 후보 비교 단계에서는 도착 예정 시간과 혼잡도를 추측하지 않는다.
 - 후보 선택 전 도착 시간을 물으면 "도착 시간은 노선을 선택하신 뒤에 알려드릴 수 있어요."라고 답한다. 혼잡도를 물으면 "탑승 전 혼잡도 정보는 아직 제공하지 않아요."라고 답한다.
-- 도착 예정 시간은 create_trip 응답의 arrivals에 있는 predictedArrivalMinutes만 사용한다. 노선 선택 후에는 첫 차량의 도착 예정 시간을 반드시 안내하고, 두 번째 차량은 사용자가 물을 때만 말한다. arrivals가 비어 있으면 도착 시간을 생략하지 말고 "현재 실시간 버스 도착정보를 확인할 수 없습니다"라고 안내한다.
+- 노선 선택 직후에는 create_trip 응답의 arrivals에 있는 predictedArrivalMinutes로 첫 차량의 도착 예정 시간을 반드시 안내하고, 두 번째 차량은 사용자가 물을 때만 말한다. arrivals가 비어 있으면 도착 시간을 생략하지 말고 "현재 실시간 버스 도착정보를 확인할 수 없습니다"라고 안내한다.
+- 선택 이후 사용자가 도착 시간이나 남은 정류장 수를 물으면 반드시 get_trip_status를 호출하고, 답변은 그 최신 결과만 근거로 한다. 서버가 도착정보를 갱신하므로 create_trip 때 들었던 값은 이미 낡았다. 앞선 대화에서 말했던 도착 시간을 그대로 다시 말하지 않는다.
+- arrivalStatus가 AVAILABLE이면 최신 도착 예정 시간을 안내한다. NO_VEHICLE이면 지금 오는 차가 없다고 안내한다. NO_PREDICTION이면 차가 없다고 단정하지 말고 도착시간 정보를 확인할 수 없다고 안내한다. UPSTREAM_ERROR이면 지금은 확인할 수 없다고 안내하며, 남아 있는 arrivals를 방금 확인한 값처럼 말하지 않는다.
+- "몇 정류장 남았어요?"의 뜻은 탑승 전후가 다르다. WAITING_BUS에서는 remainingStations를 버스가 승차 정류장까지 남긴 정류장 수로 말하지 않고, 남은 정류장 수는 확인할 수 없다고 밝힌 뒤 최신 도착 예정 시간을 안내한다. ON_BUS 또는 NEAR_DESTINATION에서는 remainingStations를 목적지까지 남은 정류장 수로 안내한다.
 
 # 불명확한 음성
 - 목적지, 노선 번호 또는 선택 의도를 확실히 듣지 못했으면 추정해서 도구를 호출하지 말고 짧게 다시 말해 달라고 요청한다.
@@ -193,7 +196,7 @@ export const HANEUM_REALTIME_TOOLS = [
     type: "function",
     name: "get_trip_status",
     description:
-      "진행 중인 운행의 최신 상태를 조회한다. 사용자가 현재 정류장, 다음 정류장, 남은 정류장 수, 하차 준비 여부, 도착 예정 시간을 물을 때 사용한다. 조회 전용이며 하차벨 요청을 만들지 않는다.",
+      "진행 중인 운행의 최신 상태를 조회한다. 사용자가 현재 정류장, 다음 정류장, 남은 정류장 수, 하차 준비 여부, 도착 예정 시간을 물을 때 사용한다. 노선 선택 뒤 도착 시간 질문에는 이전 create_trip 응답을 재사용하지 말고 반드시 이 함수를 호출한다. 조회 전용이며 하차벨 요청을 만들지 않는다.",
     parameters: {
       type: "object",
       additionalProperties: false,

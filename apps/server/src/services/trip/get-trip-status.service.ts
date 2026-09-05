@@ -101,6 +101,15 @@ export async function getTripStatus(
   const now = dependencies.now ?? defaultNow;
   const timestamp = now();
 
+  // 앱이 3분을 못 받았다고 할 때, 서버가 무엇을 응답했는지는 이 두 줄로만 갈린다.
+  // 좌표·API 키·외부 URL 은 남기지 않는다.
+  console.log(
+    "[server/trip-status] request",
+    `requestedAt=${timestamp}`,
+    `tripId=${tripId}`,
+    `refreshArrivals=${dependencies.refreshArrivals === true}`,
+  );
+
   let progressData: TripProgressData | null;
   try {
     progressData = await dependencies.findTripProgressData(tripId);
@@ -182,6 +191,18 @@ export async function getTripStatus(
       body.nextArrivalRefreshInMs = arrivalResult.nextRefreshInMs;
     }
   }
+
+  console.log(
+    "[server/trip-status] response",
+    `respondedAt=${timestamp}`,
+    `tripId=${tripId}`,
+    `tripStatus=${body.tripStatus}`,
+    `arrivalStatus=${body.arrivalStatus ?? "none"}`,
+    `predictedArrivalMinutes=[${(body.arrivals ?? [])
+      .map((arrival) => arrival.predictedArrivalMinutes)
+      .join(",")}]`,
+    `nextArrivalRefreshInMs=${body.nextArrivalRefreshInMs ?? "none"}`,
+  );
 
   return { httpStatus: 200, body };
 }

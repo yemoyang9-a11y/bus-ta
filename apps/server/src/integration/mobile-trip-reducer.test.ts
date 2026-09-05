@@ -92,3 +92,144 @@ test("지팡이 준비 완료와 스캔 시작 신호를 각각 기록한다", (
   assert.equal(scanning.beaconScanActive, true);
   assert.equal(scanning.caneReady, true, "스캔 시작이 준비 상태를 지우지 않는다");
 });
+
+// ─────────────────────────────────────────────
+// 최신 도착정보를 앱 공통 상태에 보관한다.
+//
+// 시연에서 AI 는 노선 선택 직후 들은 5분을 계속 반복했다. 원인 중 하나가 이 reducer 다 —
+// 서버가 3분·2분으로 갱신해 줘도 보관할 자리가 없어 화면 state 에만 남았다.
+// 3초 주기 PATCH 응답에는 도착정보가 없으므로, 그대로 덮어쓰면 방금 받은 값이 지워진다.
+// ─────────────────────────────────────────────
+
+const arrivalAfter = (minutes: number) => ({
+  predictedArrivalMinutes: minutes,
+  occupancy: { type: "UNAVAILABLE", congestionLevel: null, remainingSeats: null },
+});
+
+/** 대기 중 GET /status 응답 — 서버는 이때만 도착정보 네 필드를 싣는다. */
+const waitingGetResponse = {
+  tripStatus: "WAITING_BUS",
+  boardingMethod: null,
+  boardingConfirmedAt: null,
+  currentStation: null,
+  nextStation: null,
+  remainingStations: 5,
+  guideMessage: "버스 탑승을 기다리고 있습니다.",
+  bellStatus: "NOT_REQUESTED",
+  bellRequestId: undefined,
+  command: null,
+  arrivals: [arrivalAfter(3), arrivalAfter(12)],
+  arrivalStatus: "AVAILABLE",
+  nextArrivalRefreshInMs: 30_000,
+  shouldScanBeacon: true,
+};
+
+/** 3초 주기 PATCH /status 응답 — 도착정보 네 필드가 아예 없다. */
+const patchResponse = {
+  tripStatus: "WAITING_BUS",
+  boardingMethod: null,
+  boardingConfirmedAt: null,
+  currentStation: null,
+  nextStation: null,
+  remainingStations: 5,
+  guideMessage: "버스 탑승을 기다리고 있습니다.",
+  bellStatus: "NOT_REQUESTED",
+  bellRequestId: undefined,
+  command: null,
+};
+
+test("UPDATE_TRIP_STATUS 는 GET 응답의 최신 도착정보를 앱 공통 상태에 보관한다", () => {
+  const next = tripReducer(initialState, {
+    type: "UPDATE_TRIP_STATUS",
+    status: waitingGetResponse,
+  });
+
+  assert.deepEqual(next.arrivals, [arrivalAfter(3), arrivalAfter(12)]);
+  assert.equal(next.arrivalStatus, "AVAILABLE");
+  assert.equal(next.nextArrivalRefreshInMs, 30_000);
+  assert.equal(next.shouldScanBeacon, true);
+});
+
+test("도착정보가 없는 PATCH 응답은 직전 GET 의 최신 도착정보를 지우지 않는다", () => {
+  const afterGet = tripReducer(initialState, {
+    type: "UPDATE_TRIP_STATUS",
+    status: waitingGetResponse,
+  });
+  const afterPatch = tripReducer(afterGet, {
+    type: "UPDATE_TRIP_STATUS",
+    status: patchResponse,
+  });
+
+  assert.deepEqual(afterPatch.arrivals, [arrivalAfter(3), arrivalAfter(12)]);
+  assert.equal(afterPatch.arrivalStatus, "AVAILABLE");
+  assert.equal(afterPatch.nextArrivalRefreshInMs, 30_000);
+  assert.equal(afterPatch.shouldScanBeacon, true);
+});
+
+test("도착정보가 새로 오면 이전 값이 아니라 최신 값으로 바뀐다", () => {
+  const afterGet = tripReducer(initialState, {
+    type: "UPDATE_TRIP_STATUS",
+    status: waitingGetResponse,
+  });
+  const afterRefresh = tripReducer(afterGet, {
+    type: "UPDATE_TRIP_STATUS",
+    status: { ...waitingGetResponse, arrivals: [arrivalAfter(2)] },
+  });
+
+  assert.deepEqual(afterRefresh.arrivals, [arrivalAfter(2)]);
+});
+
+test("탑승이 확정돼 대기 상태를 벗어나면 도착정보를 명시적으로 정리한다", () => {
+  // 승차 정류장에 오는 차량 정보는 탑승한 뒤에는 의미가 없다. 남겨 두면 AI 가
+  // 운행 중에도 "버스가 3분 뒤 도착합니다"라고 말할 근거를 갖게 된다.
+  const afterGet = tripReducer(initialState, {
+    type: "UPDATE_TRIP_STATUS",
+    status: waitingGetResponse,
+  });
+  const afterBoarding = tripReducer(afterGet, {
+    type: "UPDATE_TRIP_STATUS",
+    status: {
+      ...patchResponse,
+      tripStatus: "ON_BUS",
+      boardingMethod: "USER_CONFIRMED",
+      boardingConfirmedAt: "2026-09-05T01:00:00.000Z",
+      remainingStations: 4,
+    },
+  });
+
+  assert.equal(afterBoarding.arrivals, null);
+  assert.equal(afterBoarding.arrivalStatus, null);
+  assert.equal(afterBoarding.nextArrivalRefreshInMs, null);
+  assert.equal(afterBoarding.shouldScanBeacon, false);
+});
+
+test("CONFIRM_BOARDING 도 도착정보를 정리한다", () => {
+  const afterGet = tripReducer(initialState, {
+    type: "UPDATE_TRIP_STATUS",
+    status: waitingGetResponse,
+  });
+  const afterConfirm = tripReducer(afterGet, {
+    type: "CONFIRM_BOARDING",
+    tripStatus: "ON_BUS",
+    boardingMethod: "USER_CONFIRMED",
+    boardingConfirmedAt: "2026-09-05T01:00:00.000Z",
+  });
+
+  assert.equal(afterConfirm.arrivals, null);
+  assert.equal(afterConfirm.arrivalStatus, null);
+  assert.equal(afterConfirm.nextArrivalRefreshInMs, null);
+  assert.equal(afterConfirm.shouldScanBeacon, false);
+});
+
+test("운행을 취소하면 도착정보도 함께 비운다", () => {
+  const afterGet = tripReducer(runningTripState(), {
+    type: "UPDATE_TRIP_STATUS",
+    status: waitingGetResponse,
+  });
+
+  const after = tripReducer(afterGet, { type: "RESET_TRIP_KEEP_SEARCH" });
+
+  assert.equal(after.arrivals, null, "취소한 운행의 도착정보를 다음 선택으로 넘기지 않는다");
+  assert.equal(after.arrivalStatus, null);
+  assert.equal(after.shouldScanBeacon, false);
+});

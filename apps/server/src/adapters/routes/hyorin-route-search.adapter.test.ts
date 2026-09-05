@@ -1167,3 +1167,34 @@ test("3번 계약: 목적지가 노선에 없어 방향을 확정하지 못하�
   );
   assert.deepEqual(info.arrivals, []);
 });
+
+// ── 진단 로그 ─────────────────────────────────────────────────────────
+// "캐시는 MISS인데 GBIS를 실제로 불렀나, 불렀다면 뭘 받았나"를 로그로 갈라야 한다.
+// serviceKey 와 전체 URL(query string 포함)은 절대 남기지 않는다.
+test("GBIS 도착정보 조회의 시작과 완료를 안전한 필드만으로 남긴다", async (t) => {
+  const lines: string[] = [];
+  t.mock.method(console, "log", (...args: unknown[]) => {
+    lines.push(args.map(String).join(" "));
+  });
+  stubGbisArrival(t);
+
+  await getArrivalInfo(arrivalCandidate("234000021"));
+
+  const start = lines.find((line) => line.includes("[server/gbis] arrival request start"));
+  const complete = lines.find((line) => line.includes("[server/gbis] arrival request complete"));
+
+  assert.ok(start, `시작 로그가 없다: ${JSON.stringify(lines)}`);
+  assert.match(start, /gbisStationId=233000575/);
+  assert.match(start, /localBusId=234000021/);
+
+  assert.ok(complete, `완료 로그가 없다: ${JSON.stringify(lines)}`);
+  assert.match(complete, /durationMs=\d+/);
+  assert.match(complete, /resultCode=0/);
+  assert.match(complete, /predictedArrivalMinutes=\[4,7\]/);
+  assert.match(complete, /arrivalStatus=AVAILABLE/);
+
+  for (const line of [start, complete]) {
+    assert.doesNotMatch(line, /serviceKey/i, "API 키 이름조차 남기지 않는다");
+    assert.doesNotMatch(line, /https?:\/\//, "외부 URL 전체를 남기지 않는다");
+  }
+});
