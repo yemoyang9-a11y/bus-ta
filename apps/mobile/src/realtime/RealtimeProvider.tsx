@@ -3,7 +3,12 @@ import * as Location from 'expo-location';
 import * as Speech from 'expo-speech';
 import { useTrip } from '../state/TripContext';
 import { apiClient, ApiError } from '../api/client';
-import { connectCane, setTargetBeacon, disconnectBellsForTrip } from '../ble/bleManager';
+import {
+  connectCane,
+  disconnectBellsForTrip,
+  setTargetBeacon,
+  startBeaconScan,
+} from '../ble/bleManager';
 import { HaneumRealtimeSession } from './session';
 import { createRealtimeGuideContext } from './context';
 import { connectWithBestEffortLocation, runSingleFlight } from './connect-best-effort';
@@ -127,6 +132,7 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
         error instanceof ApiError ? error.errorCode : undefined,
       connectCane,
       setTargetBeacon,
+      startBeaconScan,
       notifyFailure,
       dispatch: (action) => dispatchRef.current(action),
     });

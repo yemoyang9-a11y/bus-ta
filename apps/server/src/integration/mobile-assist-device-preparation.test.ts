@@ -19,6 +19,8 @@ function makePreparation(overrides: Record<string, unknown> = {}) {
   const calls = {
     caneConnects: 0,
     setTargetBeacon: [] as string[],
+    startBeaconScans: 0,
+    caneCommands: [] as string[],
     failures: [] as string[],
     dispatched: [] as { type: string; [key: string]: unknown }[],
   };
@@ -32,6 +34,11 @@ function makePreparation(overrides: Record<string, unknown> = {}) {
     },
     setTargetBeacon: async (targetBeaconId: string) => {
       calls.setTargetBeacon.push(targetBeaconId);
+      calls.caneCommands.push(`SET_TARGET_BEACON:${targetBeaconId}`);
+    },
+    startBeaconScan: async () => {
+      calls.startBeaconScans += 1;
+      calls.caneCommands.push("START_BEACON_SCAN");
     },
     notifyFailure: (event) => {
       calls.failures.push(`${event.device}:${event.reason}`);
@@ -54,6 +61,25 @@ test("준비 단계는 지팡이만 연결한다", async () => {
   // 하차벨 연결을 여기서 시도했다면 반드시 실패했을 것이고, 사용자는 아직 버스에
   // 타지도 않았는데 "하차벨에 연결하지 못했습니다"를 듣게 된다.
   assert.deepEqual(calls.failures, []);
+});
+
+test("지팡이 연결 뒤 타겟 설정과 스캔 시작을 순서대로 전송한다", async () => {
+  const { preparation, calls } = makePreparation();
+
+  await preparation.prepare({ tripId: TRIP_ID, routeNo: "35" });
+
+  assert.deepEqual(calls.caneCommands, [
+    "SET_TARGET_BEACON:BUS_35_001",
+    "START_BEACON_SCAN",
+  ]);
+  assert.equal(calls.startBeaconScans, 1);
+  assert.equal(
+    calls.dispatched.some(
+      (action) =>
+        action.type === "SET_BEACON_SCAN_ACTIVE" && action.active === true,
+    ),
+    true,
+  );
 });
 
 test("탑승 뒤 연결할 하차벨 보드 이름을 상태에 남긴다", async () => {
