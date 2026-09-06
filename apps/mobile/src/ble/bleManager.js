@@ -528,12 +528,27 @@ async function writeCommand(deviceName, payload) {
   }
 
   const base64Payload = Buffer.from(payload, 'utf-8').toString('base64');
+  const command = (() => {
+    try {
+      return JSON.parse(payload).cmd ?? payload;
+    } catch {
+      return payload;
+    }
+  })();
 
-  await device.writeCharacteristicWithResponseForService(
-    SERVICE_UUID,
-    CHARACTERISTIC_UUID,
-    base64Payload,
-  );
+  console.log('[BLE] GATT Write 시작:', deviceName, command);
+
+  try {
+    await device.writeCharacteristicWithResponseForService(
+      SERVICE_UUID,
+      CHARACTERISTIC_UUID,
+      base64Payload,
+    );
+    console.log('[BLE] GATT Write 성공:', deviceName, command);
+  } catch (error) {
+    console.log('[BLE] GATT Write 실패:', deviceName, command, error);
+    throw error;
+  }
 }
 
 // ── 스마트지팡이 명령 ──────────────────────────────

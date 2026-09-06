@@ -44,6 +44,8 @@ Function 매핑은 `search_routes → POST /api/routes/search`, `create_trip →
 
 `GET /api/beacons?routeNo=`의 `targetBeaconId`를 스마트지팡이에 전달한다. BLE 신호 수집과 자동 탑승 여부의 최종 알고리즘 판정은 프론트 BLE 모듈이 담당한다. 자동 확정 시 `apiClient.trips.confirmBoarding(tripId, { requestId, boardingMethod: "AUTO_DETECTED", detectedAt })`를 호출하고, 서버 성공 응답만 앱 상태에 반영한다.
 
+운행 준비 시 앱은 하차벨을 기다리지 않고 `White_cane`만 먼저 연결한다. 서비스와 Characteristic 탐색이 끝나면 같은 GATT 연결에 `SET_TARGET_BEACON`을 Write하고, 그 Promise가 성공한 뒤 `START_BEACON_SCAN`을 Write한다. 두 번째 Write까지 성공했을 때만 `beaconScanActive`를 `true`로 기록한다. 서버의 `shouldScanBeacon` 처리는 준비 단계 명령이 실패했거나 아직 시작되지 않은 경우의 재시도 경로로 유지한다.
+
 사용자가 음성으로 탑승을 명시하면 `confirm_boarding` Function 경로가 즉시 `USER_CONFIRMED`를 전송한다. 이 경로는 BLE·GPS 결과를 기다리지 않는다. 어느 경로든 `boardingConfirmedAt`이 확인된 뒤에만 비콘 스캔을 중지한다. `PATCH /status` 응답에서만 `shouldTriggerBell: true`, `bellRequestId`, `STOP_REQUEST`를 받고 하차벨로 보낸 뒤 결과를 `POST /bell/result`로 기록한다.
 
 마이크·위치·BLE 권한 거부, Realtime 연결 끊김, 네트워크·외부 API 오류는 사용자가 이해할 수 있는 음성·화면 안내로 처리한다. `EXPO_PUBLIC_` 환경 변수에는 장기 API 키나 백엔드 공유 비밀을 넣지 않는다.

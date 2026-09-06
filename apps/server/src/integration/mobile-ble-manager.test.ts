@@ -15,7 +15,7 @@ test('BLE 테스트 화면의 시연 대상 문자열은 한 곳에서만 정의
 
 // 실제 bleManager 소스를 실행하고 native BLE 경계만 대체한다.
 function setup(autoScan = true) {
-  const calls = { scans: 0, stops: 0, overlaps: 0, connects: [] as string[], writes: [] as string[], monitors: [] as string[] };
+  const calls = { scans: 0, stops: 0, overlaps: 0, connects: [] as string[], writes: [] as string[], writePayloads: [] as string[], monitors: [] as string[] };
   let scanning = false;
   const scanCallbacks: Array<(error: any, device: any) => void> = [];
   const devices = new Map<string, any>();
@@ -31,7 +31,10 @@ function setup(autoScan = true) {
         if (value.rejectCancel) throw new Error('out of range');
         value.alive = false;
       },
-      writeCharacteristicWithResponseForService: async () => { calls.writes.push(name); },
+      writeCharacteristicWithResponseForService: async (_service: string, _characteristic: string, payload: string) => {
+        calls.writes.push(name);
+        calls.writePayloads.push(Buffer.from(payload, 'base64').toString('utf8'));
+      },
       monitorCharacteristicForService: () => {
         calls.monitors.push(name);
         return { remove() {} };
@@ -64,6 +67,21 @@ function setup(autoScan = true) {
   });
   return { ble: exports, calls, device, scanCallbacks, isScanning: () => scanning };
 }
+
+test('White_cane GATT에 타겟 설정 뒤 스캔 시작 JSON을 실제 Write한다', async () => {
+  const { ble, calls, device } = setup();
+  device('White_cane');
+
+  await ble.connectCane();
+  await ble.setTargetBeacon('BUS_35_001');
+  await ble.startBeaconScan();
+
+  assert.deepEqual(calls.writes, ['White_cane', 'White_cane']);
+  assert.deepEqual(calls.writePayloads, [
+    '{"cmd":"SET_TARGET_BEACON","target":"BUS_35_001"}',
+    '{"cmd":"START_BEACON_SCAN"}',
+  ]);
+});
 
 test('같은 bell의 실제 연결이 살아 있으면 scan/connect 없이 재사용한다', async () => {
   const { ble, calls, device } = setup();

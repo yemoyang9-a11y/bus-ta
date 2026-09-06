@@ -156,6 +156,7 @@ export default function RidingScreen({ route, navigation }) {
     }
   }, [status.guideMessage, status.remainingStations, isConnected]);
 
+  // 운행 준비 단계에서 즉시 시작되지 못한 경우 서버 shouldScanBeacon 신호로 재시도한다.
   useEffect(() => {
     if (
       canStartBeaconScan({

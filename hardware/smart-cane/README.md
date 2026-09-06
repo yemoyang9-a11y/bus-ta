@@ -24,6 +24,8 @@
   - `{"cmd":"SET_TARGET_BEACON","target":"BUS_1551_001"}`
   - `{"cmd":"START_BEACON_SCAN"}`
   - `{"cmd":"STOP_BEACON_SCAN"}`
+- 앱은 연결 및 서비스 탐색 후 `SET_TARGET_BEACON`의 Write 응답을 기다리고,
+  성공한 경우에만 `START_BEACON_SCAN`을 이어서 보낸다.
 - 상태 전송(Notify, JSON):
   - `{"state":"APPROACHING","rssi":-65}`
   - state 종류: APPROACHING / ARRIVED / PASSING / PASSED_STOPPED / LEAVING
