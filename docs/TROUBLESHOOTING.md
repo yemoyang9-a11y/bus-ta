@@ -124,6 +124,16 @@
 - 남은 문제: `getBusArrivalByStationId`(GBIS)는 아직 같은 처리가 되어 있지 않다.
   `predictedArrivalMinutes` 가 `null` 로 나올 때 원인을 여전히 알 수 없다.
 
+## CI의 탑승 판정 스크립트가 Node 22에서 모듈 export 오류로 실패
+
+- 발생 날짜: 2026-09-23
+- 발생 환경: PR #57 GitHub Actions, Node 22.17.0, `pnpm test:scripts`
+- 증상: `boarding-detector.test.mjs`가 `boardingDetector.js`의 `createBoardingDetector` 이름 export를 찾지 못해 실패했다. 같은 테스트는 로컬 Node 24에서 통과했다.
+- 원인: `apps/mobile`은 모듈 타입을 선언하지 않는다. Node 22의 `tsx` 테스트 실행에서는 모바일 JS 파일이 CommonJS 기본 export 형태로 노출되어 `.mjs` 테스트의 정적 이름 import와 맞지 않았다.
+- 해결 방법: 테스트에서 모듈 namespace를 가져와 ESM 이름 export 또는 CommonJS 기본 export의 함수를 확인한다. 모바일 앱 모듈 형식과 판정 로직은 바꾸지 않는다.
+- 수정 파일: `scripts/boarding-detector.test.mjs`
+- 검증: 로컬 `pnpm test:scripts` 68/68 통과. PR CI의 동일 Node 22 단계는 후속 실행 결과로 확인한다.
+
 ## Windows에서 API를 curl로 테스트하면 한글 목적지가 깨져 502가 난다
 
 - 발생 날짜: 2026-08-08
