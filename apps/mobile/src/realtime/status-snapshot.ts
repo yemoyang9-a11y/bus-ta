@@ -12,7 +12,7 @@ export function toTripStatusSnapshot(response: {
   boardingMethod?: TripStatusSnapshot["boardingMethod"];
   boardingConfirmedAt?: string | null;
   remainingStations?: number | null;
-  currentStation?: { stationName: string } | null;
+  currentStation?: { stationName?: string } | null;
   bellStatus?: string;
   guideMessage?: string | null;
   arrivals?: TripStatusSnapshot["arrivals"];
@@ -24,7 +24,7 @@ export function toTripStatusSnapshot(response: {
     boardingMethod: response.boardingMethod ?? null,
     boardingConfirmedAt: response.boardingConfirmedAt ?? null,
     remainingStations: response.remainingStations ?? null,
-    currentStation: response.currentStation ?? null,
+    currentStation: response.currentStation?.stationName ? { stationName: response.currentStation.stationName } : null,
     bellStatus: response.bellStatus ?? "NOT_REQUESTED",
     guideMessage: response.guideMessage ?? null,
     // 도착정보는 대기 중 GET /status 응답에만 있다. 없는 응답에서 굳이 null 을

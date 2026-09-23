@@ -10,6 +10,7 @@ export type PendingResponse = {
   // MARK_CANDIDATES_ANNOUNCED로 기록할 candidateId 목록.
   // 일반 응답이나 상태 안내에는 없거나 빈 배열이다.
   candidateIdsToMark?: number[];
+  completionTripId?: string;
 };
 
 type DurablePendingResponse = PendingResponse & {
@@ -102,6 +103,16 @@ export class RealtimeResponseQueue {
     this.durableResponses.push(
       criticalResponse,
     );
+  }
+
+  discard(eventId: string) {
+    this.durableResponses = this.durableResponses.filter(item => item.eventId !== eventId);
+    if (this.latestStatusResponse?.eventId === eventId) this.latestStatusResponse = null;
+  }
+
+  discardTripStatus(tripId: string) {
+    this.durableResponses = this.durableResponses.filter(item => item.tripId !== tripId);
+    this.latestStatusResponse = null;
   }
 
   dequeue(): PendingResponse | undefined {

@@ -11,6 +11,9 @@ type BeaconData = {
 
 type PreparationDependencies = {
   getActiveTripId: () => string | null;
+  isWaitingForBus?: () => boolean;
+  wait?: (ms: number) => Promise<void>;
+  releaseCane?: () => Promise<boolean>;
   listBeacons: (routeNo: string) => Promise<BeaconData>;
   getBeaconLookupErrorCode?: (error: unknown) => string | undefined;
   /**
@@ -34,6 +37,14 @@ export function createAssistDevicePreparation(
 ) {
   let preparedTripId: string | null = null;
   let activePreparation = Promise.resolve();
+
+  let ownerTripId: string | null = null;
+  let cancelWait: (() => void) | null = null;
+  const wait = dependencies.wait ?? ((ms: number) => new Promise<void>((resolve) => {
+    const timer = setTimeout(() => { cancelWait = null; resolve(); }, ms);
+    cancelWait = () => { clearTimeout(timer); cancelWait = null; resolve(); };
+  }));
+  const isWaiting = (tripId: string) => isActiveTrip(tripId) && (dependencies.isWaitingForBus?.() ?? true);
 
   const isActiveTrip = (tripId: string) =>
     dependencies.getActiveTripId() === tripId;
@@ -62,39 +73,39 @@ export function createAssistDevicePreparation(
     // 예전에는 여기서 둘을 한 번에 찾고 실패를 확정해 버렸는데, 그러면 정작 버스에
     // 탄 뒤에는 다시 찾지 않아 하차벨이 영영 붙지 않았다. 2026-09-04 실차에서 두 번
     // 다 이렇게 실패했다. 하차벨 연결은 탑승 확정 뒤 화면이 맡는다.
-    let cane: unknown;
-    try {
-      cane = await dependencies.connectCane();
-    } catch {
-      cane = null;
+    let canConnect = true;
+    if (ownerTripId && ownerTripId !== tripId && dependencies.releaseCane) {
+      canConnect = await dependencies.releaseCane();
+      if (canConnect) ownerTripId = null;
     }
-
+    let cane: unknown = null;
+    let attempts = 0;
+    while (canConnect && isWaiting(tripId) && attempts < 3) {
+      attempts++;
+      try { cane = await dependencies.connectCane(); } catch { cane = null; }
+      if (cane != null) { ownerTripId = tripId; break; }
+      if (isWaiting(tripId) && attempts < 3) await wait(attempts * 1000);
+    }
     if (!isActiveTrip(tripId)) return;
-
     const caneConnected = cane != null;
-
-    if (!caneConnected) {
-      dependencies.notifyFailure(
-        createAssistDeviceStatusEvent({
-          device: 'CANE',
-          reason: 'NOT_CONNECTED',
-          attempted: true,
-          retryable: true,
-        }),
-      );
+    if (!caneConnected && isWaiting(tripId)) {
+      dependencies.notifyFailure(createAssistDeviceStatusEvent({
+        device: 'CANE', reason: canConnect ? 'NOT_CONNECTED' : 'COMMAND_FAILED', attempted: attempts > 0,
+        retryable: false, attempts,
+      }));
     }
 
     // 실물 연동 시험에서는 지팡이가 연결된 직후 타겟을 지정하고 스캔을 시작한다.
     // 두 GATT Write를 반드시 순서대로 기다려 타겟이 적용되기 전에 스캔이 켜지는
     // 경합을 막는다.
-    if (caneConnected && beaconData?.targetBeaconId) {
+    if (isWaiting(tripId) && caneConnected && beaconData?.targetBeaconId) {
       try {
         await dependencies.setTargetBeacon(beaconData.targetBeaconId);
-        if (!isActiveTrip(tripId)) return;
-        await dependencies.startBeaconScan();
-        if (!isActiveTrip(tripId)) return;
-        dependencies.dispatch({ type: 'SET_CANE_READY', ready: true });
-        dependencies.dispatch({ type: 'SET_BEACON_SCAN_ACTIVE', active: true });
+        if (isWaiting(tripId)) await dependencies.startBeaconScan();
+        if (!isWaiting(tripId)) {
+          if (dependencies.releaseCane && await dependencies.releaseCane()) ownerTripId = null;
+        } else dependencies.dispatch({ type: 'SET_CANE_READY', ready: true });
+        if (isWaiting(tripId)) dependencies.dispatch({ type: 'SET_BEACON_SCAN_ACTIVE', active: true });
       } catch {
         if (isActiveTrip(tripId)) {
           dependencies.notifyFailure(
@@ -132,6 +143,14 @@ export function createAssistDevicePreparation(
   };
 
   return {
+    release: (tripId: string) => {
+      cancelWait?.();
+      activePreparation = activePreparation.then(async () => {
+        if (ownerTripId !== tripId || !dependencies.releaseCane) return;
+        if (await dependencies.releaseCane()) ownerTripId = null;
+      }).catch(() => undefined);
+      return activePreparation;
+    },
     prepare: (input: PreparationInput) => {
       if (
         !input.tripId ||

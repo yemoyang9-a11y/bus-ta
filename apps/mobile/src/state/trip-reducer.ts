@@ -23,6 +23,7 @@ export const initialState = {
   bellStatus: "NOT_REQUESTED" as string,
   bellRequestId: null as string | null,
   command: null as string | null,
+  shouldTriggerBell: false,
   lastFunctionResult: null as unknown,
   lastInjectedStatus: null as unknown,
   // 승차 정류장에 오는 차량 정보. 대기 중 GET /status 응답에만 실려 오고, 3초 주기
@@ -157,8 +158,20 @@ export function tripReducer(state: TripState, action: TripAction): TripState {
     case "START_TRIP":
       return {
         ...state,
+        ...CLEARED_ARRIVAL_FIELDS,
+        currentStation: null,
+        nextStation: null,
+        remainingStations: null,
+        guideMessage: null,
+        bellStatus: 'NOT_REQUESTED',
+        bellRequestId: null,
+        command: null,
+        shouldTriggerBell: false,
+        lastInjectedStatus: null,
         tripId: action.tripId as string | null,
         tripStatus: "WAITING_BUS",
+        caneReady: false,
+        beaconScanActive: false,
         boardingMethod: null,
         boardingConfirmedAt: null,
         targetBeaconId: null,
@@ -167,6 +180,7 @@ export function tripReducer(state: TripState, action: TripAction): TripState {
       };
 
     case "CONFIRM_BOARDING":
+      if ((action.tripId && action.tripId !== state.tripId) || state.tripStatus === 'TRIP_DONE' || state.tripStatus === 'CANCELLED') return state;
       return {
         ...state,
         ...CLEARED_ARRIVAL_FIELDS,
@@ -177,6 +191,10 @@ export function tripReducer(state: TripState, action: TripAction): TripState {
 
     case "UPDATE_TRIP_STATUS": {
       const s = (action.status ?? {}) as Record<string, unknown>;
+      if ((s.tripId && s.tripId !== state.tripId) ||
+        (state.tripStatus === 'TRIP_DONE' && s.tripStatus !== 'TRIP_DONE') ||
+        (state.tripStatus === 'CANCELLED' && s.tripStatus !== 'CANCELLED') ||
+        (state.boardingConfirmedAt && s.tripStatus === 'WAITING_BUS')) return state;
       return {
         ...state,
         ...resolveArrivalFields(state, s),
@@ -190,6 +208,7 @@ export function tripReducer(state: TripState, action: TripAction): TripState {
         bellStatus: s.bellStatus as string,
         bellRequestId: s.bellRequestId as string | null,
         command: s.command as string | null,
+        shouldTriggerBell: s.shouldTriggerBell === true,
       };
     }
 

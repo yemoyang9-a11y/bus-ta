@@ -44,10 +44,7 @@
 `GUIDE_MESSAGE_LIMIT`(2) 개까지만 만든다. 뒤 순위 후보는 응답의 `routeNo`,
 `totalTime`, `intervalTime` 을 근거로 안내하면 되므로 문장을 미리 만들지 않는다.
 
-> 현재 `generateRouteGuide` 는 전달받은 후보에 대해 내부에서 `selectRouteCandidates`
-> 를 호출하고 상위 `GUIDE_MESSAGE_LIMIT` 개로 자른다. 공개 응답을 상한까지 넓히는
-> 후속 작업에서는 호출측(`search-routes.service.ts`)이 순위 목록을 받아 상위 2개만
-> 넘기고 `candidateId` 로 병합하므로, 이 내부 호출과 절단은 그때 빠진다.
+> `search-routes.service.ts`는 순위 후보를 최대 5개 보존하고 상위 2개에 생성된 안내를 `candidateId`로 병합한다. `generateRouteGuide` 내부에도 순위 계산과 `GUIDE_MESSAGE_LIMIT` 절단이 남아 있다. 이는 공개 후보 확대의 미구현 증거가 아니며, 동일 역할을 제거하는 선택 리팩터링은 이번 필수 수정 범위에 넣지 않는다.
 
 ## 호출 위치
 

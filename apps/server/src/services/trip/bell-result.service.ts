@@ -1,15 +1,4 @@
-import { BELL_STATUS, BellResultSchema } from "@bus-ta/shared";
-
-export interface BellRequestLookup {
-  tripId: string;
-  bellRequestId: string;
-  /** bell_logs.result — 아직 처리 전이면 null */
-  result: typeof BELL_STATUS.SUCCESS | typeof BELL_STATUS.FAIL | null;
-  /** trip_status.bell_status */
-  bellStatus: string;
-  /** trip_status.trip_status (응답용) */
-  tripStatus: string;
-}
+import { BELL_STATUS, BellResultSchema, type TripStatus } from "@bus-ta/shared";
 
 export interface SaveBellResultInput {
   tripId: string;
@@ -18,18 +7,22 @@ export interface SaveBellResultInput {
   resultMessage: string | null;
   isMock: boolean;
   completedAt: string;
-  bellStatus: typeof BELL_STATUS.SUCCESS | typeof BELL_STATUS.FAIL;
 }
 
+export type SaveBellResultResult =
+  | { outcome: "BELL_REQUEST_NOT_FOUND" }
+  | { outcome: "INVALID_BELL_STATE" }
+  | {
+      outcome: "SAVED" | "ALREADY_RECORDED";
+      tripId: string;
+      bellRequestId: string;
+      bellStatus: typeof BELL_STATUS.SUCCESS | typeof BELL_STATUS.FAIL;
+      tripStatus: TripStatus;
+    };
+
 export interface BellResultRepository {
-  findBellRequest(tripId: string, bellRequestId: string): Promise<BellRequestLookup | null>;
-  saveBellResult(data: SaveBellResultInput): Promise<void>;
-  /** 부분 실패 보정용 — trip_status.bell_status 만 결과값으로 맞춘다. */
-  reconcileBellStatus(
-    tripId: string,
-    bellStatus: typeof BELL_STATUS.SUCCESS | typeof BELL_STATUS.FAIL,
-    completedAt: string,
-  ): Promise<void>;
+  /** Validate, lock, save both rows, and return the authoritative first result atomically. */
+  saveBellResult(data: SaveBellResultInput): Promise<SaveBellResultResult>;
 }
 
 export interface BellResultDependencies extends BellResultRepository {
@@ -91,14 +84,21 @@ export async function recordBellResult(
 
   const { bellRequestId, result, resultMessage, isMock } = parsed.data;
 
-  let lookup: BellRequestLookup | null;
+  let saved: SaveBellResultResult;
   try {
-    lookup = await dependencies.findBellRequest(tripId, bellRequestId);
+    saved = await dependencies.saveBellResult({
+      tripId,
+      bellRequestId,
+      result,
+      resultMessage: resultMessage ?? null,
+      isMock: isMock ?? true,
+      completedAt: timestamp,
+    });
   } catch {
     return dbError(timestamp);
   }
 
-  if (!lookup) {
+  if (saved.outcome === "BELL_REQUEST_NOT_FOUND") {
     return {
       httpStatus: 404,
       body: {
@@ -110,34 +110,7 @@ export async function recordBellResult(
     };
   }
 
-  // 멱등: 이미 결과가 기록된 요청은 덮어쓰지 않고 기존 결과를 반환한다.
-  if (lookup.result !== null) {
-    // 부분 실패 자가 치유: bell_logs 에는 결과가 있는데 trip_status.bell_status 가
-    // 아직 반영되지 않은 경우(예: 직전 요청에서 두 번째 PATCH 실패) 결과값으로 보정한다.
-    if (lookup.bellStatus !== lookup.result) {
-      try {
-        await dependencies.reconcileBellStatus(tripId, lookup.result, timestamp);
-      } catch {
-        return dbError(timestamp);
-      }
-    }
-    return {
-      httpStatus: 200,
-      body: {
-        success: true,
-        tripId,
-        bellRequestId,
-        // bell_logs.result 가 권위 있는 값. trip_status 가 지연됐어도 정확한 결과를 반환한다.
-        bellStatus: lookup.result,
-        tripStatus: lookup.tripStatus,
-        message: "이미 처리된 하차벨 결과입니다.",
-        timestamp,
-      },
-    };
-  }
-
-  // PENDING 상태에서만 결과를 받는다.
-  if (lookup.bellStatus !== BELL_STATUS.PENDING) {
+  if (saved.outcome === "INVALID_BELL_STATE") {
     return {
       httpStatus: 409,
       body: {
@@ -149,34 +122,21 @@ export async function recordBellResult(
     };
   }
 
-  const bellStatus = result === BELL_STATUS.SUCCESS ? BELL_STATUS.SUCCESS : BELL_STATUS.FAIL;
-
-  try {
-    await dependencies.saveBellResult({
-      tripId,
-      bellRequestId,
-      result,
-      resultMessage: resultMessage ?? null,
-      isMock: isMock ?? true,
-      completedAt: timestamp,
-      bellStatus,
-    });
-  } catch {
-    return dbError(timestamp);
-  }
-
+  // The RPC result wins over the incoming result and any pre-save snapshot.
   return {
     httpStatus: 200,
     body: {
       success: true,
       tripId,
       bellRequestId,
-      bellStatus,
-      tripStatus: lookup.tripStatus,
+      bellStatus: saved.bellStatus,
+      tripStatus: saved.tripStatus,
       message:
-        bellStatus === BELL_STATUS.SUCCESS
-          ? "하차벨 요청이 정상 처리되었습니다."
-          : "하차벨 요청이 실패했습니다.",
+        saved.outcome === "ALREADY_RECORDED"
+          ? "이미 처리된 하차벨 결과입니다."
+          : saved.bellStatus === BELL_STATUS.SUCCESS
+            ? "하차벨 요청이 정상 처리되었습니다."
+            : "하차벨 요청이 실패했습니다.",
       timestamp,
     },
   };

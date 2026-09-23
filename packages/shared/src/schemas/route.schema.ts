@@ -1,5 +1,17 @@
 import { z } from "zod";
 
+export const RouteSegmentModeSchema = z.enum(["WALK", "BUS", "SUBWAY"]);
+export const RouteSegmentSchema = z.object({
+  mode: RouteSegmentModeSchema,
+  startName: z.string().min(1),
+  endName: z.string().min(1),
+  lineNames: z.array(z.string().min(1)),
+  routeNumbers: z.array(z.string().min(1)),
+  stationCount: z.number().int().nonnegative().optional(),
+  sectionTime: z.number().int().nonnegative().optional(),
+});
+export type RouteSegmentContract = z.infer<typeof RouteSegmentSchema>;
+
 export const RoutesSearchRequestSchema = z.object({
   destination: z.string().min(1),
   latitude: z.number().min(-90).max(90),
@@ -35,6 +47,9 @@ export const RouteCandidateSchema = z.object({
   intervalTime: z.number().int().nonnegative().optional(),
   recommendationReason: z.string().optional(),
   guideMessage: z.string().optional(),
+  routeMode: z.enum(["DIRECT_BUS", "MULTIMODAL"]).optional(),
+  tripSupported: z.boolean().optional(),
+  segments: z.array(RouteSegmentSchema).optional(),
 });
 
 export const RoutesSearchResponseSchema = z.object({

@@ -20,6 +20,10 @@ function isRouteCandidatesExpired(expiresAt) {
   return Date.now() > expiresAt;
 }
 
+function isGuidanceOnly(route) {
+  return route.tripSupported === false || route.routeMode === 'MULTIMODAL' || route.busTransitCount > 1;
+}
+
 export default function RouteListScreen({ navigation }) {
   // 예모님 확인(2026-08-15): ConfirmScreen 삭제에 따라 route.params 대신 TripContext에서 값을 가져온다.
   // destination, routeCandidates는 function-dispatcher.ts의 search_routes 처리 결과로 채워진다.
@@ -54,6 +58,8 @@ export default function RouteListScreen({ navigation }) {
   //
   // 노선 선택 시 POST /api/trips 호출 후 탑승 중 화면으로 이동
   const selectRoute = async (selectedRoute) => {
+    // Disabled 카드 외의 호출 경로에서도 API·BLE·선택 상태를 바꾸지 않는다.
+    if (isGuidanceOnly(selectedRoute)) return;
     // 예모님 지적(2026-08-28, P1): 화면에서 기존 후보를 선택할 때도 TTL을 확인하지 않고
     // POST /api/trips를 호출하고 있었다. 검색 후 5분이 지난 후보는 사용하지 않고,
     // 대신 다시 검색해야 한다는 안내와 함께 노선 목록 화면에 머무른다(재검색 자체는
@@ -164,25 +170,39 @@ export default function RouteListScreen({ navigation }) {
         renderItem={({ item, index }) => {
           // 카드마다 강조색을 번갈아 사용 — 텍스트/기능은 그대로, 시각적 구분만 추가
           const accentColor = index % 2 === 0 ? '#FFD400' : '#2F8FFF';
+          const guidanceOnly = isGuidanceOnly(item);
 
           return (
             <TouchableOpacity
               style={[styles.routeCard, { borderColor: accentColor }]}
               onPress={() => selectRoute(item)}
+              disabled={guidanceOnly}
+              accessibilityRole="button"
+              accessibilityState={{ disabled: guidanceOnly }}
             >
               <View style={[styles.routeAccentBar, { backgroundColor: accentColor }]} />
               <View style={styles.routeCardContent}>
                 <Text style={styles.routeNo}>
-                  {item.routeNo}번
+                  {guidanceOnly ? '환승 경로 (안내 전용)' : `${item.routeNo}번`}
                 </Text>
 
-                <Text style={styles.routeInfo}>
-                  탑승 정류장: {item.boardingStation.stationName}
-                </Text>
-
-                <Text style={styles.routeInfo}>
-                  하차 정류장: {item.destinationStation.stationName}
-                </Text>
+                {guidanceOnly ? (
+                  <View>
+                    {(item.segments || []).map((segment, segmentIndex) => (
+                      <Text key={segmentIndex} style={styles.routeInfo}>
+                        {segmentIndex + 1}. {segment.mode === 'WALK' ? '도보' : segment.mode === 'SUBWAY'
+                          ? `${segment.lineNames.join(' 또는 ')} 지하철`
+                          : `${segment.routeNumbers.join(' 또는 ')}번 버스`}: {segment.startName} → {segment.endName}
+                      </Text>
+                    ))}
+                    <Text style={styles.routeInfo}>운행 시작과 하차벨은 지원하지 않습니다.</Text>
+                  </View>
+                ) : (
+                  <View>
+                    <Text style={styles.routeInfo}>탑승 정류장: {item.boardingStation.stationName}</Text>
+                    <Text style={styles.routeInfo}>하차 정류장: {item.destinationStation.stationName}</Text>
+                  </View>
+                )}
 
                 {item.totalTime && (
                   <Text style={styles.routeInfo}>

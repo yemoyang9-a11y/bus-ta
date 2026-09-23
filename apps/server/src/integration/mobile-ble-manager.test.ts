@@ -21,7 +21,7 @@ function setup(autoScan = true) {
   const devices = new Map<string, any>();
   function device(name: string) {
     const value = {
-      name, alive: true, cancels: 0, rejectCancel: false,
+      name, mtu: 185, requestMTU: async (_size: number) => value, alive: true, cancels: 0, rejectCancel: false,
       isConnected: async () => value.alive,
       connect: async () => { calls.connects.push(name); value.alive = true; return value; },
       discoverAllServicesAndCharacteristics: async () => {},
@@ -277,4 +277,21 @@ test('이전 disconnect reject 후에도 새 bell에 연결하고 명령/구독 
   assert.deepEqual(calls.monitors, ['BUS_B']);
   assert.equal(await ble.connectBell('BUS_B'), next);
   assert.equal(calls.scans, 2);
+});
+
+test('cane은 충분한 MTU를 협상한 뒤에만 준비 완료하고 부족/실패 연결은 채택하지 않는다',async()=>{
+ for(const mode of ['ok','small','reject']) {
+  const {ble,device,calls}=setup();const cane=device('White_cane');const order:string[]=[];
+  cane.requestMTU=async(size:number)=>{order.push(`mtu:${size}`);if(mode==='reject')throw Error('failed');cane.mtu=mode==='small'?23:185;return cane;};
+  cane.discoverAllServicesAndCharacteristics=async()=>{order.push('discover');};
+  const result=await ble.connectCane();
+  assert.equal(Boolean(result),mode==='ok');assert.equal(order[0],'mtu:185');
+  if(mode==='ok')assert.deepEqual(order,['mtu:185','discover']);else assert.ok(cane.cancels>0);
+ }
+});
+
+test('지팡이 disconnect 실패 뒤 기존 연결로 STOP을 다시 보낼 수 있다',async()=>{
+ const {ble,device,calls}=setup();const cane=device('White_cane');await ble.connectCane();cane.rejectCancel=true;
+ await assert.rejects(ble.disconnectCane());await ble.stopBeaconScan();assert.equal(calls.writePayloads.at(-1),'{"cmd":"STOP_BEACON_SCAN"}');
+ cane.rejectCancel=false;await ble.disconnectCane();
 });

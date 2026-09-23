@@ -82,10 +82,14 @@ export type AssistDeviceStatusChangedEvent = {
   reason: AssistDeviceFailureReason;
   attempted: boolean;
   retryable: boolean;
+  attempts?: number;
 };
 
 // TripContext(state/TripContext.js)의 state 구조와 대응한다.
 export type AppTripState = {
+  caneReady?: boolean;
+  beaconScanActive?: boolean;
+  targetBeaconId?: string | null;
   destination: string | null;
   routeCandidates: Route[] | null;
 
@@ -135,6 +139,7 @@ export type AppAction =
   | { type: "START_TRIP"; tripId: string }
   | {
       type: "CONFIRM_BOARDING";
+      tripId?: string;
       tripStatus: "ON_BUS" | "NEAR_DESTINATION";
       boardingMethod: BoardingMethod;
       boardingConfirmedAt: string;

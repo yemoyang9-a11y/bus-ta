@@ -23,6 +23,16 @@
 #include <BLE2902.h>
 #include <BLEScan.h>
 #include <BLEAdvertisedDevice.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
+#include <esp_gatts_api.h>
+#include <string.h>
+
+#if !defined(CONFIG_BLUEDROID_ENABLED)
+#error "This transport is validated with Arduino-ESP32 3.3.12 Bluedroid."
+#endif
+
+#include "proximity-feedback.h"
 
 // ===== 설정 =====
 #define SERVICE_UUID        "4fa45540-8201-11e5-8223-0002a5d5c51b"
@@ -33,14 +43,51 @@
                           // false: 앱이 START_BEACON_SCAN 보내야 시작 (실제 동작)
 
 const int MOTOR_PIN = 25;
-
-// 찾을 비콘 (앱이 SET_TARGET_BEACON으로 변경, 기본값은 테스트용)
-String targetBeacon = "BUS_1551_001";
-
-bool scanning = false;
+const uint32_t SCAN_DURATION_SECONDS = 1;
+const uint32_t MOTOR_TICK_MS = 20;
+const int RESET_AFTER_MISSED_SCANS = 4;
 
 BLEScan *pBLEScan;
 BLECharacteristic *pCharacteristic;
+BLE2902 *pNotifySubscription;
+portMUX_TYPE stateMux = portMUX_INITIALIZER_UNLOCKED;
+smart_cane::ScanMailbox scanMailbox;
+
+// Normal task mutex: command acceptance cannot interrupt a loop output
+// transaction. Lock order is feedbackMutex -> stateMux, never the reverse.
+// Scan callbacks use stateMux only, so BLE completion cannot wait on output.
+class FeedbackMutex {
+ public:
+  bool begin() { handle_ = xSemaphoreCreateMutex(); return handle_ != NULL; }
+  void lock() { xSemaphoreTake(handle_, portMAX_DELAY); }
+  bool tryLock() { return xSemaphoreTake(handle_, 0) == pdTRUE; }
+  void unlock() { xSemaphoreGive(handle_); }
+ private:
+  SemaphoreHandle_t handle_ = NULL;
+};
+FeedbackMutex feedbackMutex;
+smart_cane::FeedbackTransactions<FeedbackMutex> feedbackTransactions(feedbackMutex);
+// GATT metadata is owned under the same output mutex. Each new connection,
+// including a reused connId, starts unsubscribed with the default ATT MTU.
+smart_cane::NotificationPeers<CONFIG_BT_ACL_CONNECTIONS> notificationPeers;
+esp_gatt_if_t notificationInterface = ESP_GATT_IF_NONE;
+
+class DirectGattTransport {
+ public:
+  bool sendRaw(uint16_t connectionId, const uint8_t* payload, size_t length) {
+    if (notificationInterface == ESP_GATT_IF_NONE || pCharacteristic == NULL) return false;
+    return esp_ble_gatts_send_indicate(notificationInterface, connectionId,
+        pCharacteristic->getHandle(), static_cast<uint16_t>(length),
+        const_cast<uint8_t*>(payload), false) == ESP_OK;
+  }
+};
+DirectGattTransport notificationTransport;
+
+// Only loop() owns these objects and all trend/history fields below.
+smart_cane::ProximityFeedback proximityFeedback;
+smart_cane::FreshRssiNotifyGate notifyGate;
+uint32_t appliedGeneration = 0;
+bool scanning = false;
 
 // ===== RSSI 기록용 =====
 const int HISTORY_SIZE = 10;
@@ -144,47 +191,23 @@ const char* stateToCode(BusState s) {
 }
 
 // ===== 상태를 앱에 Notify 전송 =====
-void notifyState(BusState state, int avgRssi) {
+void notifyState(BusState state, int rawRssi) {
   if (pCharacteristic == NULL) return;
-  String json = "{\"state\":\"";
-  json += stateToCode(state);
-  json += "\",\"rssi\":";
-  json += String(avgRssi);
-  json += "}";
-  pCharacteristic->setValue(json.c_str());
-  pCharacteristic->notify();
-  Serial.print("[BLE→앱] 상태 전송: ");
-  Serial.println(json);
+  const smart_cane::NotificationFrame json(stateToCode(state), rawRssi);
+  // Never set/read the characteristic value for TX: the SDK also writes
+  // that value before onWrite, outside our mutex. It is RX-only now.
+  // ESP-IDF submits a deep copy of this local buffer before returning.
+  for (size_t i = 0; i < CONFIG_BT_ACL_CONNECTIONS; ++i) {
+    smart_cane::sendIndependentNotification(notificationTransport, notificationPeers.at(i),
+        reinterpret_cast<const uint8_t*>(json.bytes), json.length);
+  }
 }
 
-// ===== 진동 (세기/촘촘함으로 자연스럽게) =====
-void vibrateByState(BusState state, int avgRssi) {
-  switch (state) {
-    case STATE_APPROACHING: {
-      int onTime, offTime;
-      if (avgRssi >= -60)      { onTime = 200; offTime = 60;  }
-      else if (avgRssi >= -70) { onTime = 150; offTime = 180; }
-      else                     { onTime = 100; offTime = 350; }
-      digitalWrite(MOTOR_PIN, HIGH); delay(onTime);
-      digitalWrite(MOTOR_PIN, LOW);  delay(offTime);
-      break;
-    }
-    case STATE_ARRIVED:
-      digitalWrite(MOTOR_PIN, HIGH); delay(400);
-      digitalWrite(MOTOR_PIN, LOW);  delay(100);
-      break;
-
-    case STATE_PASSED_STOPPED:
-      digitalWrite(MOTOR_PIN, HIGH); delay(200);
-      digitalWrite(MOTOR_PIN, LOW);  delay(300);
-      break;
-
-    case STATE_PASSING:
-    case STATE_LEAVING:
-    default:
-      digitalWrite(MOTOR_PIN, LOW);
-      break;
-  }
+// ===== GPIO25 PWM =====
+// Arduino-ESP32 3.3.12 maps analogWrite to the board's LEDC timer API.
+// This full sketch/transport has not been verified on other core versions.
+void writeMotorPwm(uint8_t duty) {
+  analogWrite(MOTOR_PIN, duty);
 }
 
 // ===== 스캔 데이터 초기화 =====
@@ -194,15 +217,161 @@ void resetScanData() {
   notFoundCount = 0;
   passedPeak = false;
   currentState = STATE_NONE;
+  notifyGate.reset();
+}
+
+class ServerCallbacks : public BLEServerCallbacks {
+  void onConnect(BLEServer *pServer, esp_ble_gatts_cb_param_t *param) override {
+    (void)pServer;
+    feedbackTransactions.run([&]() { notificationPeers.connect(param->connect.conn_id); });
+  }
+
+  void onMtuChanged(BLEServer *pServer, esp_ble_gatts_cb_param_t *param) override {
+    (void)pServer;
+    feedbackTransactions.run([&]() {
+      notificationPeers.setMtu(param->mtu.conn_id, param->mtu.mtu);
+    });
+  }
+
+  void onDisconnect(BLEServer *pServer, esp_ble_gatts_cb_param_t *param) override {
+    feedbackTransactions.run([&]() { notificationPeers.disconnect(param->disconnect.conn_id); });
+    // Re-advertise from the server callback so a phone can reconnect after a
+    // transient link loss without requiring a reboot or a new START command.
+    pServer->startAdvertising();
+  }
+};
+
+// SDK descriptor storage is shared too. Track each connection's CCCD from
+// the immutable GATT event instead of reading BLE2902::getNotifications().
+void handleGattMetadata(esp_gatts_cb_event_t event, esp_gatt_if_t interfaceId,
+                        esp_ble_gatts_cb_param_t *param) {
+  if (event == ESP_GATTS_REG_EVT && param->reg.status == ESP_GATT_OK) {
+    feedbackTransactions.run([&]() { notificationInterface = interfaceId; });
+    return;
+  }
+  if (event != ESP_GATTS_WRITE_EVT || pNotifySubscription == NULL ||
+      param->write.handle != pNotifySubscription->getHandle() ||
+      param->write.is_prep || param->write.offset != 0 || param->write.len != 2) return;
+  const bool subscribed = (param->write.value[0] & 1u) != 0;
+  feedbackTransactions.run([&]() {
+    if (interfaceId == notificationInterface) {
+      notificationPeers.subscribe(param->write.conn_id, subscribed);
+    }
+  });
+}
+
+void processScanResults(BLEScanResults results) {
+  portENTER_CRITICAL(&stateMux);
+  const smart_cane::ScanContext context = scanMailbox.context();
+  portEXIT_CRITICAL(&stateMux);
+
+  bool found = false;
+  int strongestRssi = -100;
+  const int count = results.getCount();
+  for (int i = 0; i < count; i++) {
+    BLEAdvertisedDevice device = results.getDevice(i);
+    String name = device.getName().c_str();
+    if (name != context.target) continue;
+
+    const int rssi = device.getRSSI();
+    if (!found || rssi > strongestRssi) {
+      strongestRssi = rssi;
+      found = true;
+    }
+  }
+
+  pBLEScan->clearResults();
+  // Publication and generation validation are one atomic operation. Keep
+  // in-flight set until all result access/cleanup above has completed.
+  portENTER_CRITICAL(&stateMux);
+  scanMailbox.finish(context.generation, found, strongestRssi);
+  portEXIT_CRITICAL(&stateMux);
+}
+
+void consumeScanUpdate() {
+  portENTER_CRITICAL(&stateMux);
+  const smart_cane::FeedbackUpdate update = scanMailbox.consume();
+  portEXIT_CRITICAL(&stateMux);
+
+  const uint32_t nowMs = millis();
+  appliedGeneration = update.generation;
+  scanning = update.enabled;
+  if (update.reset) {
+    resetScanData();
+    if (scanning) proximityFeedback.start(nowMs);
+    else proximityFeedback.stop(nowMs);
+    writeMotorPwm(0);
+  }
+  if (!scanning || !update.completed) return;
+
+  if (update.found) {
+    notFoundCount = 0;
+    proximityFeedback.observeSignal(nowMs, update.rssi);
+    addRSSI(update.rssi);
+
+    const BusState newState = judgeState();
+    const bool stateChanged = newState != STATE_NONE && newState != currentState;
+    if (newState != STATE_NONE) currentState = newState;
+
+    // The app's boarding detector consumes raw RSSI and requires fresh
+    // samples. Keep the existing state string and JSON shape, but emit at
+    // least once per scan window while a target advertisement is actually
+    // present. No notification is generated from a stale sample on loss.
+    if (currentState != STATE_NONE &&
+        notifyGate.shouldNotify(nowMs, true, stateChanged)) {
+      notifyState(currentState, update.rssi);
+    }
+  } else {
+    notFoundCount++;
+    // Preserve the controller's grace/fade behavior. This reset only drops
+    // stale trend history after an extended loss; it never writes the motor
+    // directly or feeds a fake RSSI notification.
+    if (notFoundCount >= RESET_AFTER_MISSED_SCANS) {
+      resetScanData();
+    }
+  }
+}
+
+void startNextScanIfIdle() {
+  if (pBLEScan == NULL) return;
+  portENTER_CRITICAL(&stateMux);
+  const bool start = scanMailbox.begin(appliedGeneration);
+  const smart_cane::ScanContext context = scanMailbox.context();
+  portEXIT_CRITICAL(&stateMux);
+  if (!start) return;
+  // Callback overload returns after starting the scan, not after one second.
+  // Do not call stop() on command arrival: let the old window finish and be
+  // discarded, avoiding stop/completion races inside the BLE library.
+  if (!pBLEScan->start(SCAN_DURATION_SECONDS, processScanResults, false)) {
+    portENTER_CRITICAL(&stateMux);
+    scanMailbox.startFailed(context.generation);
+    portEXIT_CRITICAL(&stateMux);
+  }
+}
+
+void updateMotorFeedback() {
+  const uint32_t nowMs = millis();
+  if (!scanning) {
+    writeMotorPwm(0);
+    return;
+  }
+
+  writeMotorPwm(proximityFeedback.tick(nowMs));
 }
 
 // ===== BLE 명령 수신 콜백 =====
 class CommandCallbacks : public BLECharacteristicCallbacks {
   void onWrite(BLECharacteristic *pChar) {
+    // TX never touches this value. The SDK's single BLE event task owns RX
+    // and calls us after either a regular Write or a prepared Write commit.
+    // Copy here before waiting on the output mutex; do not interpret param's
+    // union as write data because EXEC_WRITE supplies a different member.
     String value = pChar->getValue();
     if (value.length() == 0) return;
 
-    Serial.print("[BLE] 명령 수신: ");
+    // Reception is not acceptance: acceptance happens under feedbackMutex
+    // below, after any previous Notify/PWM transaction has finished.
+    Serial.print("[BLE] 명령 수신(처리 대기): ");
     Serial.println(value);
 
     if (value.indexOf("SET_TARGET_BEACON") >= 0) {
@@ -212,21 +381,32 @@ class CommandCallbacks : public BLECharacteristicCallbacks {
         int q1 = value.indexOf('"', c1);
         int q2 = value.indexOf('"', q1 + 1);
         if (q1 >= 0 && q2 > q1) {
-          targetBeacon = value.substring(q1 + 1, q2);
-          Serial.print("[설정] 타겟 비콘 = ");
-          Serial.println(targetBeacon);
+          const String nextTarget = value.substring(q1 + 1, q2);
+          feedbackTransactions.run([&]() {
+            portENTER_CRITICAL(&stateMux);
+            scanMailbox.requestTarget(nextTarget.c_str());
+            portEXIT_CRITICAL(&stateMux);
+          });
+          Serial.print("[설정] 타겟 변경 요청 수락 = ");
+          Serial.println(nextTarget);
         }
       }
     }
     else if (value.indexOf("START_BEACON_SCAN") >= 0) {
-      scanning = true;
-      resetScanData();
-      Serial.println("[제어] 스캔 시작");
+      feedbackTransactions.run([]() {
+        portENTER_CRITICAL(&stateMux);
+        scanMailbox.requestStart();
+        portEXIT_CRITICAL(&stateMux);
+      });
+      Serial.println("[제어] 스캔 시작 요청 수락");
     }
     else if (value.indexOf("STOP_BEACON_SCAN") >= 0) {
-      scanning = false;
-      digitalWrite(MOTOR_PIN, LOW);
-      Serial.println("[제어] 스캔 중지");
+      feedbackTransactions.run([]() {
+        portENTER_CRITICAL(&stateMux);
+        scanMailbox.requestStop();
+        portEXIT_CRITICAL(&stateMux);
+      });
+      Serial.println("[제어] 스캔 중지 요청 수락");
     }
   }
 };
@@ -237,18 +417,30 @@ void setup() {
   Serial.println("\n===== 지팡이 (White_cane) 시작 =====");
 
   pinMode(MOTOR_PIN, OUTPUT);
-  digitalWrite(MOTOR_PIN, LOW);
+  analogWrite(MOTOR_PIN, 0);
+
+  if (!feedbackMutex.begin()) {
+    Serial.println("[오류] 제어 잠금 생성 실패: 모터 정지, BLE 기능 중단");
+    while (true) delay(1000);
+  }
 
   BLEDevice::init(DEVICE_NAME);
+  if (BLEDevice::setMTU(185) != ESP_OK) {
+    Serial.println("[오류] BLE MTU 설정 실패: 모터 정지, 광고 시작 중단");
+    while (true) delay(1000);
+  }
+  BLEDevice::setCustomGattsHandler(handleGattMetadata);
 
   // --- BLE 서버 (앱 명령 수신 + 상태 전송) ---
   BLEServer *pServer = BLEDevice::createServer();
+  pServer->setCallbacks(new ServerCallbacks());
   BLEService *pService = pServer->createService(SERVICE_UUID);
   pCharacteristic = pService->createCharacteristic(
     CHARACTERISTIC_UUID,
     BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_NOTIFY
   );
-  pCharacteristic->addDescriptor(new BLE2902());
+  pNotifySubscription = new BLE2902();
+  pCharacteristic->addDescriptor(pNotifySubscription);
   pCharacteristic->setCallbacks(new CommandCallbacks());
   pService->start();
 
@@ -265,7 +457,9 @@ void setup() {
   pBLEScan->setWindow(99);
 
   if (TEST_MODE) {
-    scanning = true;
+    portENTER_CRITICAL(&stateMux);
+    scanMailbox.requestStart();
+    portEXIT_CRITICAL(&stateMux);
     Serial.println("[TEST_MODE] 자동 스캔 시작");
   } else {
     Serial.println("[대기] 앱의 START_BEACON_SCAN 명령 대기 중");
@@ -273,40 +467,14 @@ void setup() {
 }
 
 void loop() {
-  if (!scanning) {
-    delay(200);
-    return;
-  }
-
-  BLEScanResults *foundDevices = pBLEScan->start(1, false);
-  bool found = false;
-  int count = foundDevices->getCount();
-
-  for (int i = 0; i < count; i++) {
-    BLEAdvertisedDevice device = foundDevices->getDevice(i);
-    String name = device.getName().c_str();
-    if (name == targetBeacon) {
-      found = true;
-      int rssi = device.getRSSI();
-      notFoundCount = 0;
-      addRSSI(rssi);
-
-      BusState newState = judgeState();
-      if (newState != currentState) {          // 상태 바뀔 때만 앱에 전송
-        currentState = newState;
-        notifyState(currentState, getAverageRSSI());
-      }
-      vibrateByState(currentState, getAverageRSSI());
-    }
-  }
-
-  if (!found) {
-    notFoundCount++;
-    digitalWrite(MOTOR_PIN, LOW);
-    if (notFoundCount >= 3) {
-      resetScanData();
-    }
-  }
-
-  pBLEScan->clearResults();
+  // Holding this task mutex through the actual side effects closes the
+  // consume/check-to-Notify/PWM gap. A callback either accepts its command
+  // before consume (old sample discarded), or after all old output ends.
+  // The motor loop does not wait when a command currently owns the mutex.
+  feedbackTransactions.tryRun([]() {
+    consumeScanUpdate();
+    updateMotorFeedback();
+  });
+  startNextScanIfIdle();
+  delay(MOTOR_TICK_MS);
 }

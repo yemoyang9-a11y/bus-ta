@@ -1,5 +1,18 @@
 import type { Station, StationListItem } from "./station.js";
 
+export type RouteMode = "DIRECT_BUS" | "MULTIMODAL";
+export type RouteSegmentMode = "WALK" | "BUS" | "SUBWAY";
+
+export interface RouteSegment {
+  mode: RouteSegmentMode;
+  startName: string;
+  endName: string;
+  lineNames: string[];
+  routeNumbers: string[];
+  stationCount?: number;
+  sectionTime?: number;
+}
+
 export interface Route {
   candidateId: number;
   routeNo: string;
@@ -17,4 +30,7 @@ export interface Route {
   intervalTime?: number;
   recommendationReason?: string;
   guideMessage?: string;
+  routeMode?: RouteMode;
+  tripSupported?: boolean;
+  segments?: RouteSegment[];
 }

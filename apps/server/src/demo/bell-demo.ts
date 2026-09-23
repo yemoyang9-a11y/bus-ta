@@ -19,7 +19,7 @@ if (existsSync(envFilePath)) {
   process.loadEnvFile(envFilePath);
 }
 
-import { DEMO_ROUTE, DEMO_LOCATION_SEQUENCE } from "@bus-ta/shared";
+import { DEMO_ROUTE, DEMO_LOCATION_SEQUENCE, BellStateResponseSchema } from "@bus-ta/shared";
 import { createTrip } from "../services/trip/create-trip.service.js";
 import {
   updateTripStatus,
@@ -29,8 +29,8 @@ import {
 } from "../services/trip/update-trip-status.service.js";
 import {
   recordBellResult,
-  type BellRequestLookup,
   type SaveBellResultInput,
+  type SaveBellResultResult,
 } from "../services/trip/bell-result.service.js";
 import type {
   CreateTripWithStatusInput,
@@ -103,30 +103,19 @@ function createMemoryStore(): DemoRepo {
       };
     },
     // recordBellResult
-    async findBellRequest(
-      _tripId: string,
-      bellRequestId: string,
-    ): Promise<BellRequestLookup | null> {
-      const bell = bellLogs.get(bellRequestId);
-      if (!bell || !status) return null;
+    async saveBellResult(data: SaveBellResultInput): Promise<SaveBellResultResult> {
+      const bell = bellLogs.get(data.bellRequestId);
+      if (!bell || !status || trip?.tripId !== data.tripId) return { outcome: "BELL_REQUEST_NOT_FOUND" };
+      if (status.bellRequestId !== data.bellRequestId || (!bell.result && status.bellStatus !== "PENDING")) {
+        return { outcome: "INVALID_BELL_STATE" };
+      }
+      const outcome = bell.result ? "ALREADY_RECORDED" : "SAVED";
+      bell.result ??= data.result;
+      status = { ...status, bellStatus: bell.result, updatedAt: data.completedAt };
       return {
-        tripId: trip!.tripId,
-        bellRequestId,
-        result: bell.result,
-        bellStatus: status.bellStatus,
-        tripStatus: status.tripStatus,
+        outcome, tripId: data.tripId, bellRequestId: data.bellRequestId,
+        bellStatus: bell.result, tripStatus: BellStateResponseSchema.shape.tripStatus.parse(status.tripStatus),
       };
-    },
-    async saveBellResult(data: SaveBellResultInput): Promise<void> {
-      bellLogs.get(data.bellRequestId)!.result = data.result;
-      status = { ...status!, bellStatus: data.bellStatus, updatedAt: data.completedAt };
-    },
-    async reconcileBellStatus(
-      _tripId: string,
-      bellStatus: "SUCCESS" | "FAIL",
-      completedAt: string,
-    ): Promise<void> {
-      status = { ...status!, bellStatus, updatedAt: completedAt };
     },
   };
 }
@@ -216,9 +205,7 @@ async function main() {
           timestamp: result.timestamp,
         },
         {
-          findBellRequest: (t, r) => repo.findBellRequest(t, r),
           saveBellResult: (d) => repo.saveBellResult(d),
-          reconcileBellStatus: (t, s, c) => repo.reconcileBellStatus(t, s, c),
         },
       );
       const bs = saved.httpStatus === 200 ? saved.body.bellStatus : "ERROR";

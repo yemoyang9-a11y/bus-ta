@@ -8,6 +8,8 @@ const SERVICE_UUID = '4fa45540-8201-11e5-8223-0002a5d5c51b';
 const CHARACTERISTIC_UUID = '4fa45541-8201-11e5-8223-0002a5d5c51b';
 
 const CANE_DEVICE_NAME = 'White_cane';
+let configuredCaneTarget = null;
+let caneSampleSequence = 0;
 // 정민님 확정(2026-08-12): 이 보드가 버스 비콘+하차벨 겸용이라 이름 하나로 둘 다 처리(MOCK 제거)
 //
 // 노선을 바꾸면 보드 이름도 바뀌므로 기본값으로만 쓴다. 실제로는 서버가 노선별로
@@ -75,7 +77,7 @@ function scanAndConnect(deviceName, setCancel) {
         try {
           await connectingDevice?.cancelConnection();
         } catch (error) {
-          console.log('[BLE] cane 우선 처리 중 bell 취소 실패:', error);
+          console.log('[BLE] cane 우선 처리 중 bell 취소 실패:');
         }
         await connectionFinished;
         finish(null);
@@ -124,7 +126,6 @@ function scanAndConnect(deviceName, setCancel) {
         console.log(
           '[BLE] 시간 초과 연결 취소 실패:',
           deviceName,
-          disconnectError,
         );
       } finally {
         finish(null);
@@ -135,7 +136,7 @@ function scanAndConnect(deviceName, setCancel) {
     manager.startDeviceScan(null, null, async (error, device) => {
       if (settled || timedOut) return;
       if (error) {
-        console.log('[BLE] 스캔 오류:', error);
+        console.log('[BLE] 스캔 오류:');
         finish(null);
         return;
       }
@@ -158,7 +159,7 @@ function scanAndConnect(deviceName, setCancel) {
       let markConnectionFinished;
       connectionFinished = new Promise((resolveFinished) => { markConnectionFinished = resolveFinished; });
       try {
-        const connected = await device.connect();
+        let connected = await device.connect();
 
         // timeout/cancel과 거의 동시에 connect()가 성공할 수 있다.
         // 이미 요청이 끝났다면 현재 연결로 채택하지 않고 다시 해제한다.
@@ -169,12 +170,18 @@ function scanAndConnect(deviceName, setCancel) {
             console.log(
               '[BLE] 시간 초과 후 늦은 연결 해제 실패:',
               deviceName,
-              disconnectError,
             );
           }
           return;
         }
 
+        if (deviceName === CANE_DEVICE_NAME) {
+          // BLE-PLX Device.requestMTU returns the updated Device. A full JSON Notify
+          // needs more than the default 20-byte ATT payload; reject truncated transport.
+          connected = await connected.requestMTU(185);
+          if (!Number.isFinite(connected.mtu) || connected.mtu < 64) throw new Error('CANE_MTU_TOO_SMALL');
+          if (settled || timedOut) { await connected.cancelConnection(); return; }
+        }
         await connected.discoverAllServicesAndCharacteristics();
 
         // 서비스 탐색 중 전체 deadline이 지나갔을 수도 있다.
@@ -185,7 +192,6 @@ function scanAndConnect(deviceName, setCancel) {
             console.log(
               '[BLE] 시간 초과 후 늦은 서비스 탐색 연결 해제 실패:',
               deviceName,
-              disconnectError,
             );
           }
           return;
@@ -214,10 +220,10 @@ function scanAndConnect(deviceName, setCancel) {
           return;
         }
 
+        try { await connectingDevice?.cancelConnection(); } catch { /* retain failure result */ }
         console.log(
           '[BLE] 연결 실패:',
           deviceName,
-          connectError,
         );
         finish(null);
       } finally {
@@ -382,7 +388,7 @@ export async function connectBell(targetBeaconId, tripId) {
     try {
       await disconnect(previousBellDeviceName);
     } catch (error) {
-      console.log('[BLE] 이전 하차벨 해제 실패 - 새 대상 연결 계속:', error);
+      console.log('[BLE] 이전 하차벨 해제 실패 - 새 대상 연결 계속:');
     } finally {
       if (connectedDevices.get(previousBellDeviceName) === previousDevice) {
         connectedDevices.delete(previousBellDeviceName);
@@ -400,7 +406,7 @@ export async function connectBell(targetBeaconId, tripId) {
     try {
       if (await cached.isConnected()) connected = cached;
     } catch (error) {
-      console.log('[BLE] 기존 하차벨 연결 확인 실패:', error);
+      console.log('[BLE] 기존 하차벨 연결 확인 실패:');
     }
     if (!connected) {
       if (connectedDevices.get(requestedBellDeviceName) === cached) {
@@ -412,7 +418,7 @@ export async function connectBell(targetBeaconId, tripId) {
       try {
         await cached.cancelConnection();
       } catch (error) {
-        console.log('[BLE] stale 하차벨 정리 실패 - 재연결 계속:', error);
+        console.log('[BLE] stale 하차벨 정리 실패 - 재연결 계속:');
       }
     }
   }
@@ -428,7 +434,7 @@ export async function connectBell(targetBeaconId, tripId) {
     // 새 운행이 같은 보드를 인수했다면 이전 운행이 그 연결을 끊지 않는다.
     if (!bellOwners.has(requestedBellDeviceName)) {
       await disconnect(requestedBellDeviceName).catch((error) => {
-        console.log('[BLE] 취소 운행의 늦은 연결 해제 실패:', error);
+        console.log('[BLE] 취소 운행의 늦은 연결 해제 실패:');
       });
     }
     return null;
@@ -448,7 +454,6 @@ export async function connectBell(targetBeaconId, tripId) {
       console.log(
         '[BLE] 늦은 하차벨 연결 해제 실패:',
         requestedBellDeviceName,
-        disconnectError,
       );
     } finally {
       if (connectedDevices.get(requestedBellDeviceName) === connected) {
@@ -494,7 +499,7 @@ export async function isBellConnected() {
 
     return connected;
   } catch (error) {
-    console.log('[BLE] 하차벨 연결 확인 실패:', error);
+    console.log('[BLE] 하차벨 연결 확인 실패:');
     connectedDevices.delete(deviceName);
 
     if (connectedBellDeviceName === deviceName) {
@@ -546,7 +551,7 @@ async function writeCommand(deviceName, payload) {
     );
     console.log('[BLE] GATT Write 성공:', deviceName, command);
   } catch (error) {
-    console.log('[BLE] GATT Write 실패:', deviceName, command, error);
+    console.log('[BLE] GATT Write 실패:', deviceName, command);
     throw error;
   }
 }
@@ -564,6 +569,7 @@ export async function setTargetBeacon(targetBeaconId) {
   });
 
   await writeCommand(CANE_DEVICE_NAME, payload);
+  configuredCaneTarget = targetBeaconId;
 }
 
 /** 지팡이에 비콘 스캔 시작을 명령한다. */
@@ -602,12 +608,14 @@ export function subscribeCaneState(onState) {
     throw new Error('BLE_NOT_CONNECTED: 지팡이에 연결되어 있지 않습니다.');
   }
 
+  const subscribedTarget = configuredCaneTarget;
+  let active = true;
   const subscription = device.monitorCharacteristicForService(
     SERVICE_UUID,
     CHARACTERISTIC_UUID,
     (error, characteristic) => {
       if (error) {
-        console.log('지팡이 상태 Notify 오류:', error);
+        console.log('지팡이 상태 Notify 오류:');
         return;
       }
 
@@ -620,14 +628,15 @@ export function subscribeCaneState(onState) {
         ).toString('utf-8');
 
         const parsed = JSON.parse(jsonString);
-        onState(parsed);
+        if (!active || configuredCaneTarget !== subscribedTarget) return;
+        onState({ ...parsed, beaconId: subscribedTarget, timestamp: Date.now(), sampleId: ++caneSampleSequence });
       } catch (parseError) {
-        console.log('지팡이 상태 파싱 실패:', parseError);
+        console.log('지팡이 상태 파싱 실패:');
       }
     },
   );
 
-  return () => subscription.remove();
+  return () => { active = false; subscription.remove(); };
 }
 
 // ── 하차벨 명령 ──────────────────────────────
@@ -656,7 +665,7 @@ export function subscribeBellResult(onResult) {
     CHARACTERISTIC_UUID,
     (error, characteristic) => {
       if (error) {
-        console.log('하차벨 Notify 오류:', error);
+        console.log('하차벨 Notify 오류:');
         return;
       }
 
@@ -671,13 +680,16 @@ export function subscribeBellResult(onResult) {
         const parsed = JSON.parse(jsonString);
         onResult(parsed);
       } catch (parseError) {
-        console.log('하차벨 결과 파싱 실패:', parseError);
+        console.log('하차벨 결과 파싱 실패:');
       }
     },
   );
 
   return () => subscription.remove();
 }
+
+/** STOP 성공 뒤에만 호출한다. 실패 시 연결 참조를 보존해 재시도한다. */
+export async function disconnectCane() { await disconnect(CANE_DEVICE_NAME); }
 
 /** 지정한 기기 연결을 해제한다. */
 export async function disconnect(deviceName) {
@@ -720,7 +732,7 @@ export async function disconnectBellsForTrip(tripId) {
       // 재시도도 캡처한 A 장치만 사용한다. 같은 보드의 B 연결은 정리 완료를 기다린다.
       const pending = disconnectBellWithRetry({
         disconnectBell: () => device.cancelConnection(),
-        onGaveUp: (error) => console.log('[BLE] 종료 운행 하차벨 해제 실패:', error),
+        onGaveUp: (error) => console.log('[BLE] 종료 운행 하차벨 해제 실패:'),
         wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
       }).finally(() => {
         if (pendingDisconnects.get(targetBeaconId) === pending) pendingDisconnects.delete(targetBeaconId);

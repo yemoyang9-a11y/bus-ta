@@ -153,7 +153,7 @@ export const BELL_SEND_DEADLINE_MS = 5000;
 
 export async function sendStopRequestWithReconnect(
   deps: BellCommandDeps,
-  options: { signal?: AbortSignal } = {},
+  options: { signal?: AbortSignal; canSend?: () => boolean } = {},
 ): Promise<BellCommandOutcome> {
   let active = true;
   let sentSuccessfully = false;
@@ -180,10 +180,14 @@ export async function sendStopRequestWithReconnect(
   });
   const timer = setTimeout(stop, BELL_SEND_DEADLINE_MS);
   options.signal?.addEventListener('abort', stop);
+  const checkCanSend = () => {
+    check();
+    if (options.canSend?.() === false) throw new Error('BELL_SEND_NO_LONGER_ALLOWED');
+  };
   const guarded = async <T>(operation: () => Promise<T>): Promise<T> => {
-    check();
+    checkCanSend();
     const value = await operation();
-    check();
+    checkCanSend();
     return value;
   };
   try {
@@ -191,12 +195,15 @@ export async function sendStopRequestWithReconnect(
     const work = sendWithReconnect({
       isConnected: () => guarded(deps.isConnected),
       connect: () => guarded(deps.connect),
-      sendStopRequest: () => {
+      sendStopRequest: async () => {
+        checkCanSend();
         writeStarted = true;
-        return guarded(deps.sendStopRequest);
+        // 이미 시작한 GATT write는 되돌릴 수 없다. 완료 뒤에도 이 write의 결과는 받는다.
+        await deps.sendStopRequest();
+        check();
       },
       subscribeResult: () => {
-        check();
+        checkCanSend();
         // 각 구독은 바로 뒤에 오는 해당 attempt의 write가 시작된 뒤에만 유효하다.
         // 구독 등록 중 동기 Notify가 들어와도 이전/잔여 결과를 현재 요청 성공으로 보지 않는다.
         writeStarted = false;

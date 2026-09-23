@@ -49,3 +49,6 @@ pnpm-debug.log*
 
 # Supabase
 supabase/.temp/
+
+# Local verification toolchains (not application artifacts)
+.agent-loop/tools/
