@@ -38,7 +38,10 @@ export const CreateTripRequestSchema = z.object({
   totalTime: z.number().int().nonnegative().optional(),
   totalWalk: z.number().int().nonnegative().optional(),
   payment: z.number().int().nonnegative().optional(),
-  busTransitCount: z.number().int().nonnegative().optional(),
+  // Only one direct bus leg can become a tracked trip.
+  routeMode: z.literal("DIRECT_BUS").optional(),
+  tripSupported: z.literal(true).optional(),
+  busTransitCount: z.number().int().min(0).max(1).optional(),
   busStationCount: z.number().int().nonnegative().optional(),
   totalDistance: z.number().int().nonnegative().optional(),
   intervalTime: z.number().int().nonnegative().optional(),

@@ -1,3 +1,4 @@
+import { TRIP_COMPLETION_MESSAGE } from './trip-tracking';
 import { apiClient } from "../api/client";
 import {
   dispatchRealtimeFunctionCall,
@@ -76,6 +77,10 @@ export class HaneumRealtimeSession {
   private transport: RealtimeTransport | null = null;
   private isResponseActive = false;
   private isOutputAudioActive = false;
+  private outputAudioResponseId: string | null = null;
+  private handledFunctionCalls = new Set<string>();
+  private discardedCompletionKeys = new Set<string>();
+  private discardedCompletionResponses = new Set<string>();
   private responseQueue = new RealtimeResponseQueue();
   private activeResponse: PendingResponse | null = null;
   private awaitingRetry: PendingResponse | null = null;
@@ -84,6 +89,78 @@ export class HaneumRealtimeSession {
   private eventIdCounter = 0;
   private hasSentReadyResponse = false;
   private queuedAssistDeviceEventKeys = new Set<string>();
+
+  private completion: { tripId: string; eventId: string; responseId?: string; generated: boolean; started: boolean; stopped: boolean; finish: (ok: boolean) => void; promise: Promise<boolean> } | null = null;
+
+  announceTripCompletion(tripId: string, timeoutMs = 20000): Promise<boolean> {
+    if (!this.transport) return Promise.resolve(false);
+    if (this.completion?.tripId === tripId) return this.completion.promise;
+    this.completion?.finish(false);
+    this.responseQueue.discardTripStatus(tripId);
+    const pending = { ...this.createPendingResponse(`다른 설명 없이 다음 문장만 정확히 한 번 읽는다: ${TRIP_COMPLETION_MESSAGE}`), completionTripId: tripId };
+    let resolve!: (ok: boolean) => void;
+    const promise = new Promise<boolean>(done => { resolve = done; });
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    const finish = (ok: boolean) => {
+      if (this.completion?.eventId !== pending.eventId) return;
+      clearTimeout(timer);
+      const responseId = this.completion.responseId;
+      this.completion = null;
+      this.responseQueue.discard(pending.eventId);
+      if (this.awaitingRetry?.eventId === pending.eventId) this.awaitingRetry = null;
+      if (!ok) {
+        this.discardedCompletionKeys.add(pending.eventId);
+        if (this.discardedCompletionKeys.size > 64) this.discardedCompletionKeys.delete(this.discardedCompletionKeys.values().next().value!);
+        if (responseId) this.discardedCompletionResponses.add(responseId);
+        if (this.activeResponse?.eventId === pending.eventId || (responseId && this.outputAudioResponseId === responseId)) {
+          try {
+            this.transport?.send({ type: 'response.cancel', ...(responseId ? { response_id: responseId } : {}) });
+            if (responseId && this.outputAudioResponseId === responseId) this.transport?.send({ type: 'output_audio_buffer.clear' });
+          } catch { /* disconnected transport: caller uses local speech */ }
+          if (this.activeResponse?.eventId === pending.eventId) {
+            this.activeResponse = null;
+            this.isResponseActive = false;
+          }
+        }
+      }
+      resolve(ok);
+    };
+    this.completion = { tripId, eventId: pending.eventId, generated: false, started: false, stopped: false, finish, promise };
+    this.responseQueue.enqueueDirect(pending);
+    try { this.flushPendingResponse(); } catch { finish(false); }
+    return promise;
+  }
+
+  cancelTripCompletion(tripId: string) {
+    if (this.completion?.tripId === tripId) this.completion.finish(false);
+    this.responseQueue.discardTripStatus(tripId);
+  }
+
+  private trackCompletion(value: Record<string, unknown>) {
+    const incoming = value.response as { id?: string; metadata?: { completionKey?: string } } | undefined;
+    if (value.type === 'response.created' && incoming?.id && incoming.metadata?.completionKey && this.discardedCompletionKeys.has(incoming.metadata.completionKey)) {
+      this.discardedCompletionResponses.add(incoming.id);
+      if (this.discardedCompletionResponses.size > 64) this.discardedCompletionResponses.delete(this.discardedCompletionResponses.values().next().value!);
+      try { this.transport?.send({ type: 'response.cancel', response_id: incoming.id }); } catch { /* disconnected */ }
+    }
+    if (value.type === 'output_audio_buffer.started' && typeof value.response_id === 'string' && this.discardedCompletionResponses.has(value.response_id)) {
+      try { this.transport?.send({ type: 'output_audio_buffer.clear' }); } catch { /* disconnected */ }
+    }
+    const completion = this.completion;
+    if (!completion) return;
+    const response = value.response as { id?: string; status?: string; metadata?: { completionKey?: string } } | undefined;
+    if (value.type === 'response.created' && response?.metadata?.completionKey === completion.eventId) completion.responseId = response.id;
+    const id = response?.id ?? value.response_id;
+    if (!completion.responseId || id !== completion.responseId) return;
+    if (value.type === 'output_audio_buffer.started') completion.started = true;
+    if (value.type === 'output_audio_buffer.stopped') completion.stopped = true;
+    if (value.type === 'output_audio_buffer.cleared') { completion.finish(false); return; }
+    if (value.type === 'response.done') {
+      if (response?.status !== 'completed') { completion.finish(false); return; }
+      completion.generated = true;
+    }
+    if (completion.generated && completion.started && completion.stopped) completion.finish(true);
+  }
 
   // context는 RealtimeProvider가 TripContext와 연결해서 만든 것을 그대로 받는다.
   // (2026-08-12, 예모님 확정 구조: TripContext를 운행 상태의 유일한 원본으로 사용)
@@ -185,6 +262,9 @@ export class HaneumRealtimeSession {
     }
 
     if (isRealtimeFunctionCallEvent(event)) {
+      if (this.handledFunctionCalls.has(event.call_id)) return;
+      this.handledFunctionCalls.add(event.call_id);
+      if (this.handledFunctionCalls.size > 256) this.handledFunctionCalls.delete(this.handledFunctionCalls.values().next().value!);
       const clientEvents =
         await dispatchRealtimeFunctionCall(
           event,
@@ -198,7 +278,9 @@ export class HaneumRealtimeSession {
         this.candidateAnnouncementTracker.resetForNewSearch();
       }
 
+      const completedStatus = clientEvents.some(item => item.type === 'conversation.item.create' && JSON.parse(item.item.output)?.tripStatus === 'TRIP_DONE');
       for (const clientEvent of clientEvents) {
+        if (completedStatus && clientEvent.type === 'response.create') continue;
         this.send(clientEvent, transport);
       }
 
@@ -221,6 +303,7 @@ export class HaneumRealtimeSession {
     const value =
       event as Record<string, unknown>;
     const eventType = value.type;
+    this.trackCompletion(value);
 
     // 후보 안내는 모델 응답과 실제 오디오 출력 모두 정상 완료된 경우에만 기록한다.
     this.markAnnouncedCandidates(
@@ -243,8 +326,12 @@ export class HaneumRealtimeSession {
       eventType ===
         "output_audio_buffer.started" ||
       eventType ===
-        "output_audio_buffer.stopped"
+        "output_audio_buffer.stopped" || eventType === "output_audio_buffer.cleared"
     ) {
+      const responseId = typeof value.response_id === 'string' ? value.response_id : null;
+      if (eventType !== 'output_audio_buffer.started' && responseId && this.outputAudioResponseId && responseId !== this.outputAudioResponseId) return;
+      if (eventType === 'output_audio_buffer.started') this.outputAudioResponseId = responseId;
+      else this.outputAudioResponseId = null;
       this.isOutputAudioActive =
         eventType ===
         "output_audio_buffer.started";
@@ -438,6 +525,7 @@ export class HaneumRealtimeSession {
       event_id: pending.eventId,
       response: {
         instructions: pending.instructions,
+        ...(pending.completionTripId ? { metadata: { completionKey: pending.eventId }, input: [], tool_choice: 'none', output_modalities: ['audio'] } : {}),
       },
     });
   }
@@ -524,7 +612,7 @@ export class HaneumRealtimeSession {
   notifyStatusChange(
     nextStatus: TripStatusSnapshot,
   ) {
-    if (!this.transport) {
+    if (!this.transport || nextStatus.tripStatus === "TRIP_DONE" || this.completion) {
       return;
     }
 

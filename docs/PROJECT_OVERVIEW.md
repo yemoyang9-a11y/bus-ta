@@ -28,13 +28,14 @@
 2. 모델의 Function 호출을 앱 내부 Dispatcher가 받아 REST API를 호출하고, 결과를 Realtime 세션에 반환한다.
 3. `search_routes` → `POST /api/routes/search`, `create_trip` → `POST /api/trips`, `confirm_boarding` → `POST /api/trips/{tripId}/boarding/confirm`, `get_trip_status` → `GET /api/trips/{tripId}/status`, `end_trip` → `PATCH /api/trips/{tripId}`로 연결한다.
 4. 사용자가 탑승을 명시하면 `USER_CONFIRMED`로 즉시 확정한다. 자동 경로는 프론트 BLE가 신호를 수집하고 최종 판정한 뒤 `AUTO_DETECTED`로 같은 API를 호출한다.
-5. 앱은 약 3초 간격으로 `PATCH /api/trips/{tripId}/status`를 호출한다. 탑승확정 전에는 GPS가 들어와도 `WAITING_BUS`이며 하차벨을 만들지 않고, 확정 후에만 백엔드가 진행 상태와 하차벨 생성 여부를 결정한다.
+5. 앱은 위치 구독의 새 표본으로 `PATCH /api/trips/{tripId}/status`를 호출한다. 현재 요청한 위치 간격은 2초이며, 실제 수신 간격은 기기·OS에 따라 달라지고 이전 요청이 진행 중이면 다음 표본은 건너뛴다. 탑승확정 전에는 GPS가 들어와도 `WAITING_BUS`이며 하차벨을 만들지 않고, 확정 후에만 백엔드가 진행 상태와 하차벨 생성 여부를 결정한다.
 6. 탑승확정 후 `remainingStations = 1`에서 새 하차벨 요청이 생성되면 앱은 `STOP_REQUEST`를 BLE 또는 mock 장치에 전달하고, 결과를 `POST /api/trips/{tripId}/bell/result`로 기록한다.
+7. 하차 화면에서도 위치 전송을 계속한다. `TRIP_DONE`은 목적지 정류장 도착을 뜻하며 실제 하차 감지는 아니다. 완료 음성의 출력 종료를 기다린 뒤 상태와 장치를 정리한다. 출력 실패에는 제한 시간과 로컬 음성 대체 경로를 둔다.
 
 ## 구현 상태 표기
 
-- 문서의 계약과 현재 구현 사실은 구분한다. 현재 사실은 `claude/nice-archimedes-iv7iu0` 코드, `packages/shared`, 현재 테스트 및 실제 Supabase 적용 상태로 확인한다.
-- `POST /api/realtime/session` 구현은 `claude/nice-archimedes-iv7iu0` 코드와 테스트에서 확인됐지만, 실제 OpenAI 연결과 배포 환경 동작 검증은 별도 확인 대상이다.
+- 문서의 계약과 현재 구현 사실은 구분한다. 이번 후속 작업은 `57e50ea` 기준의 `codex-rehearsal-backlog-20260922`에서 진행하며 원본 작업은 보존한다. 변경별 검증과 미확인 범위는 [리허설 결과](superpowers/plans/2026-09-22-rehearsal-results.md)를 기준으로 한다.
+- `POST /api/realtime/session`의 로컬 구현·시험과 실제 OpenAI 연결·배포 환경 동작 검증은 별도다. 로컬 migration 성공을 운영 Supabase 적용 증거로 사용하지 않는다.
 - 중간평가·mock 중심 문서는 역사적 범위 설명이며, 현재 계약 판단에는 이 문서와 아래의 최종 명세를 사용한다.
 
 ## 문서 체계

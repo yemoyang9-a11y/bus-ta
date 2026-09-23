@@ -105,16 +105,18 @@ Function은 사용자 의도를 처리하는 경로다. 자동 GPS·하차벨 �
 | `AVAILABLE` | 정상 조회되었고 선택 노선 차량이 있음 | 1~2개 |
 | `NO_VEHICLE` | 정상 조회되었지만 선택 노선 레코드가 없음 | `[]` |
 | `NO_PREDICTION` | 레코드는 있으나 예상 도착 시간이 비어 있음 | `[]` |
-| `UPSTREAM_ERROR` | GBIS 네트워크·HTTP·응답 오류, 또는 방향을 확인하지 못해 조회 결과를 신뢰할 수 없음 | `[]` |
+| `UPSTREAM_ERROR` | GBIS 네트워크·HTTP·응답 오류, 또는 방향을 확인하지 못해 조회 결과를 신뢰할 수 없음 | 캐시 보존 한도 안의 이전 배열 또는 `[]` |
 
 `NO_VEHICLE`은 GBIS가 정상 응답했고 그 정류장에 해당 노선 차량이 실제로 없을 때만
 쓴다. 회차 노선의 방향 판별에 필요한 노선 경유정류소 조회가 실패하거나 목적지 기준
-방향을 확정하지 못하면, 잘못된 방향 안내를 막기 위해 `arrivals`를 비우되
-`UPSTREAM_ERROR`로 보고한다. 두 경우를 합치면 "확인하지 못했다"가 "그 버스는 이제
+방향을 확정하지 못하면 어댑터는 빈 배열과 `UPSTREAM_ERROR`를 반환한다. 캐시 계층은
+보존 한도 안에서 이전 `arrivals`를 남겨 공개 응답에 전달할 수 있으므로, 배열 존재만으로
+최신값이라고 판단하지 않는다. 두 경우를 합치면 "확인하지 못했다"가 "그 버스는 이제
 오지 않는다"로 안내된다.
 
 `UPSTREAM_ERROR`에서도 운행 상태는 취소·종료되지 않는다. 사용자는 새 Function
 호출 결과만 근거로 안내받으며, 조회 전의 도착 예정 시간을 반복해서 안내하지 않는다.
+`arrivalStatus=UPSTREAM_ERROR`이면 `arrivals`에 이전 값이 남아 있어도 최신 도착시간으로 안내하지 않는다.
 
 `NO_PREDICTION`은 `NO_VEHICLE`과 합치지 않는다. GBIS 공식 문서에서 빈 `predictTime`이
 "차량 없음"을 뜻한다고 확인한 적이 없고 실제 캡처에도 두 순번이 모두 빈 사례가 없다.
@@ -134,6 +136,19 @@ Function은 사용자 의도를 처리하는 경로다. 자동 GPS·하차벨 �
 
 검색 결과는 기존 순위·중복 제거 규칙을 적용한 뒤 상위 5개까지 `routes[]`에 담는다. 응답 배열은 순위 순서를 유지하며, `guideMessage`는 상위 2개 후보에만 포함한다. 3위 이후 후보에는 이 필드를 생략한다.
 
+실제 제공자의 기본 검색 범위는 `DIRECT_BUS`다. `ROUTE_SEARCH_SCOPE=MULTIMODAL`을 명시하면 버스 환승과 버스·지하철 혼합 경로를 추가하며, 버스가 없는 지하철 단독 경로는 제외한다. `ROUTE_SEARCH_MODE=MOCK`는 별도 설정으로 기존 시연 fixture 제공자를 요청 시점에 선택한다. 미설정 또는 다른 MODE 값은 실제 Kakao/ODsay 제공자다.
+
+| 후보 필드 | 값과 의미 |
+| --- | --- |
+| `routeMode` | `DIRECT_BUS` 또는 `MULTIMODAL` |
+| `tripSupported` | 직행버스는 `true`, 환승 안내 전용은 `false` |
+| `segments` | 순서가 있는 `{ mode, startName, endName, lineNames, routeNumbers, stationCount?, sectionTime? }[]`. `mode`는 `WALK | BUS | SUBWAY`, 시간은 분 |
+
+세 필드는 구버전 직행 응답 수용을 위해 공유 스키마에서는 선택 사항이다. 현재 검색 제공자는 채워 반환한다. ODsay 숫자형 `pathType`·`trafficType`은 외부 응답·운행 요청·DB에 사용하지 않는다. 직행버스는 기존 노선 번호 기준 중복 제거를 유지하고, 다중교통은 전체 `segments`가 같은 후보를 중복 제거한다.
+
+다중교통 후보의 최상위 `localBusId`·`gbisStationId`·`boardingStation`·`destinationStation`·`stationList`는 호환용 **첫 번째 버스 구간**이다. `destinationStation`이 전체 여정의 마지막 정류장이라는 뜻이 아니다. 전체 이동 순서와 최종 도착 구간은 `segments`로 안내한다. 버스 구간의 정류장 목록을 이어 붙여 단일 운행 추적 경로로 만들지 않는다. `tripSupported=false` 후보는 검색·음성 안내만 가능하며 앱 화면과 Realtime `create_trip`에서 운행 시작을 차단한다.
+상위 2개에 포함된 다중교통 후보의 `guideMessage`는 서버가 모든 `segments`를 순서대로 조합하고 안내 전용 문구를 붙인다. 모델 응답이 일부 구간을 생략해도 반환 안내문에서는 해당 구간을 빠뜨리지 않는다. 앱의 모델 전용 전달값에는 각 버스 구간의 `routeNumbersSpoken`도 추가한다. 이는 공개 REST 필드나 DB 필드가 아니다.
+
 경로 검색 provider는 검색 1회당 한 번만 호출하고, 사용자가 다음 후보를 요청할 때는 앱이 이미 받은 `routes[]`를 재사용한다. 도착정보는 사용자가 후보를 선택한 뒤 `POST /api/trips`에서 최초 조회하고, 버스를 놓친 뒤 `get_trip_status`가 호출되면 `GET /api/trips/{tripId}/status`에서 선택 노선을 기준으로 새로 조회한다.
 
 ## Health 상태 조회
@@ -149,6 +164,8 @@ Function은 사용자 의도를 처리하는 경로다. 자동 GPS·하차벨 �
 성공 응답은 `success: true`, `serverStatus: "UP"`, `dbStatus: "UP" | "NOT_CONFIGURED"`, `message`, `timestamp`를 포함한다. 장애 응답은 `success: false`, `serverStatus: "UP"`, `dbStatus: "DOWN"`, `errorCode: "DB_ERROR"`, `message`, `timestamp`를 포함한다. 이 조합과 다른 모순된 상태 조합은 shared Schema에서 허용하지 않는다.
 
 ## 운행 생성 도착 정보
+
+`POST /api/trips`는 직행버스만 지원한다. 명시적 `tripSupported:false`, `routeMode:MULTIMODAL` 또는 `busTransitCount>1`은 도착정보 조회·DB 저장 전에 `400 INVALID_REQUEST`로 거부한다. 구버전 직행 요청은 새 필드를 생략할 수 있다. 서버의 현재 검증은 정류장 목록의 일관성 검사이며 저장된 검색 후보와 대조하지 않는다. 환승 메타데이터를 모두 제거하고 직행처럼 만든 요청의 검색 이력까지 검증하는 것은 아니다. 새 후보 인증·세션 API와 환승 추적 DB 필드는 이번 변경에 추가하지 않는다.
 
 `POST /api/trips` 성공 응답은 도착 예정 차량을 **`arrivals` 배열**로 반환한다. 도착 순서대로 최대 2대이며, GBIS가 1대만 주면 1개, 정보가 없거나 조회에 실패하면 빈 배열 `[]`이다. **조회 실패는 운행 생성을 막지 않는다** — `arrivals: []`로 `201`을 반환한다. GBIS 호출 timeout은 5초다.
 
@@ -291,9 +308,12 @@ Function은 사용자 의도를 처리하는 경로다. 자동 GPS·하차벨 �
 - 정류장 거리 비교는 Haversine 거리 기준으로 계산한다.
 - `remainingStations = 2`는 사전 안내만 하며 하차벨을 만들지 않는다.
 - `boardingConfirmedAt`이 존재하고 `remainingStations = 1`, `bellStatus = NOT_REQUESTED`일 때만 DB 원자 전이의 승자가 `bellRequestId`, `command: "STOP_REQUEST"`, `shouldTriggerBell: true`를 반환하고 `bellStatus`를 `PENDING`으로 바꾼다. 같은 스냅샷에서 계산된 동시 GPS 요청의 패자는 최신 `PENDING` 상태와 `shouldTriggerBell: false`를 반환한다.
-- `POST /bell/result`는 `PENDING`인 동일 `bellRequestId` 결과만 기록한다. 다른 상태는 `409 INVALID_BELL_STATE`다.
+- `POST /bell/result`의 최초 결과는 `PENDING`인 현재 `bellRequestId`에만 기록한다. 같은 요청을 재전송하면 입력 결과가 달라도 최초 저장 결과와 현재 `tripStatus`를 `200`으로 반환하며 결과·메시지·완료 시각을 덮어쓰지 않는다. 결과 미기록 상태가 `PENDING`이 아니거나 이전 요청이 현재 요청과 다르면 `409 INVALID_BELL_STATE`, 해당 운행의 요청이 없으면 `404 BELL_REQUEST_NOT_FOUND`다.
+- 결과 저장은 `record_bell_result` RPC 한 번으로 `trip_status`와 `bell_logs`를 잠그고 함께 갱신한다. 일부만 저장되는 실패는 전체 롤백된다. 과거 두 번의 PATCH 중 첫 저장만 성공했던 기록은 기존 결과를 보존하면서 같은 트랜잭션에서 `bellStatus`를 복구한다. 늦게 도착한 결과를 저장해도 `CANCELLED`·`TRIP_DONE` 운행을 이전 상태로 되돌리지 않는다. 입력 오류 `400 INVALID_REQUEST`와 저장 오류 `500 DB_ERROR`는 유지한다.
 - 종료 운행(`CANCELLED`, `TRIP_DONE`)은 새 `requestId`의 `PATCH /status`를 `409 INVALID_TRIP_STATUS`로 거부한다. 이미 처리한 동일 `requestId` 재전송은 종료 상태보다 먼저 멱등 처리해 `200`을 반환한다.
 
 ## 구현 및 변경 관리
+
+하차벨 원자 저장 코드를 배포하기 **전에** `20260922091013_atomic_bell_result.sql`을 적용해야 한다. RPC가 없는 DB에 새 서버를 연결하면 `500 DB_ERROR`이며 이전 두 번의 PATCH로 fallback하지 않는다. 기존 서버 인스턴스는 두 번의 PATCH를 사용하므로 전체 서버 교체까지 완료해야 새 원자성 보장이 모든 결과 요청에 적용된다. migration 작성·로컬 PostgreSQL 시험은 운영 DB 적용이나 배포 검증을 의미하지 않는다.
 
 API 경로·필드·enum 변경 시 `packages/shared`, 서버, 앱 Dispatcher, 테스트, 이 문서와 Notion 공통 명세를 같은 변경 단위로 동기화한다. 코드와 계약이 다르면 실제 코드 동작과 목표 계약을 분리해 PR에 남긴다.

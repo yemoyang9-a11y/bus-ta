@@ -227,13 +227,11 @@ test('운행이 시작되면 보조기기 준비를 한 번 실행한다', async
       beaconLookupCount += 1;
       return { targetBeaconId: 'BUS_1551_001', isMock: false };
     },
-    connectAll: async () => {
+    connectCane: async () => {
       connectCount += 1;
-      return new Map([
-        ['White_cane', {}],
-        ['BUS_1551_001', {}],
-      ]);
+      return {};
     },
+    startBeaconScan: async () => {},
     setTargetBeacon: async () => {},
     notifyFailure: () => {},
     dispatch: (action) => dispatches.push(action),
@@ -250,25 +248,22 @@ test('운행이 시작되면 보조기기 준비를 한 번 실행한다', async
     // 지팡이가 대상 비콘을 알게 된 순간을 알린다. 서버의 스캔 시작 신호가 준비보다
     // 먼저 도착했을 때 화면이 이 값의 변화를 보고 그때 스캔을 시작한다.
     { type: 'SET_CANE_READY', ready: true },
+    { type: 'SET_BEACON_SCAN_ACTIVE', active: true },
+    { type: 'SET_TARGET_BEACON_ID', targetBeaconId: 'BUS_1551_001' },
     { type: 'SET_BLE_MOCK_STATUS', isMock: false },
+    { type: 'SET_BEACON_PREPARATION_COMPLETED', completed: true },
   ]);
 });
 
-test('보조기기 준비는 대상 비콘만 알려주고 스캔은 켜지 않는다', async () => {
-  // 스캔을 켜는 시점은 서버가 정한다(도착 5분 전, shouldScanBeacon).
-  // 준비 단계에서 켜 버리면 지팡이와 비콘 보드가 가까이 있을 때 버스가 오기도
-  // 전에 진동이 시작되어, "버스가 가까워지면 울린다"를 확인할 수 없다.
+test('보조기기 준비는 타깃 설정 뒤 즉시 스캔을 켠다', async () => {
   const targetsSet = [];
   const dispatches = [];
 
   const preparation = createAssistDevicePreparation({
     getActiveTripId: () => 'trip-scan',
     listBeacons: async () => ({ targetBeaconId: 'BUS_1551_001', isMock: false }),
-    connectAll: async () =>
-      new Map([
-        ['White_cane', {}],
-        ['BUS_1551_001', {}],
-      ]),
+    connectCane: async () => ({}),
+    startBeaconScan: async () => {},
     setTargetBeacon: async (targetBeaconId) => {
       targetsSet.push(targetBeaconId);
     },
@@ -285,8 +280,8 @@ test('보조기기 준비는 대상 비콘만 알려주고 스캔은 켜지 않�
   );
   assert.equal(
     dispatches.some((action) => action.type === 'SET_BEACON_SCAN_ACTIVE'),
-    false,
-    '준비 단계는 스캔을 켜지 않으므로 켜졌다고 표시해서도 안 된다',
+    true,
+    '준비 단계에서 즉시 START 성공을 상태에 표시한다',
   );
 });
 
@@ -300,18 +295,16 @@ test('이전 운행의 늦은 보조기기 결과는 새 운행에 반영하지 
   const preparation = createAssistDevicePreparation({
     getActiveTripId: () => activeTripId,
     listBeacons: async () => ({ targetBeaconId: 'BUS_1551_001', isMock: false }),
-    connectAll: () => {
+    connectCane: () => {
       connectCount += 1;
       if (connectCount === 1) {
         return new Promise((resolve) => {
           releaseFirstConnection = resolve;
         });
       }
-      return Promise.resolve(new Map([
-        ['White_cane', {}],
-        ['BUS_1551_001', {}],
-      ]));
+      return Promise.resolve({});
     },
+    startBeaconScan: async () => {},
     setTargetBeacon: async () => {},
     notifyFailure: (event) => notifications.push(event),
     dispatch: (action) => dispatches.push(action),
@@ -331,7 +324,10 @@ test('이전 운행의 늦은 보조기기 결과는 새 운행에 반영하지 
     // 지팡이가 대상 비콘을 알게 된 순간을 알린다. 서버의 스캔 시작 신호가 준비보다
     // 먼저 도착했을 때 화면이 이 값의 변화를 보고 그때 스캔을 시작한다.
     { type: 'SET_CANE_READY', ready: true },
+    { type: 'SET_BEACON_SCAN_ACTIVE', active: true },
+    { type: 'SET_TARGET_BEACON_ID', targetBeaconId: 'BUS_1551_001' },
     { type: 'SET_BLE_MOCK_STATUS', isMock: false },
+    { type: 'SET_BEACON_PREPARATION_COMPLETED', completed: true },
   ]);
 });
 

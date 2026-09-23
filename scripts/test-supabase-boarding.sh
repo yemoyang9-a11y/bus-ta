@@ -8,7 +8,7 @@ set -euo pipefail
 export PGHOST PGPORT PGUSER PGPASSWORD
 
 psql -d postgres -v ON_ERROR_STOP=1 -q -c \
-  'do $$ begin create role anon nologin; exception when duplicate_object then null; end $$; do $$ begin create role authenticated nologin; exception when duplicate_object then null; end $$; do $$ begin create role service_role nologin; exception when duplicate_object then null; end $$;'
+  'do $$ begin create role anon nologin; exception when duplicate_object then null; end $$; do $$ begin create role authenticated nologin; exception when duplicate_object then null; end $$; do $$ begin create role service_role nologin bypassrls; exception when duplicate_object then null; end $$;'
 
 for migration in supabase/migrations/*.sql; do
   psql -d postgres -v ON_ERROR_STOP=1 -q -f "$migration"

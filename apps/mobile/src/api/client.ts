@@ -1,5 +1,6 @@
 import {
   API_PATHS,
+  REALTIME_SHARED_SECRET_HEADER,
   type BeaconsListResponse,
   type BoardingConfirmationRequest,
   type BoardingConfirmationResponse,
@@ -156,7 +157,7 @@ export const apiClient = {
   },
   realtime: {
     createSession: (sharedSecret?: string, signal?: AbortSignal) => {
-      const headers = sharedSecret ? { "x-realtime-shared-secret": sharedSecret } : undefined;
+      const headers = sharedSecret ? { [REALTIME_SHARED_SECRET_HEADER]: sharedSecret } : undefined;
       const init: RequestInit & { signal?: AbortSignal } = { method: "POST" };
       if (headers) {
         init.headers = headers;

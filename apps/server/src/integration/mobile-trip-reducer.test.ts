@@ -316,3 +316,14 @@ test("운행이 끝나면 하차벨 연결 상태도 초기화된다", () => {
   assert.equal(afterDone.targetBeaconId, null);
   assert.equal(afterDone.bellConnected, null);
 });
+test('TRIP_DONE 뒤 늦은 하차벨/GPS 상태는 운행을 되돌리지 않는다', () => {
+  const done = { ...initialState, tripId: 'A', tripStatus: 'TRIP_DONE' };
+  assert.equal(tripReducer(done, { type: 'UPDATE_TRIP_STATUS', status: { tripId: 'A', tripStatus: 'NEAR_DESTINATION' } }), done);
+  assert.equal(tripReducer(done, { type: 'CONFIRM_BOARDING', tripId: 'A', tripStatus: 'ON_BUS' }), done);
+});
+
+test('새 운행은 이전 하차벨 요청과 완료 상태를 이어받지 않는다',()=>{
+ const before={...initialState,tripId:'A',tripStatus:'TRIP_DONE',bellStatus:'SUCCESS',bellRequestId:'old',shouldTriggerBell:true,remainingStations:0};
+ const after=tripReducer(before,{type:'START_TRIP',tripId:'B'});
+ assert.equal(after.bellStatus,'NOT_REQUESTED');assert.equal(after.bellRequestId,null);assert.equal(after.shouldTriggerBell,false);assert.equal(after.remainingStations,null);
+});

@@ -1,5 +1,5 @@
 import OpenAI from "openai";
-import type { ArrivalInfo, Route } from "@bus-ta/shared";
+import { toSpokenRouteNo, type ArrivalInfo, type Route } from "@bus-ta/shared";
 
 type GuideMessageResult = {
   guideMessage: string;
@@ -98,7 +98,9 @@ async function createGuideMessage(prompt: string, fallbackMessage: string): Prom
 function uniqueRoutesByRouteNo(candidates: Route[]): Route[] {
   const seen = new Set<string>();
   return candidates.filter((candidate) => {
-    const routeKey = candidate.routeNo || String(candidate.candidateId);
+    const routeKey = candidate.routeMode === "MULTIMODAL"
+      ? `MULTIMODAL:${JSON.stringify(candidate.segments ?? [])}`
+      : candidate.routeNo || String(candidate.candidateId);
     if (seen.has(routeKey)) return false;
     seen.add(routeKey);
     return true;
@@ -175,12 +177,28 @@ function buildRouteGuideFallback(selectedRoutes: Route[]): RouteGuideResult {
   };
 }
 
+const MULTIMODAL_NOTICE = "이 경로는 안내 전용이며 운행 시작과 하차벨을 지원하지 않습니다.";
+
+function formatRouteSegments(route: Route): string {
+  return (route.segments ?? []).map((segment) => {
+    if (segment.mode === "WALK") return `도보로 ${segment.endName}까지 이동`;
+    const vehicle = segment.mode === "SUBWAY"
+      ? `${segment.lineNames.join(" 또는 ") || "지하철"} 지하철`
+      : `${segment.routeNumbers.map(toSpokenRouteNo).join(" 또는 ") || "선택한"}번 버스`;
+    return `${segment.startName}에서 ${vehicle}를 타고 ${segment.endName}까지 이동`;
+  }).join("한 뒤 ");
+}
+
 function buildBasicRouteGuide(candidate: Route): string {
   const routeNo = candidate.routeNo || "선택한";
   const totalTime =
     candidate.totalTime != null ? `${candidate.totalTime}분` : "확인할 수 없습니다";
   const intervalTime =
     candidate.intervalTime != null ? `${candidate.intervalTime}분` : "확인할 수 없습니다";
+
+  if (candidate.routeMode === "MULTIMODAL") {
+    return `${formatRouteSegments(candidate)}하는 경로이며 총 소요시간은 ${totalTime}입니다. ${MULTIMODAL_NOTICE}`;
+  }
 
   return `${routeNo}번은 예상 소요시간이 ${totalTime}이고 배차 간격은 ${intervalTime}입니다.`;
 }
@@ -214,7 +232,11 @@ function mergeGuideMessages(selectedRoutes: Route[], raw: string): RouteGuideRes
   return {
     selectedCandidates: selectedRoutes.map((route) => ({
       candidateId: route.candidateId,
-      guideMessage: messageByCandidateId.get(route.candidateId) ?? buildBasicRouteGuide(route),
+      // A model can omit a transfer even when prompted. Keep every mixed leg authoritative
+      // and avoid repeating a partial model sentence alongside the deterministic itinerary.
+      guideMessage: route.routeMode === "MULTIMODAL"
+        ? buildBasicRouteGuide(route)
+        : messageByCandidateId.get(route.candidateId) ?? buildBasicRouteGuide(route),
     })),
   };
 }
@@ -239,19 +261,21 @@ export async function generateRouteGuide({
     .map((candidate) =>
       `
 candidateId: ${candidate.candidateId}
+routeMode: ${candidate.routeMode ?? "DIRECT_BUS"}
+tripSupported: ${candidate.tripSupported ?? true}
 버스 번호: ${candidate.routeNo}
-탑승 정류장: ${candidate.boardingStation.stationName}
-실제 하차 정류장: ${candidate.destinationStation.stationName}
+${candidate.routeMode === "MULTIMODAL"
+  ? `전체 이동 구간: ${formatRouteSegments(candidate)}\n${MULTIMODAL_NOTICE}`
+  : `탑승 정류장: ${candidate.boardingStation.stationName}\n실제 하차 정류장: ${candidate.destinationStation.stationName}\n환승: 없음`}
 총 소요시간: ${candidate.totalTime ?? "정보 없음"}분
 도보 거리: ${candidate.totalWalk ?? "정보 없음"}m
-환승: 없음
 배차 간격: ${candidate.intervalTime ?? "정보 없음"}분
       `.trim(),
     )
     .join("\n---\n");
 
   const prompt = `
-아래 버스 노선 각각에 대해 시각장애인을 위한 안내 문장을 만들어줘.
+아래 대중교통 경로 각각에 대해 시각장애인을 위한 안내 문장을 만들어줘.
 후보 선택은 이미 끝났으니 노선을 고르거나 제외하거나 순서를 바꾸지 마.
 목적지: ${destination || "정보 없음"}
 후보 목록:
@@ -259,7 +283,8 @@ ${candidateInfos}
 조건:
 - 후보 목록에 있는 candidateId 전부에 대해 각각 안내 문장을 하나씩 만들어줘.
 - candidateId는 후보 목록에 있는 값을 그대로 사용해.
-- 각 guideMessage에는 해당 버스 번호, 총 소요시간, 배차 간격을 반드시 포함해.
+- DIRECT_BUS의 guideMessage에는 해당 버스 번호, 총 소요시간, 배차 간격을 반드시 포함해.
+- MULTIMODAL은 전체 이동 구간의 도보, 지하철, 버스 순서와 총 소요시간을 안내해. 안내 전용이므로 선택 완료나 운행 시작을 말하지 마.
 - 시간 정보가 없으면 숫자를 추측하지 말고 해당 정보를 확인할 수 없다고 안내해.
 - recommendationReason은 반환하지 마.
 - 질문 문장 없이 안내 문장만 만들어줘.

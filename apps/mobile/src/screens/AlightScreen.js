@@ -1,11 +1,12 @@
-import React, { useRef, useState } from 'react';
+import React, { useRef, useState, useEffect } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator } from 'react-native';
 import * as Speech from 'expo-speech';
 import { useFocusEffect } from '@react-navigation/native';
 import { apiClient, ApiError } from '../api/client';
 import { useTrip } from '../state/TripContext';
 import { useRealtime } from '../realtime/RealtimeProvider';
-import { connectBell, getBellDeviceName, isBellConnected, sendStopRequest, subscribeBellResult, disconnect } from '../ble/bleManager';
+import { connectBell, getBellDeviceName, isBellConnected, sendStopRequest, subscribeBellResult } from '../ble/bleManager';
+import { TRIP_COMPLETION_MESSAGE } from '../realtime/trip-tracking';
 import { createBellStopSession } from '../ble/bell-stop-session';
 
 // 예모님 코멘트 5번(2026-08-13): 성공·실패·타임아웃을 화면·음성에서 구분해 안내한다.
@@ -25,7 +26,10 @@ export default function AlightScreen({ route, navigation }) {
   const { tripId, bellRequestId, command, guideMessage } = route.params;
   const resultSentRef = useRef(false); // 중복 전송 방지
   const { state, dispatch } = useTrip();
-  const { session, isConnected } = useRealtime();
+  const { session, isConnected, trackingError } = useRealtime();
+  const [homeError, setHomeError] = useState(null);
+  const endingRef = useRef(false);
+  const resultRetryTimerRef = useRef(null);
   const [bellOutcome, setBellOutcome] = useState('waiting'); // 'waiting' | 'success' | 'fail'
 
   const isMountedRef = useRef(false);
@@ -34,10 +38,20 @@ export default function AlightScreen({ route, navigation }) {
   const latestRef = useRef(null);
   latestRef.current = { state, session, isConnected };
 
+  useEffect(() => {
+    if (!state.tripId) navigation.navigate('Main');
+    if (trackingError) navigation.navigate('Error');
+  }, [state.tripId, trackingError]);
+
+  useEffect(() => {
+    if (state.tripStatus === 'TRIP_DONE') stopSessionRef.current?.flow.stopSending();
+  }, [state.tripStatus]);
+
   useFocusEffect(
     React.useCallback(() => {
+      if (latestRef.current.state.tripStatus === 'TRIP_DONE' || latestRef.current.state.tripStatus === 'CANCELLED') return;
       const generation = ++generationRef.current;
-      const isCurrent = () => generationRef.current === generation && isMountedRef.current;
+      const isCurrent = () => generationRef.current === generation && isMountedRef.current && latestRef.current.state.tripId === tripId && latestRef.current.state.tripStatus !== 'CANCELLED';
       isMountedRef.current = true;
       const key = JSON.stringify([tripId, bellRequestId]);
       if (stopSessionRef.current?.key !== key) {
@@ -47,6 +61,7 @@ export default function AlightScreen({ route, navigation }) {
           key,
           isMock: bleIsMock ?? true,
           flow: createBellStopSession({
+            canSend: () => latestRef.current.state.tripId === tripId && !['TRIP_DONE', 'CANCELLED'].includes(latestRef.current.state.tripStatus),
             isConnected: () => targetBeaconId ? isBellConnected() : Promise.resolve(false),
             connect: () => targetBeaconId ? connectBell(targetBeaconId, tripId) : Promise.resolve(null),
             subscribeResult: subscribeBellResult,
@@ -58,19 +73,19 @@ export default function AlightScreen({ route, navigation }) {
       }
       const current = stopSessionRef.current;
       // 음성 완료를 기다리지 않고 전송 예산을 즉시 시작한다.
-      if (!latestRef.current.isConnected) {
+      if (!latestRef.current.isConnected && latestRef.current.state.tripStatus !== 'TRIP_DONE') {
         Speech.speak('하차벨을 요청했습니다. 안전하게 하차하세요.', { language: 'ko' });
       }
-      current.flow.start().then(({ outcome, sendFailed }) => {
-        if (!isCurrent()) return;
-        setBellOutcome(outcome);
+      current.flow.start().then(({ outcome, sendFailed, cancelled }) => {
+        if (!isCurrent() || cancelled) return;
         void sendBellResult(outcome === 'success' ? 'SUCCESS' : 'FAIL', sendFailed ? true : current.isMock, isCurrent);
       });
       return () => {
         ++generationRef.current;
         isMountedRef.current = false;
         current.flow.cancel();
-        Speech.stop();
+        if (latestRef.current.state.tripStatus !== 'TRIP_DONE') Speech.stop();
+        if (resultRetryTimerRef.current) { clearTimeout(resultRetryTimerRef.current.timer); resultRetryTimerRef.current.resolve(); resultRetryTimerRef.current = null; }
       };
     }, [tripId, bellRequestId])
   );
@@ -82,6 +97,7 @@ export default function AlightScreen({ route, navigation }) {
   const sendBellResult = async (result, isMock, isCurrent) => {
     if (resultSentRef.current) return; // 중복 전송 방지
     resultSentRef.current = true;
+    const timestamp = new Date().toISOString();
 
     const resultMessage =
       result === 'SUCCESS'
@@ -90,25 +106,42 @@ export default function AlightScreen({ route, navigation }) {
 
     try {
       // 1. bell/result 저장
-      await apiClient.trips.bell.result(tripId, {
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        if (!isCurrent()) return;
+        try {
+          await apiClient.trips.bell.result(tripId, {
         bellRequestId,
         command,
         result,
         resultMessage,
         isMock,
-        timestamp: new Date().toISOString(),
-      });
+        timestamp,
+          });
+          break;
+        } catch (error) {
+          if (!isCurrent()) return;
+          if (attempt === 3 || (error instanceof ApiError && ['BELL_REQUEST_NOT_FOUND', 'INVALID_BELL_STATE'].includes(error.errorCode))) throw error;
+          await new Promise(resolve => { resultRetryTimerRef.current = { resolve, timer: setTimeout(() => { resultRetryTimerRef.current = null; resolve(); }, attempt * 1000) }; });
+        }
+      }
 
-      if (!isCurrent()) return;
+      if (!isCurrent() || latestRef.current.state.tripStatus === 'TRIP_DONE') return;
 
       // 2. 저장 성공 확인 후에만 최신 상태 조회
       const latestStatus = await apiClient.trips.getStatus(tripId);
 
-      if (!isCurrent()) return;
+      if (!isCurrent() || latestRef.current.state.tripStatus === 'TRIP_DONE') return;
 
       // 3. TripContext에 최신 상태 반영
       dispatch({ type: 'UPDATE_TRIP_STATUS', status: latestStatus });
 
+      if (['TRIP_DONE', 'CANCELLED'].includes(latestStatus.tripStatus)) return;
+      // 재시도/충돌에서는 서버가 처음 저장한 결과가 물리 결과와 다를 수 있다.
+      // 최신 조회로 확인한 최종 결과만 화면과 음성에 함께 사용한다.
+      const confirmedOutcome = latestStatus.bellStatus === 'SUCCESS' ? 'success'
+        : latestStatus.bellStatus === 'FAIL' ? 'fail' : null;
+      if (!confirmedOutcome) return;
+      setBellOutcome(confirmedOutcome);
       if (latestRef.current.isConnected) {
         // 4. Realtime 연결 중이면 세션에 알림 (성공/실패 여부와 무관하게, 확정된 결과만 전달)
         latestRef.current.session?.notifyStatusChange({
@@ -121,7 +154,7 @@ export default function AlightScreen({ route, navigation }) {
       } else {
         // 5. Realtime 미연결일 때만 로컬 TTS로 확정된 결과 안내
         if (isMountedRef.current) {
-          Speech.speak(BELL_OUTCOME_TTS[result === 'SUCCESS' ? 'success' : 'fail'], { language: 'ko' });
+          Speech.speak(BELL_OUTCOME_TTS[confirmedOutcome], { language: 'ko' });
         }
       }
     } catch (error) {
@@ -137,20 +170,28 @@ export default function AlightScreen({ route, navigation }) {
       }
       // bell/result 저장 실패 — 성공으로 간주하지 않고 재시도 가능하도록 플래그만 되돌린다.
       // 이 경로에서는 notifyStatusChange, 성공 TTS 둘 다 호출하지 않는다.
-      console.log('bell/result 전송 실패:', error);
+      console.log('bell/result 저장 실패');
+      if (isCurrent()) setHomeError('하차벨 결과 저장을 확인하지 못했습니다.');
       if (isCurrent()) resultSentRef.current = false;
     }
   };
 
   // 처음으로 돌아가기 — 다음 운행을 위해 공유 상태 초기화, BLE 연결 해제
-  const handleGoHome = () => {
-    ++generationRef.current;
-    isMountedRef.current = false;
-    stopSessionRef.current?.flow.cancel();
-    disconnect('White_cane').catch(() => {});
-    disconnect(getBellDeviceName()).catch(() => {});
-    dispatch({ type: 'RESET_TRIP' });
-    navigation.navigate('Main');
+  const handleGoHome = async () => {
+    if (endingRef.current || latestRef.current.state.tripStatus === 'TRIP_DONE') return;
+    endingRef.current = true;
+    setHomeError(null);
+    try {
+      const result = await apiClient.trips.end(tripId, { action: 'CANCEL' });
+      if (!result.success || latestRef.current.state.tripId !== tripId || latestRef.current.state.tripStatus === 'TRIP_DONE') return;
+      ++generationRef.current;
+      isMountedRef.current = false;
+      stopSessionRef.current?.flow.cancel();
+      dispatch({ type: 'RESET_TRIP' });
+      navigation.navigate('Main');
+    } catch {
+      if (latestRef.current.state.tripId === tripId) setHomeError('운행 종료를 확인하지 못했습니다. 다시 시도해 주세요.');
+    } finally { endingRef.current = false; }
   };
 
   return (
@@ -161,7 +202,7 @@ export default function AlightScreen({ route, navigation }) {
         <View style={styles.messageBox}>
           <Text style={styles.messageIcon}>⚠️</Text>
           <Text style={styles.message}>
-            하차벨을 요청했습니다. 안전하게 하차하세요.
+            {state.tripStatus === 'TRIP_DONE' ? TRIP_COMPLETION_MESSAGE : '하차벨을 요청했습니다. 안전하게 하차하세요.'}
           </Text>
         </View>
 
@@ -181,9 +222,11 @@ export default function AlightScreen({ route, navigation }) {
 
       {/* 처음으로 돌아가기 — 위 박스들과 간격을 두고 화면 아래쪽에 고정 */}
       <View style={styles.bottomSection}>
+        {homeError && <Text accessibilityRole="alert" style={styles.infoText}>{homeError}</Text>}
         <TouchableOpacity
           style={styles.button}
           onPress={handleGoHome}
+          disabled={state.tripStatus === 'TRIP_DONE'}
         >
           <Text style={styles.buttonIcon}>🏠</Text>
           <Text style={styles.buttonText}>처음으로 돌아가기</Text>

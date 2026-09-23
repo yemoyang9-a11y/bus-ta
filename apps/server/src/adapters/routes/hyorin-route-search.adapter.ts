@@ -1,5 +1,5 @@
 import axios, { type AxiosRequestConfig } from "axios";
-import type { ArrivalInfo, Occupancy, Route, RoutesSearchRequest } from "@bus-ta/shared";
+import type { ArrivalInfo, Occupancy, Route, RouteSegment, RoutesSearchRequest } from "@bus-ta/shared";
 import {
   ARRIVAL_STATUS,
   type ArrivalStatus,
@@ -47,7 +47,7 @@ async function getDestinationCoords(destinationText: string) {
     params: { query: destinationText },
   });
   const place = res.data.documents[0];
-  if (!place) throw new Error(`목적지를 찾을 수 없습니다: ${destinationText}`);
+  if (!place) throw new Error("목적지를 찾을 수 없습니다.");
   return {
     latitude: parseFloat(place.y),
     longitude: parseFloat(place.x),
@@ -116,6 +116,82 @@ function distanceKm(lat1: number, lng1: number, lat2: number, lng2: number) {
   return Math.sqrt(dLat * dLat + dLng * dLng);
 }
 
+type RouteSearchScope = "DIRECT_BUS" | "MULTIMODAL";
+
+function getRouteSearchScope(): RouteSearchScope {
+  return process.env.ROUTE_SEARCH_SCOPE === "MULTIMODAL" ? "MULTIMODAL" : "DIRECT_BUS";
+}
+
+// ODsay 원본 subPath를 공개 계약의 숫자 없는 구간 정보로 변환한다.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function normalizeSubPaths(subPaths: any[]): RouteSegment[] {
+  return subPaths.map((subPath, index) => {
+    const nextNamedStart = subPaths
+      .slice(index + 1)
+      .find((candidate) => typeof candidate.startName === "string")?.startName;
+    const previous = index > 0 ? subPaths[index - 1] : undefined;
+    const startName = String(subPath.startName ?? previous?.endName ?? "출발지");
+    const endName = String(subPath.endName ?? nextNamedStart ?? "목적지");
+    const lanes = Array.isArray(subPath.lane) ? subPath.lane : [];
+    const mode = subPath.trafficType === 1 ? "SUBWAY" : subPath.trafficType === 2 ? "BUS" : "WALK";
+
+    return {
+      mode,
+      startName,
+      endName,
+      lineNames: lanes
+        .map((lane: { name?: unknown }) => (typeof lane.name === "string" ? lane.name : ""))
+        .filter(Boolean),
+      routeNumbers:
+        mode === "BUS"
+          ? lanes
+              .map((lane: { busNo?: unknown }) => (typeof lane.busNo === "string" ? lane.busNo : ""))
+              .filter(Boolean)
+          : [],
+      stationCount: typeof subPath.stationCount === "number" ? subPath.stationCount : undefined,
+      sectionTime: typeof subPath.sectionTime === "number" ? subPath.sectionTime : undefined,
+    };
+  });
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function getBusSubPaths(path: any): any[] {
+  return Array.isArray(path.subPath) ? path.subPath.filter((subPath: any) => subPath.trafficType === 2) : [];
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function validBusSubPath(subPath: any): boolean {
+  const stations = subPath.passStopList?.stations;
+  return Boolean(subPath.startLocalStationID) && Array.isArray(stations) && stations.length >= 2 &&
+    stations.every((station: any) => typeof station.stationName === "string" && station.stationName.length > 0 &&
+      Number.isFinite(parseFloat(station.x)) && Math.abs(parseFloat(station.x)) <= 180 &&
+      Number.isFinite(parseFloat(station.y)) && Math.abs(parseFloat(station.y)) <= 90) &&
+    Array.isArray(subPath.lane) && subPath.lane.some((lane: any) => lane.busNo && lane.busLocalBlID);
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function toStationList(stations: any[]) {
+  return stations.map((station, index) => ({
+    stationName: String(station.stationName),
+    latitude: parseFloat(station.y),
+    longitude: parseFloat(station.x),
+    sequence: index,
+  }));
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function getBusRouteLabel(busSubPaths: any[]): string {
+  return busSubPaths
+    .map((subPath) => {
+      const routeNumbers = (Array.isArray(subPath.lane) ? subPath.lane : [])
+        .map((lane: { busNo?: unknown }) => (typeof lane.busNo === "string" ? lane.busNo : ""))
+        .filter(Boolean);
+      return [...new Set(routeNumbers)].join(" 또는 ");
+    })
+    .filter(Boolean)
+    .join(" → ");
+}
+
 // ─────────────────────────────────────────────
 // 노선 검색 adapter (효린 담당)
 // mockSearchRoutes 와 동일 시그니처로 교체
@@ -128,49 +204,43 @@ export async function searchRoutes(request: RoutesSearchRequest): Promise<Route[
 
   if (!paths || paths.length === 0) return [];
 
+  const scope = getRouteSearchScope();
   const candidates: Route[] = [];
   let candidateId = 1;
 
   for (const path of paths) {
     // 버스 구간만 추출 (trafficType 2 = 버스)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const busSubPaths = (path.subPath || []).filter((sp: any) => sp.trafficType === 2);
+    const subPaths = (Array.isArray(path.subPath) ? path.subPath : []) as any[];
+    if (subPaths.some((part) => ![1, 2, 3].includes(part.trafficType))) continue;
+    const busSubPaths = getBusSubPaths(path);
+    const hasSubway = subPaths.some((subPath) => subPath.trafficType === 1);
+    const isDirectBusPath = path.pathType === 2 && busSubPaths.length === 1 && !hasSubway;
 
-    // MVP: 환승 없는 직행 버스 경로만 처리
-    if (busSubPaths.length !== 1) continue;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const subPath = busSubPaths[0] as any;
+    if (scope === "DIRECT_BUS" && !isDirectBusPath) continue;
+    if (scope === "MULTIMODAL" && busSubPaths.length === 0) continue;
 
-    const stations = subPath.passStopList?.stations || [];
-    if (stations.length < 2) continue;
+    if (busSubPaths.length === 0 || !busSubPaths.every(validBusSubPath)) continue;
+    // Compatibility fields describe only the first bus leg, never a synthetic joined trip.
+    // The entire journey lives in segments and MULTIMODAL is guidance-only.
+    const firstBusSubPath = busSubPaths[0];
+    const stationList = toStationList(firstBusSubPath.passStopList.stations);
+    const firstBusLane = firstBusSubPath.lane.find((lane: any) => lane.busNo && lane.busLocalBlID);
+    const gbisStationId = String(firstBusSubPath.startLocalStationID ?? "");
+    if (!gbisStationId) continue;
 
-    // subPath 하나를 여러 버스 노선이 공유할 수 있다 (같은 도로 구간을 지나는 버스들).
-    // lane[0]만 쓰면 나머지 노선이 후보에서 통째로 빠지므로, lane 전체를 순회해
-    // 노선마다 별도 후보를 만든다. 정류장 정보는 subPath 공통이라 그대로 공유한다.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const lanes = (subPath.lane ?? []) as any[];
-    if (lanes.length === 0) continue;
-
-    // ODsay startLocalStationID = GBIS stationId (테스트로 동일 확인, 역조회 불필요)
-    const gbisStationId = String(subPath.startLocalStationID ?? "");
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const stationList = stations.map((s: any, i: number) => ({
-      stationName: s.stationName as string,
-      latitude: parseFloat(s.y),
-      longitude: parseFloat(s.x),
-      sequence: i,
-    }));
-
+    const firstStation = stationList[0];
+    const lastStation = stationList[stationList.length - 1];
+    if (!firstStation || !lastStation) continue;
     const boardingStation = {
-      stationName: subPath.startName as string,
-      latitude: parseFloat(stations[0].y),
-      longitude: parseFloat(stations[0].x),
+      stationName: firstStation.stationName,
+      latitude: firstStation.latitude,
+      longitude: firstStation.longitude,
     };
     const destinationStation = {
-      stationName: stations[stations.length - 1].stationName as string,
-      latitude: parseFloat(stations[stations.length - 1].y),
-      longitude: parseFloat(stations[stations.length - 1].x),
+      stationName: lastStation.stationName,
+      latitude: lastStation.latitude,
+      longitude: lastStation.longitude,
     };
 
     // 하차 정류장이 목적지에서 0.7km 초과 시 제외 (subPath 공통 조건이라 노선과 무관하게 한 번만 검사)
@@ -180,31 +250,69 @@ export async function searchRoutes(request: RoutesSearchRequest): Promise<Route[
       destCoords.latitude,
       destCoords.longitude,
     );
-    if (dist > 0.7) continue;
+    // For mixed journeys the first bus may finish far from the final destination.
+    if (isDirectBusPath && dist > 0.7) continue;
 
     const info = path.info ?? {};
+    const segments = normalizeSubPaths(subPaths);
+    const routeMode = isDirectBusPath ? "DIRECT_BUS" : "MULTIMODAL";
 
-    for (const lane of lanes) {
-      const routeNo = String(lane.busNo ?? "");
-      const localBusId = String(lane.busLocalBlID ?? "");
+    if (routeMode === "DIRECT_BUS") {
+      const subPath = firstBusSubPath;
+      for (const lane of subPath.lane) {
+        const routeNo = String(lane.busNo ?? "");
+        const localBusId = String(lane.busLocalBlID ?? "");
+        if (!routeNo || !localBusId) continue;
 
-      candidates.push({
-        candidateId: candidateId++,
-        routeNo,
-        localBusId,
-        gbisStationId,
-        boardingStation,
-        destinationStation,
-        stationList,
-        totalTime: info.totalTime ?? undefined,
-        totalWalk: info.totalWalk ?? undefined,
-        payment: info.payment ?? undefined,
-        busTransitCount: info.busTransitCount ?? undefined,
-        busStationCount: subPath.stationCount ?? undefined,
-        totalDistance: info.totalDistance ?? undefined,
-        intervalTime: subPath.intervalTime ?? undefined,
-      });
+        candidates.push({
+          candidateId: candidateId++,
+          routeNo,
+          localBusId,
+          gbisStationId,
+          boardingStation,
+          destinationStation,
+          stationList,
+          totalTime: info.totalTime ?? undefined,
+          totalWalk: info.totalWalk ?? undefined,
+          payment: info.payment ?? undefined,
+          busTransitCount: busSubPaths.length,
+          busStationCount: subPath.stationCount ?? undefined,
+          totalDistance: info.totalDistance ?? undefined,
+          intervalTime: subPath.intervalTime ?? undefined,
+          routeMode: "DIRECT_BUS",
+          tripSupported: true,
+          segments: segments.map((segment) => segment.mode === "BUS" ? { ...segment, routeNumbers: [routeNo] } : segment),
+        });
+      }
+      continue;
     }
+
+    const routeNo = getBusRouteLabel(busSubPaths);
+    const localBusId = String(firstBusLane.busLocalBlID ?? "");
+    if (!routeNo || !localBusId) continue;
+
+    candidates.push({
+      candidateId: candidateId++,
+      routeNo,
+      localBusId,
+      gbisStationId,
+      boardingStation,
+      destinationStation,
+      stationList,
+      totalTime: info.totalTime ?? undefined,
+      totalWalk: info.totalWalk ?? undefined,
+      payment: info.payment ?? undefined,
+      busTransitCount: busSubPaths.length,
+      busStationCount: busSubPaths.reduce(
+        (total, subPath) => total + (typeof subPath.stationCount === "number" ? subPath.stationCount : 0),
+        0,
+      ),
+      totalDistance: info.totalDistance ?? undefined,
+      intervalTime: firstBusSubPath.intervalTime ?? undefined,
+      routeMode: "MULTIMODAL",
+      tripSupported: false,
+      segments,
+    });
   }
 
   return candidates;

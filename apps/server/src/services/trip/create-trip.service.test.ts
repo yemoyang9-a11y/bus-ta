@@ -21,6 +21,20 @@ const twoArrivals: ArrivalInfo[] = [
   },
 ];
 
+for (const unsupported of [{ tripSupported: false }, { routeMode: "MULTIMODAL" }, { busTransitCount: 2 }]) {
+  test(`rejects explicitly unsupported route before arrival lookup or persistence: ${JSON.stringify(unsupported)}`, async () => {
+    let effects = 0;
+    const result = await createTrip({ ...DEMO_ROUTE, destination: "도착정류장", ...unsupported }, {
+      getArrivals: async () => { effects++; return []; },
+      createTripWithStatus: async () => { effects++; },
+    });
+    assert.equal(result.httpStatus, 400);
+    assert.equal(result.body.success, false);
+    if (!result.body.success) assert.equal(result.body.errorCode, "INVALID_REQUEST");
+    assert.equal(effects, 0);
+  });
+}
+
 test("creates a trip and initial status from a valid selected candidate", async () => {
   const saved: unknown[] = [];
 

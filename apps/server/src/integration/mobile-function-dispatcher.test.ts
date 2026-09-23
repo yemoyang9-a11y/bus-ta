@@ -173,6 +173,7 @@ test("explicit voice function supplies active trip and USER_CONFIRMED evidence t
     assert.deepEqual(actions, [
       {
         type: "CONFIRM_BOARDING",
+        tripId: "trip-test-001",
         tripStatus: TRIP_STATUS.ON_BUS,
         boardingMethod:
           BOARDING_METHOD.USER_CONFIRMED,
@@ -1187,4 +1188,28 @@ test("선택 전 도착 시간 질문을 거절로 끝내지 않고 선택으로
     /아직 조회하지 않은 도착 시간을 추측해서 말하지 않는다/,
     "선택을 유도하면서 없는 시간을 지어내면 더 나쁘다",
   );
+});
+
+test('무인자 후보 Function 공백은 빈 객체이며 마지막 후보 정보를 제공한다', async () => {
+  const events = await dispatchRealtimeFunctionCall({
+    type: 'response.function_call_arguments.done', name: 'get_next_route_candidates', call_id: 'blank-next', arguments: '  ',
+  }, createContext([], { ...baseState, routeCandidates: [makeRoute(1, '35')], routeCandidatesExpiresAt: Date.now() + 60000 }));
+  const result = JSON.parse((events[0] as any).item.output);
+  assert.equal(result.success, true);
+  assert.equal(result.lastBatch, true);
+  assert.equal(result.remainingCandidateCount, 0);
+  assert.equal(result.candidates[0].routeNoSpoken, '삼십오');
+});
+
+test('무인자 허용 목록 외 빈 입력, null/배열/깨진JSON은 API를 호출하지 않는다',async()=>{
+ for(const name of ['search_routes','create_trip','get_trip_status','end_trip'] as const){
+  const events=await dispatchRealtimeFunctionCall({type:'response.function_call_arguments.done',name,call_id:`empty-${name}`,arguments:' '},createContext([]));
+  assert.equal(JSON.parse((events[0] as any).item.output).success,false);
+ }
+ for(const raw of ['null','[]','{']) {
+  for(const name of ['confirm_boarding','get_next_route_candidates'] as const) {
+   const events=await dispatchRealtimeFunctionCall({type:'response.function_call_arguments.done',name,call_id:`invalid-${name}-${raw}`,arguments:raw},createContext([]));
+   assert.equal(JSON.parse((events[0] as any).item.output).success,false);
+  }
+ }
 });

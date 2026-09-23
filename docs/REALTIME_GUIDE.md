@@ -45,3 +45,14 @@ WebRTC 연결은 ephemeral key 흐름을 따른다. 앱은 SDP offer 원문을 `
 ## 완료 기준
 
 단기 키 기반 연결·만료 시 재연결, Function 호출·결과 처리, 접근성 음성 안내, 오류 처리, 실제 백엔드 결과만 사용하는 상태 안내가 검증돼야 한다. 아직 계약만 있고 구현되지 않은 세션 엔드포인트나 하드웨어 감지 결과 저장은 완료로 표시하지 않는다.
+
+
+## 완료 음성과 Function 경계 보완 (2026-09-22)
+
+완료 안내는 Provider의 운행 수명주기가 한 번만 시작한다. `get_trip_status`의 `TRIP_DONE`도 상태를 먼저 전달하고 즉시 RESET하지 않는다. 일반 상태/Function 응답과 완료 음성을 중복 생성하지 않는다. 완료 응답에는 `metadata.completionKey`를 넣고, `response.created`에서 받은 해당 응답 ID에 대해 `response.done(status=completed)`와 `output_audio_buffer.started/stopped`를 함께 확인한다. 다른 응답의 stopped로 완료하지 않는다. 타임아웃·연결 없음에는 로컬 TTS를 사용하고, 로컬 TTS도 유한 시간 뒤 종료한다. 화면의 완료 문구는 실제 하차를 감지했다고 말하지 않는다.
+
+응답 metadata 상관 관계는 [OpenAI Realtime 대화 문서](https://developers.openai.com/api/docs/guides/realtime-conversations)의 계약을 사용한다. 출력 이벤트의 `response_id`는 설치된 OpenAI SDK의 Realtime 타입과 대조했다. 이벤트 시험 통과는 실제 휴대폰 재생 시험과 별개다.
+
+빈 문자열/공백을 `{}`로 정규화하는 Function은 스키마상 무인자인 `confirm_boarding`, `get_next_route_candidates` 두 개뿐이다. 유인자 Function, null, 배열, 깨진 JSON은 거절한다. 같은 call_id의 중복 이벤트는 세션에서 한 번만 처리한다. 늦은 탑승/조회/취소 응답은 현재 운행과 terminal 상태에 맞는지 확인한다.
+
+후보 진단 로그는 저장 개수·안내 개수·만료·반환 개수만 남긴다. 목적지·좌표·전체 인자는 기록하지 않는다. 다음 후보 응답의 `lastBatch`, `remainingCandidateCount`는 모델 안내용 앱 내부 정보이며 공개 API에 추가하지 않는다. 마지막 후보면 마지막임을 알리고 선택을 묻는다. 소진·만료·조회 실패를 구분한다. PR55의 `toSpokenRouteNo`와 `routeNoSpoken` 처리는 보존한다.

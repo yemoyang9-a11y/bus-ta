@@ -12,7 +12,6 @@ import type {
 } from "@bus-ta/shared";
 import { toSpokenRouteNo } from "@bus-ta/shared";
 import {
-  clearActiveTripContext,
   clearActiveTripContextKeepSearch,
 } from "./context";
 import { assertActiveTripId } from "./function-guards";
@@ -29,6 +28,8 @@ type NextRouteCandidatesResult = {
   candidates: Route[];
   exhausted: boolean;
   expired?: boolean;
+  lastBatch?: boolean;
+  remainingCandidateCount?: number;
 };
 
 type SearchRoutesResultWithGuidedIds = RoutesSearchResponse & {
@@ -73,19 +74,21 @@ function buildFunctionResponseInstructions(name: RealtimeFunctionName): string {
   const common =
     "방금 전달된 Function 결과만 근거로 사용자에게 짧고 명확한 한국어 음성 안내를 생성한다. Function 결과가 오기 전의 추측은 사용하지 않는다. 내부 식별자와 오류 코드는 그대로 읽지 않는다. 노선 번호를 말할 때는 결과의 routeNoSpoken을 그대로 읽고 뒤에 '번'을 붙인다. 발음을 직접 계산하거나 일부만 읽지 않는다. routeNoSpoken이 없을 때만 routeNo 표기를 그대로 또박또박 읽고, 그때도 하이픈 뒤 숫자·알파벳·괄호 안 표시를 생략하지 않는다. 실제 routeNo 표기는 변경하지 않는다.";
 
+  const mixedGuidance = "routeMode가 MULTIMODAL이거나 tripSupported가 false인 후보는 안내 전용이다. segments 순서대로 도보, 버스, 지하철과 마지막 도착 구간을 모두 안내하고, 버스는 각 구간의 routeNumbersSpoken을 그대로 읽는다. 최상위 destinationStation은 첫 버스 구간이므로 최종 도착점으로 말하지 않는다. 운행 시작과 하차벨을 지원하지 않는다고 알리며 선택 완료를 말하거나 create_trip을 호출하지 않는다. 선택 질문은 지원되는 직행 후보에만 하고, 안내 전용 후보만 있으면 다른 경로를 검색할지 묻는다.";
+
   if (name === "search_routes") {
-    return `${common} success가 true이고 routes가 빈 배열일 때만 조건에 맞는 노선 후보가 없다고 안내한다. success가 false이면 result.message의 원인을 바꾸어 말하지 않고, 위치 확인 실패나 API 오류를 노선 없음으로 안내하지 않는다. 후보가 있으면 각 후보의 routeNo, totalTime, intervalTime을 사용해 \"OO번은 예상 소요시간이 N분이고 배차 간격은 M분입니다\" 형식으로 최대 두 개를 모두 설명하고, 마지막에 반드시 \"어떤 버스를 선택하시겠어요?\"라고 묻는다. 값이 없는 시간은 추측하지 말고 확인할 수 없다고 말한다.`;
+    return `${common} ${mixedGuidance} success가 true이고 routes가 빈 배열일 때만 조건에 맞는 노선 후보가 없다고 안내한다. success가 false이면 result.message의 원인을 바꾸어 말하지 않고, 위치 확인 실패나 API 오류를 노선 없음으로 안내하지 않는다. 후보는 최대 두 개를 모두 설명한다. 직행 후보는 routeNo, totalTime, intervalTime을 사용해 "OO번은 예상 소요시간이 N분이고 배차 간격은 M분입니다" 형식으로 설명하고 지원되는 직행 후보가 있으면 "어떤 버스를 선택하시겠어요?"라고 묻는다. 값이 없는 시간은 추측하지 말고 확인할 수 없다고 말한다.`;
   }
 
   // 예모님 확정(2026-08-28, 예외상황 1번): "다른 버스 없어요?"에 새 검색 없이
   // 앱에 보관된 후보 중 다음 2개를 candidates 필드로 안내한다. expired가 true이면
   // 5분 TTL이 지난 상태이므로 candidates를 무시하고 재검색을 유도해야 한다.
   if (name === "get_next_route_candidates") {
-    return `${common} expired가 true이면 이전에 검색한 노선 후보가 오래되어 더 이상 사용할 수 없다고 안내하고, 목적지를 다시 말씀해 달라고 요청한다. 이 경우 candidates는 절대 안내하지 않는다. expired가 true가 아니고 candidates가 비어 있지 않으면, 각 후보를 routeNo와 boardingStation, destinationStation을 사용해 안내하고, guideMessage가 있으면 그대로 활용한다. exhausted가 true이면(candidates가 비어 있고 expired도 아니면) 더 이상 안내할 다른 노선 후보가 없다고 말하고 새로 검색할지 묻는다.`;
+    return `${common} ${mixedGuidance} expired가 true이면 이전에 검색한 노선 후보가 오래되어 더 이상 사용할 수 없다고 안내하고, 목적지를 다시 말씀해 달라고 요청한다. 이 경우 candidates는 절대 안내하지 않는다. expired가 true가 아니고 candidates가 비어 있지 않으면, 직행 후보는 routeNo와 boardingStation, destinationStation을 사용하고 안내 전용 후보는 전체 segments를 사용해 안내한다. guideMessage가 있으면 활용한다. lastBatch가 true이면 이번 후보가 마지막이라고 덧붙인다. 지원되는 직행 후보가 있으면 어떤 버스를 선택할지 묻는다. exhausted가 true이면(candidates가 비어 있고 expired도 아니면) 더 이상 안내할 다른 노선 후보가 없다고 말하고 새로 검색할지 묻는다.`;
   }
 
   if (name === "create_trip") {
-    return `${common} create_trip 성공은 실제 탑승 완료가 아니라 WAITING_BUS 상태의 탑승 대기 시작이다. 성공 결과이면 \"OO번 버스를 선택했습니다. OO 정류장에서 기다려 주세요.\"라고 routeNo와 앱이 제공한 탑승 정류장을 안내한다. arrivals의 첫 항목이 있으면 predictedArrivalMinutes를 사용해 \"버스는 약 N분 후 도착합니다.\"라고 반드시 말한다. arrivals가 비어 있으면 시간을 추측하지 말고 \"현재 실시간 버스 도착정보를 확인할 수 없습니다\"라고 반드시 말한다. 이 응답에서는 절대 \"탑승했습니다\", \"탑승 중입니다\", \"운행을 시작합니다\"라고 말하지 않는다. 두 번째 차량은 사용자가 물을 때만 안내한다.`;
+    return `${common} success가 false이면 result.message의 실패 원인만 안내하고 선택 완료나 탑승 대기 성공을 말하지 않는다. 이후 성공 안내는 success가 true일 때만 적용한다. create_trip 성공은 실제 탑승 완료가 아니라 WAITING_BUS 상태의 탑승 대기 시작이다. 성공 결과이면 \"OO번 버스를 선택했습니다. OO 정류장에서 기다려 주세요.\"라고 routeNo와 앱이 제공한 탑승 정류장을 안내한다. arrivals의 첫 항목이 있으면 predictedArrivalMinutes를 사용해 \"버스는 약 N분 후 도착합니다.\"라고 반드시 말한다. arrivals가 비어 있으면 시간을 추측하지 말고 \"현재 실시간 버스 도착정보를 확인할 수 없습니다\"라고 반드시 말한다. 이 응답에서는 절대 \"탑승했습니다\", \"탑승 중입니다\", \"운행을 시작합니다\"라고 말하지 않는다. 두 번째 차량은 사용자가 물을 때만 안내한다.`;
   }
 
   // 도착 예정 시간 안내의 단일 기준.
@@ -107,7 +110,7 @@ function buildFunctionResponseInstructions(name: RealtimeFunctionName): string {
   }
 
   if (name === "end_trip") {
-    return `${common} success가 true이면 선택한 운행만 취소된 것이다. expired가 true이면 오래된 후보를 안내하지 말고 다시 검색할지 묻는다. expired가 false이고 result.routes가 있으면 취소한 노선은 다시 말하지 말고, 새 검색도 하지 않은 채 전달된 다른 후보를 routeNo, totalTime, intervalTime으로 안내한 뒤 "어떤 버스를 선택하시겠어요?"라고 묻는다. result.routes가 비어 있을 때만 안내할 다른 보관 후보가 없다고 설명하고 다시 검색할지 묻는다. success가 false이면 후보를 다시 안내하거나 취소됐다고 말하지 말고 result.message의 확인된 실패 원인만 안내한다.`;
+    return `${common} ${mixedGuidance} success가 true이면 선택한 운행만 취소된 것이다. expired가 true이면 오래된 후보를 안내하지 말고 다시 검색할지 묻는다. expired가 false이고 result.routes가 있으면 취소한 노선은 다시 말하지 말고, 새 검색도 하지 않은 채 전달된 다른 직행 후보를 routeNo, totalTime, intervalTime으로 안내하고 안내 전용 후보는 전체 segments로 안내한다. 지원되는 직행 후보가 있으면 "어떤 버스를 선택하시겠어요?"라고 묻는다. result.routes가 비어 있을 때만 안내할 다른 보관 후보가 없다고 설명하고 다시 검색할지 묻는다. success가 false이면 후보를 다시 안내하거나 취소됐다고 말하지 말고 result.message의 확인된 실패 원인만 안내한다.`;
   }
 
   return common;
@@ -117,7 +120,7 @@ export async function dispatchRealtimeFunctionCall(
   event: RealtimeFunctionCallEvent,
   context: RealtimeGuideContext,
 ): Promise<RealtimeClientEvent[]> {
-  const args = parseFunctionArguments(event.arguments);
+  const args = parseFunctionArguments(event.arguments, event.name);
   let result: FunctionResult;
 
   if (isApiErrorResult(args)) {
@@ -236,6 +239,15 @@ function withSpokenRouteNumbers<T>(modelResult: T): T {
     withSpoken[key] = list.map((item) => withSpokenRouteNumbers(item));
   }
 
+  if (Array.isArray(value.segments)) {
+    withSpoken.segments = value.segments.map((segment) => ({
+      ...segment,
+      ...(segment.mode === "BUS" && Array.isArray(segment.routeNumbers)
+        ? { routeNumbersSpoken: segment.routeNumbers.map(toSpokenRouteNo) }
+        : {}),
+    }));
+  }
+
   return withSpoken as T;
 }
 
@@ -280,13 +292,17 @@ function rejectStaleTripResult(
 ): FunctionResult {
   if (
     result.success !== true ||
-    (name !== "confirm_boarding" && name !== "end_trip")
+    (name !== "confirm_boarding" && name !== "end_trip" && name !== "get_trip_status")
   ) {
     return result;
   }
 
-  const tripResult = result as BoardingConfirmationResponse | EndTripResponse;
-  if (tripResult.tripId === context.getAppState().tripId) {
+  const tripResult = result as BoardingConfirmationResponse | EndTripResponse | TripStatusResponse;
+  const current = context.getAppState();
+  const regresses = (current.tripStatus === 'TRIP_DONE' && tripResult.tripStatus !== 'TRIP_DONE') ||
+    (current.tripStatus === 'CANCELLED' && tripResult.tripStatus !== 'CANCELLED') ||
+    (Boolean(current.boardingConfirmedAt) && tripResult.tripStatus === 'WAITING_BUS');
+  if (tripResult.tripId === current.tripId && !regresses) {
     return result;
   }
 
@@ -339,6 +355,7 @@ async function callBackendFunction(
     case "get_next_route_candidates": {
       assertEmptyObject(args);
       const appState = context.getAppState();
+      console.log('[app/candidates] request', { storedCount: appState.routeCandidates?.length ?? 0, announcedCount: appState.announcedCandidateIds?.length ?? 0, expired: !appState.routeCandidatesExpiresAt || Date.now() > appState.routeCandidatesExpiresAt });
 
       // 예모님 지적(2026-08-28, P1): routeCandidatesExpiresAt이 TripContext에 저장만
       // 되고 이 경로에서 확인되지 않아, 검색 후 5분이 지나도 기존 후보가 계속 재사용될
@@ -358,14 +375,16 @@ async function callBackendFunction(
 
       const routeCandidates = (appState.routeCandidates ?? []) as Route[];
       const announcedCandidateIds = appState.announcedCandidateIds ?? [];
-      const nextCandidates = routeCandidates
-        .filter((route) => !announcedCandidateIds.includes(route.candidateId))
-        .slice(0, 2);
+      const remainingCandidates = routeCandidates.filter((route) => !announcedCandidateIds.includes(route.candidateId));
+      const nextCandidates = remainingCandidates.slice(0, 2);
+      console.log('[app/candidates] next', { storedCount: routeCandidates.length, announcedCount: announcedCandidateIds.length, returnedCount: nextCandidates.length, expired: false });
 
       return {
         success: true,
         candidates: nextCandidates,
         exhausted: nextCandidates.length === 0,
+        lastBatch: nextCandidates.length > 0 && remainingCandidates.length <= 2,
+        remainingCandidateCount: Math.max(0, remainingCandidates.length - nextCandidates.length),
       };
     }
     case "create_trip":
@@ -409,6 +428,7 @@ function updateContext(
 
   if (name === "search_routes") {
     const searchResult = result as RoutesSearchResponse;
+    console.log("[app/candidates] search result", { count: searchResult.routes.length });
     context.dispatchAppAction({
       type: "SET_DESTINATION_AND_ROUTES",
       destination: searchResult.destination,
@@ -434,7 +454,7 @@ function updateContext(
     if (statusResult.tripStatus === "CANCELLED") {
       clearActiveTripContextKeepSearch(context);
     } else if (statusResult.tripStatus === "TRIP_DONE") {
-      clearActiveTripContext(context);
+      // Provider waits for actual completion audio before resetting the trip.
     }
     return;
   }
@@ -443,6 +463,7 @@ function updateContext(
     const boardingResult = result as BoardingConfirmationResponse;
     context.dispatchAppAction({
       type: "CONFIRM_BOARDING",
+      tripId: boardingResult.tripId,
       tripStatus: boardingResult.tripStatus,
       boardingMethod: boardingResult.boardingMethod,
       boardingConfirmedAt: boardingResult.boardingConfirmedAt,
@@ -499,6 +520,10 @@ function assertCreateTripRequest(
 
   if (selectedRoute == null) {
     throw new Error("선택한 경로 후보를 찾을 수 없습니다. 먼저 경로를 다시 검색해 주세요.");
+  }
+
+  if (selectedRoute.tripSupported === false || selectedRoute.routeMode === "MULTIMODAL" || (selectedRoute.busTransitCount ?? 1) > 1) {
+    throw new Error("이 경로는 안내 전용입니다. 환승 경로의 운행 시작과 하차벨은 지원하지 않습니다.");
   }
 
   const appState = context.getAppState();
@@ -567,8 +592,9 @@ function assertEndTripRequest(
   };
 }
 
-function parseFunctionArguments(rawArguments: string): unknown | ApiErrorResult {
+function parseFunctionArguments(rawArguments: string, name: RealtimeFunctionName): unknown | ApiErrorResult {
   try {
+    if (rawArguments.trim() === "" && (name === "confirm_boarding" || name === "get_next_route_candidates")) return {};
     return JSON.parse(rawArguments);
   } catch {
     return {

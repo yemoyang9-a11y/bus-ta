@@ -1,13 +1,11 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import * as Speech from 'expo-speech';
-import * as Location from 'expo-location';
 import { useFocusEffect } from '@react-navigation/native';
-import { apiClient, ApiError } from '../api/client';
 import { useTrip } from '../state/TripContext';
 import { isScreenTripActive } from '../state/trip-transition';
+import { TRIP_COMPLETION_MESSAGE } from '../realtime/trip-tracking';
 import { useRealtime } from '../realtime/RealtimeProvider';
-import { toTripStatusSnapshot } from '../realtime/status-snapshot';
 import {
   connectBell,
   disconnectBellsForTrip,
@@ -40,47 +38,24 @@ const INITIAL_STATUS = {
 
 export default function RidingScreen({ route, navigation }) {
   const { tripId, selectedRoute } = route.params;
-  const [status, setStatus] = useState(INITIAL_STATUS);
+
   const bellHandledRef = useRef(false);
-  const requestCounterRef = useRef(0);
   const stoppedRef = useRef(false);
-  const locationSubscriptionRef = useRef(null);
-  const stoppingBeaconScanRef = useRef(false);
   const startingBeaconScanRef = useRef(false);
   const connectingBellRef = useRef(false);
-  const patchInFlightRef = useRef(false);
-  const arrivalPollFailureCountRef = useRef(0);
-
-  // 실차 GPS 계측용
-  const locationWatchStartedAtRef = useRef(null);
-  const firstLocationFixReceivedRef = useRef(false);
-  const locationPatchSkippedCountRef = useRef(0);
 
   const { state, dispatch } = useTrip();
+  const status = { ...INITIAL_STATUS, ...state, ...(state.tripStatus === 'TRIP_DONE' ? { guideMessage: TRIP_COMPLETION_MESSAGE } : {}) };
   const {
-    session,
     isConnected,
     notifyFailure,
     getActiveTripId,
+    trackingError,
   } = useRealtime();
 
   const currentTripStatus = state.tripStatus ?? status.tripStatus;
   const boardingConfirmedAt =
     state.boardingConfirmedAt ?? status.boardingConfirmedAt;
-
-  const stopLocationWatch = () => {
-    stoppedRef.current = true;
-
-    if (locationSubscriptionRef.current) {
-      try {
-        locationSubscriptionRef.current.remove();
-      } catch (error) {
-        console.log('[GPS] watch 구독 해제 실패:', error);
-      } finally {
-        locationSubscriptionRef.current = null;
-      }
-    }
-  };
 
   const activeTripIdRef = useRef(state.tripId);
   activeTripIdRef.current = state.tripId;
@@ -91,26 +66,13 @@ export default function RidingScreen({ route, navigation }) {
   const waitBeforeRetry = (ms) =>
     new Promise((resolve) => setTimeout(resolve, ms));
 
-  const runStopBeaconScan = (label) =>
-    stopBeaconScanWithRetry({
-      stopBeaconScan,
-      onStopped: () => {
-        dispatch({ type: 'SET_BEACON_SCAN_ACTIVE', active: false });
-      },
-      onGaveUp: (error) => {
-        console.log(label, error);
-      },
-      wait: waitBeforeRetry,
-    });
+  useEffect(() => { bellHandledRef.current = false; }, [tripId]);
 
   useEffect(() => {
-    stoppedRef.current = false;
-    bellHandledRef.current = false;
-    arrivalPollFailureCountRef.current = 0;
-    locationWatchStartedAtRef.current = null;
-    firstLocationFixReceivedRef.current = false;
-    locationPatchSkippedCountRef.current = 0;
-  }, [tripId]);
+    stoppedRef.current = state.tripId !== tripId || state.tripStatus === 'TRIP_DONE' || state.tripStatus === 'CANCELLED';
+    if (!state.tripId) navigation.navigate('Main');
+    if (trackingError) navigation.navigate('Error');
+  }, [state.tripId, state.tripStatus, tripId, trackingError]);
 
   const screenTitle = (() => {
     switch (currentTripStatus) {
@@ -147,14 +109,14 @@ export default function RidingScreen({ route, navigation }) {
   useEffect(() => {
     if (isConnected) return;
 
-    if (status.guideMessage && status.remainingStations !== 1) {
+    if (status.tripStatus !== 'TRIP_DONE' && status.guideMessage && status.remainingStations !== 1) {
       const timer = setTimeout(() => {
         Speech.speak(status.guideMessage, { language: 'ko' });
       }, 500);
 
       return () => clearTimeout(timer);
     }
-  }, [status.guideMessage, status.remainingStations, isConnected]);
+  }, [status.guideMessage, status.remainingStations, status.tripStatus, isConnected]);
 
   // 운행 준비 단계에서 즉시 시작되지 못한 경우 서버 shouldScanBeacon 신호로 재시도한다.
   useEffect(() => {
@@ -192,7 +154,6 @@ export default function RidingScreen({ route, navigation }) {
             onGaveUp: (error) => {
               console.log(
                 '늦게 성공한 스캔을 되돌리지 못함:',
-                error,
               );
               dispatch({
                 type: 'SET_BEACON_SCAN_ACTIVE',
@@ -205,7 +166,6 @@ export default function RidingScreen({ route, navigation }) {
         onGaveUp: (error) => {
           console.log(
             '비콘 스캔 시작을 상한까지 재시도했지만 실패:',
-            error,
           );
 
           Speech.speak(
@@ -225,22 +185,6 @@ export default function RidingScreen({ route, navigation }) {
     state.caneReady,
     state.beaconScanActive,
   ]);
-
-  useEffect(() => {
-    if (
-      boardingConfirmedAt &&
-      state.beaconScanActive &&
-      !stoppingBeaconScanRef.current
-    ) {
-      stoppingBeaconScanRef.current = true;
-
-      runStopBeaconScan(
-        '탑승 확정 후 비콘 스캔 중지를 상한까지 재시도했지만 실패:',
-      ).finally(() => {
-        stoppingBeaconScanRef.current = false;
-      });
-    }
-  }, [boardingConfirmedAt, state.beaconScanActive]);
 
   // 탑승이 확정되면 하차벨 보드를 연결한다.
   //
@@ -359,32 +303,6 @@ export default function RidingScreen({ route, navigation }) {
     state.tripId,
   ]);
 
-  // 취소 감지 시 GPS/BLE를 즉시 중지한다.
-  const isThisTripStillActive =
-    isScreenTripActive(state.tripId, tripId);
-
-  useEffect(() => {
-    if (!isThisTripStillActive) {
-      stopLocationWatch();
-
-      if (
-        state.beaconScanActive &&
-        !stoppingBeaconScanRef.current
-      ) {
-        stoppingBeaconScanRef.current = true;
-
-        runStopBeaconScan(
-          '취소 후 비콘 스캔 중지를 상한까지 재시도했지만 실패:',
-        ).finally(() => {
-          stoppingBeaconScanRef.current = false;
-        });
-      }
-    }
-  }, [
-    isThisTripStillActive,
-    state.beaconScanActive,
-  ]);
-
   useEffect(() => {
     if (
       status.shouldTriggerBell === true &&
@@ -412,553 +330,12 @@ export default function RidingScreen({ route, navigation }) {
     }
   }, [status, isConnected]);
 
-  useEffect(() => {
-    let cancelled = false;
-
-    locationWatchStartedAtRef.current = Date.now();
-    firstLocationFixReceivedRef.current = false;
-    locationPatchSkippedCountRef.current = 0;
-
-    console.log('[GPS] watch 구독 시작', {
-      tripId,
-      startedAt: new Date(
-        locationWatchStartedAtRef.current,
-      ).toISOString(),
-    });
-
-    (async () => {
-      const permission =
-        await Location.requestForegroundPermissionsAsync();
-
-      console.log('[GPS] 위치 권한 상태', {
-        status: permission.status,
-        canAskAgain: permission.canAskAgain,
-        granted: permission.granted,
-        expires: permission.expires,
-        androidAccuracy:
-          permission.android?.accuracy ?? 'unknown',
-      });
-
-      if (
-        cancelled ||
-        stoppedRef.current
-      ) {
-        return;
-      }
-
-      if (permission.status !== 'granted') {
-        stopLocationWatch();
-
-        Speech.speak(
-          '위치 권한이 없어 운행 추적을 시작할 수 없습니다.',
-          { language: 'ko' },
-        );
-
-        navigation.navigate('Error');
-        return;
-      }
-
-      const subscription =
-        await Location.watchPositionAsync(
-          {
-            accuracy: Location.Accuracy.High,
-            timeInterval: 2000,
-            distanceInterval: 0,
-          },
-          async (location) => {
-            if (
-              cancelled ||
-              stoppedRef.current
-            ) {
-              return;
-            }
-
-            const callbackReceivedAt = Date.now();
-            const locationTimestamp =
-              Number(location.timestamp);
-
-            if (
-              !Number.isFinite(locationTimestamp)
-            ) {
-              console.warn(
-                '[GPS] location.timestamp 없음 - PATCH하지 않음',
-                {
-                  callbackReceivedAt:
-                    new Date(
-                      callbackReceivedAt,
-                    ).toISOString(),
-                  accuracy:
-                    location.coords.accuracy,
-                  latitude:
-                    location.coords.latitude,
-                  longitude:
-                    location.coords.longitude,
-                },
-              );
-
-              return;
-            }
-
-            const locationAgeMs =
-              Math.max(
-                0,
-                callbackReceivedAt -
-                  locationTimestamp,
-              );
-
-            if (
-              !firstLocationFixReceivedRef.current
-            ) {
-              firstLocationFixReceivedRef.current =
-                true;
-
-              console.log(
-                '[GPS] 첫 fix 수신',
-                {
-                  receivedAt:
-                    new Date(
-                      callbackReceivedAt,
-                    ).toISOString(),
-                  watchToFirstFixMs:
-                    locationWatchStartedAtRef.current ==
-                    null
-                      ? null
-                      : callbackReceivedAt -
-                        locationWatchStartedAtRef.current,
-                  locationTimestamp:
-                    new Date(
-                      locationTimestamp,
-                    ).toISOString(),
-                  locationAgeMs,
-                  accuracy:
-                    location.coords.accuracy,
-                },
-              );
-            }
-
-            console.log('[GPS] fix 수신', {
-              callbackReceivedAt:
-                new Date(
-                  callbackReceivedAt,
-                ).toISOString(),
-              locationTimestamp:
-                new Date(
-                  locationTimestamp,
-                ).toISOString(),
-              locationAgeMs,
-              accuracy:
-                location.coords.accuracy,
-              latitude:
-                location.coords.latitude,
-              longitude:
-                location.coords.longitude,
-            });
-
-            if (patchInFlightRef.current) {
-              locationPatchSkippedCountRef.current += 1;
-
-              console.log(
-                '[GPS] PATCH in-flight로 fix 건너뜀',
-                {
-                  skippedCount:
-                    locationPatchSkippedCountRef.current,
-                  callbackReceivedAt:
-                    new Date(
-                      callbackReceivedAt,
-                    ).toISOString(),
-                  locationAgeMs,
-                },
-              );
-
-              return;
-            }
-
-            await patchStatus(
-              location,
-              callbackReceivedAt,
-            );
-          },
-        );
-
-      if (
-        cancelled ||
-        stoppedRef.current
-      ) {
-        subscription.remove();
-
-        console.log(
-          '[GPS] 늦게 생성된 watch 구독 즉시 해제',
-          {
-            tripId,
-            endedAt:
-              new Date().toISOString(),
-          },
-        );
-
-        return;
-      }
-
-      if (
-        locationSubscriptionRef.current
-      ) {
-        try {
-          locationSubscriptionRef.current.remove();
-        } catch (error) {
-          console.log(
-            '[GPS] 기존 watch 구독 해제 실패:',
-            error,
-          );
-        }
-      }
-
-      locationSubscriptionRef.current =
-        subscription;
-    })().catch((error) => {
-      console.log(
-        '[GPS] watch 시작 실패:',
-        error,
-      );
-
-      if (
-        !cancelled &&
-        !stoppedRef.current
-      ) {
-        stopLocationWatch();
-        navigation.navigate('Error');
-      }
-    });
-
-    return () => {
-      cancelled = true;
-      stopLocationWatch();
-
-      console.log('[GPS] watch 구독 종료', {
-        tripId,
-        endedAt:
-          new Date().toISOString(),
-        skippedCount:
-          locationPatchSkippedCountRef.current,
-      });
-    };
-  }, [tripId]);
-
-  useEffect(() => {
-    if (
-      currentTripStatus !== 'WAITING_BUS'
-    ) {
-      arrivalPollFailureCountRef.current = 0;
-      return;
-    }
-
-    const intervalSeconds =
-      status.arrivalPollIntervalSeconds ?? 15;
-
-    let cancelled = false;
-
-    const poll = async () => {
-      if (
-        cancelled ||
-        stoppedRef.current
-      ) {
-        return;
-      }
-
-      try {
-        const latest =
-          await apiClient.trips.getStatus(
-            tripId,
-          );
-
-        if (
-          cancelled ||
-          stoppedRef.current ||
-          state.tripId !== tripId
-        ) {
-          return;
-        }
-
-        arrivalPollFailureCountRef.current = 0;
-
-        setStatus((prev) => ({
-          ...prev,
-          ...latest,
-        }));
-
-        dispatch({
-          type: 'UPDATE_TRIP_STATUS',
-          status: latest,
-        });
-
-        session?.notifyStatusChange(
-          toTripStatusSnapshot(latest),
-        );
-      } catch (error) {
-        arrivalPollFailureCountRef.current += 1;
-
-        if (
-          arrivalPollFailureCountRef.current *
-            intervalSeconds >=
-          20
-        ) {
-          stopLocationWatch();
-          navigation.navigate('Error');
-        }
-      }
-    };
-
-    const interval = setInterval(
-      poll,
-      intervalSeconds * 1000,
-    );
-
-    return () => {
-      cancelled = true;
-      clearInterval(interval);
-    };
-  }, [
-    currentTripStatus,
-    status.arrivalPollIntervalSeconds,
-    tripId,
-  ]);
-
-  const patchStatus = async (
-    location,
-    callbackReceivedAt = Date.now(),
-  ) => {
-    patchInFlightRef.current = true;
-
-    const patchStartedAt = Date.now();
-    const locationTimestamp =
-      Number(location.timestamp);
-
-    const locationAgeMs =
-      Number.isFinite(locationTimestamp)
-        ? Math.max(
-            0,
-            callbackReceivedAt -
-              locationTimestamp,
-          )
-        : null;
-
-    requestCounterRef.current += 1;
-
-    const requestId =
-      `location-${tripId}-${requestCounterRef.current}`;
-
-    try {
-      if (
-        !Number.isFinite(locationTimestamp)
-      ) {
-        console.warn(
-          '[GPS] PATCH 중단 - location.timestamp 없음',
-          {
-            requestId,
-            callbackReceivedAt:
-              new Date(
-                callbackReceivedAt,
-              ).toISOString(),
-            accuracy:
-              location.coords.accuracy,
-          },
-        );
-
-        return;
-      }
-
-      console.log('[GPS] PATCH 시작', {
-        requestId,
-        startedAt:
-          new Date(
-            patchStartedAt,
-          ).toISOString(),
-        callbackReceivedAt:
-          new Date(
-            callbackReceivedAt,
-          ).toISOString(),
-        locationTimestamp:
-          new Date(
-            locationTimestamp,
-          ).toISOString(),
-        locationAgeMs,
-        accuracy:
-          location.coords.accuracy,
-        latitude:
-          location.coords.latitude,
-        longitude:
-          location.coords.longitude,
-      });
-
-      const data =
-        await apiClient.trips.updateStatus(
-          tripId,
-          {
-            requestId,
-            latitude:
-              location.coords.latitude,
-            longitude:
-              location.coords.longitude,
-            recordedAt:
-              new Date(
-                locationTimestamp,
-              ).toISOString(),
-            source: 'GPS',
-          },
-        );
-
-      console.log('[GPS] PATCH 완료', {
-        requestId,
-        completedAt:
-          new Date().toISOString(),
-        durationMs:
-          Date.now() -
-          patchStartedAt,
-        skippedWhileInFlight:
-          locationPatchSkippedCountRef.current,
-      });
-
-      if (
-        stoppedRef.current ||
-        state.tripId !== tripId
-      ) {
-        return;
-      }
-
-      setStatus(data);
-
-      dispatch({
-        type: 'UPDATE_TRIP_STATUS',
-        status: data,
-      });
-
-      session?.notifyStatusChange(
-        toTripStatusSnapshot(data),
-      );
-
-      if (
-        data.tripStatus === 'TRIP_DONE'
-      ) {
-        stopLocationWatch();
-        await stopBeaconScanIfActive();
-
-        dispatch({
-          type: 'RESET_TRIP',
-        });
-      } else if (
-        data.tripStatus === 'CANCELLED'
-      ) {
-        stopLocationWatch();
-
-        dispatch({
-          type: 'RESET_TRIP_KEEP_SEARCH',
-        });
-      }
-    } catch (error) {
-      console.log('[GPS] PATCH 실패', {
-        requestId,
-        failedAt:
-          new Date().toISOString(),
-        durationMs:
-          Date.now() -
-          patchStartedAt,
-        locationAgeMs,
-        error:
-          error instanceof Error
-            ? error.message
-            : String(error),
-      });
-
-      if (
-        stoppedRef.current ||
-        state.tripId !== tripId
-      ) {
-        return;
-      }
-
-      if (
-        error instanceof ApiError
-      ) {
-        if (
-          error.errorCode ===
-          'INVALID_TRIP_STATUS'
-        ) {
-          stopLocationWatch();
-
-          try {
-            const latest =
-              await apiClient.trips.getStatus(
-                tripId,
-              );
-
-            setStatus(latest);
-
-            dispatch({
-              type: 'UPDATE_TRIP_STATUS',
-              status: latest,
-            });
-
-            session?.notifyStatusChange(
-              toTripStatusSnapshot(latest),
-            );
-          } catch {
-            // 최신 상태 조회도 실패하면 오류 화면으로
-          }
-
-          return;
-        }
-
-        if (
-          error.errorCode ===
-          'TRIP_NOT_FOUND'
-        ) {
-          stopLocationWatch();
-          await stopBeaconScanIfActive();
-
-          dispatch({
-            type: 'RESET_TRIP',
-          });
-
-          navigation.navigate('Error');
-          return;
-        }
-      }
-
-      console.log(
-        '위치 업데이트 실패:',
-        error,
-      );
-    } finally {
-      patchInFlightRef.current = false;
-    }
-  };
-
-  const stopBeaconScanIfActive =
-    async () => {
-      if (
-        !state.beaconScanActive ||
-        stoppingBeaconScanRef.current
-      ) {
-        return;
-      }
-
-      stoppingBeaconScanRef.current = true;
-
-      try {
-        await runStopBeaconScan(
-          '종료 시 비콘 스캔 중지를 상한까지 재시도했지만 실패, 취소 감지 로직이 다시 시도함:',
-        );
-      } finally {
-        stoppingBeaconScanRef.current =
-          false;
-      }
-    };
-
   const handleAlightNavigation = () => {
     if (bellHandledRef.current) {
       return;
     }
 
     bellHandledRef.current = true;
-    stopLocationWatch();
     Speech.stop();
 
     navigation.navigate('Alight', {

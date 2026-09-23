@@ -57,7 +57,8 @@ PENDING --(POST /bell/result)--> SUCCESS | FAIL
 
 - 하차벨 요청은 DB 행 잠금과 `NOT_REQUESTED → PENDING` compare-and-set으로 단 한 번 생성한다. 같은 스냅샷에서 계산된 동시 위치 요청도 승자만 `bell_logs`를 만들며, `PENDING`, `SUCCESS`, `FAIL`에서는 재생성하지 않는다.
 - `remainingStations = 2`에서는 안내만 한다.
-- 결과 저장은 `PENDING` 상태에서만 가능하며 그 밖의 요청은 `409 INVALID_BELL_STATE`다.
+- 최초 결과 저장은 `PENDING`인 현재 요청에만 가능하며, 결과가 없는데 다른 상태이거나 이전 요청이면 `409 INVALID_BELL_STATE`다. 동일 요청의 결과 재전송은 입력이 상충해도 최초 결과를 반환한다.
+- `record_bell_result`는 `trip_status` 행을 먼저 잠그고 해당 운행의 최신 `bell_logs` 행을 잠근 뒤 요청 ID·상태를 확인한다. 최초 결과와 `bell_status`를 한 트랜잭션에서 기록하고 둘 중 하나라도 실패하면 전체를 롤백한다. legacy 부분 저장은 `bell_logs.result`를 기준으로 복구하며 기존 메시지·mock 여부·완료 시각은 보존한다. `trip_status.trip_status`는 수정하지 않아 취소·완료와 경합해도 종료 상태가 유지된다.
 
 ## DB 매핑 원칙
 
@@ -70,11 +71,11 @@ PENDING --(POST /bell/result)--> SUCCESS | FAIL
 | 대상 | `public`·`anon`·`authenticated` | `service_role` | 추가 보호 |
 | --- | --- | --- | --- |
 | `trips`, `trip_status`, `location_logs`, `bell_logs`, `bus_beacons` | 테이블 권한 없음 | `SELECT`, `INSERT`, `UPDATE`, `DELETE` | RLS 활성화, 클라이언트 policy 없음 |
-| `save_trip_status_and_location`, `confirm_trip_boarding`, `cancel_trip` RPC | `EXECUTE` 없음 | `EXECUTE` | `SECURITY INVOKER`, 빈 `search_path`, 스키마 한정 참조 |
+| `save_trip_status_and_location`, `confirm_trip_boarding`, `cancel_trip`, `record_bell_result` RPC | `EXECUTE` 없음 | `EXECUTE` | `SECURITY INVOKER`, 빈 `search_path`, 스키마 한정 참조 |
 
 `trip_status`의 탑승 컬럼은 `boarding_method`, `boarding_confirmed_at`, `boarding_request_id`, `boarding_detected_at`이다. `confirm_trip_boarding`이 이 값들과 상태를 한 트랜잭션에서 기록한다. `save_trip_status_and_location`은 `boarding_confirmed_at`이 없으면 요청 body가 `ON_BUS`나 하차벨을 요구해도 DB에서 `WAITING_BUS`로 고정하고 하차벨 로그를 만들지 않는다. 반대로 DB에는 탑승확정이 있지만 요청 body가 stale `WAITING_BUS`이면 위치 로그를 저장하지 않고 내부 결과 `BOARDING_CONFIRMED_RETRY`를 반환한다. 서버는 최신 행을 다시 읽어 동일 위치 요청을 최대 한 번 재계산한다.
 
-탑승확정과 GPS 저장이 겹쳐 확정 전 스냅샷에서 계산된 `WAITING_BUS` payload가 늦게 도착하면, 위치·정류장 진행 정보는 저장하되 DB의 확정된 탑승 상태는 되돌리지 않는다. 백엔드는 저장 직후 이 권위 상태를 재조회해 같은 값을 앱에 반환한다.
+탑승확정과 GPS 저장이 겹쳐 확정 전 스냅샷의 `WAITING_BUS` payload가 늦게 도착하면, 최초 저장은 위치 로그와 `requestId`를 소비하지 않고 `BOARDING_CONFIRMED_RETRY`를 반환한다. 백엔드는 최신 탑승 상태로 같은 위치를 최대 한 번 재계산해 저장한다. 재계산 성공 후의 권위 상태를 앱에 반환하며 확정된 탑승 상태를 되돌리지 않는다.
 
 - 앱은 위 테이블과 RPC를 anon/authenticated 키로 직접 호출하지 않는다. 백엔드만 서버 비밀인 `SUPABASE_SERVICE_ROLE_KEY`로 Data API를 사용한다.
 - 사용자 인증과 소유권 모델이 공통 계약으로 확정되기 전에는 anon/authenticated RLS policy를 추가하지 않는다. policy 없는 RLS는 해당 역할에 대해 deny-all이다.
@@ -82,5 +83,9 @@ PENDING --(POST /bell/result)--> SUCCESS | FAIL
 - 이 권한 변경은 공개 API 경로, JSON 필드 이름, enum과 상태 전이를 변경하지 않는다.
 
 ## 검증 기준
+
+`20260922091013_atomic_bell_result.sql`은 새 결과 저장 서버 코드보다 먼저 적용한다. `record_bell_result(text,text,text,text,boolean,timestamptz)`는 내부 저장 계약이며 공개 REST 요청·응답 필드를 추가하지 않는다. 모든 서버 인스턴스를 교체하기 전에는 구버전의 두 PATCH 저장 경로가 남을 수 있다. 원격 적용과 실제 배포 동작은 로컬 검증과 별도로 확인한다.
+
+로컬 fixture DB에 전체 migration을 적용한 뒤 `node scripts/test-bell-result-sql.mjs`로 결과 저장 SQL을 검증한다. `PSQL_BIN`으로 psql 실행 경로를, `PGHOST`·`PGPORT`·`PGUSER`·`PGDATABASE`로 로컬 접속을 지정할 수 있다. 실행기는 로컬 호스트만 허용한다. SQL은 두 번째 UPDATE 장애 롤백·멱등·상충 재전송·과거 부분 기록 복구·종료 보존·권한을 확인하고, 별도 PostgreSQL 세션의 실제 잠금 대기를 관측한 뒤 동일/상충 결과와 취소의 양방향 경합을 검사한다. 단일 세션 fixture는 ROLLBACK, 경합 fixture는 실행기가 생성한 정확한 ID만 삭제한다. Supabase 원격 Advisor와 PostgREST 배포 검증은 이 시험에 포함되지 않는다.
 
 상태 변경은 정상·잘못된 입력·없는 운행·종료 운행·동일 `requestId` 재전송·하차벨 중복·결과 재전송을 검증한다. CI의 `Supabase Boarding SQL` 작업은 전체 migration, 늦은 GPS의 미저장·1회 재처리, 하차벨 단일 생성, 기존 활성 운행 preflight 차단을 실제 PostgreSQL에서 실행한다. 원격 migration 적용, RPC 존재, API-DB 통합 검증은 별도 상태로 기록한다.
