@@ -69,13 +69,15 @@ test("session guide permits returned mixed routes but prohibits subway-only and 
 function screen(route: Route) {
   const calls = { requests: [] as unknown[], actions: [] as any[], navigation: [] as unknown[], stops: 0 };
   const exports: any = {};
-  const React = { createElement: (type: unknown, props: unknown, ...children: unknown[]) => ({ type, props, children }), useState: () => [false, () => {}] };
+  const React = { createElement: (type: unknown, props: unknown, ...children: unknown[]) => ({ type, props, children }), useState: () => [false, () => {}], useEffect: () => {} };
   const modules: Record<string, unknown> = {
     react: React,
+    "@react-navigation/native": { useIsFocused: () => true },
     "react-native": { View: "View", Text: "Text", TouchableOpacity: "TouchableOpacity", FlatList: "FlatList", StyleSheet: { create: (x: unknown) => x } },
     "../state/TripContext": { useTrip: () => ({ state: { destination: "최종목적지", routeCandidates: [route], routeCandidatesExpiresAt: Date.now() + 60000, beaconScanActive: true }, dispatch: (action: any) => calls.actions.push(action) }) },
     "../api/client": { ApiError: class extends Error {}, apiClient: { trips: { create: async (request: unknown) => { calls.requests.push(request); return { tripId: "direct-trip" }; } } } },
     "../ble/bleManager": { stopBeaconScan: async () => { calls.stops++; } },
+    "../state/transfer-journey": { canStartJourney: (candidate: Route) => candidate.routeMode === "MULTIMODAL" && candidate.journeySupported === true && candidate.segments?.every(s => s.mode !== "BUS" || Boolean(s.busLeg)) },
   };
   runInNewContext(ts.transpileModule(readFileSync(new URL("../../../mobile/src/screens/RouteListScreen.js", import.meta.url), "utf8"), {
     fileName: "RouteListScreen.jsx", compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.React, esModuleInterop: true },

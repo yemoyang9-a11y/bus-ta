@@ -70,7 +70,7 @@ function setup() {
       if (name === 'react') return React;
       if (name === 'react-native') return { StyleSheet: { create: (value: unknown) => value } };
       if (name === 'expo-speech') return { speak:(message:string)=>speech.push(message), stop() {} };
-      if (name === '@react-navigation/native') return { useFocusEffect: (next: typeof effect) => { effect = next; } };
+      if (name === '@react-navigation/native') return { useFocusEffect: (next: typeof effect) => { effect = next; }, useIsFocused: () => true };
       if (name === '../realtime/trip-tracking') return tripTracking;
       if (name === '../ble/bell-stop-session') return { createBellStopSession };
       if (name === '../state/TripContext') return { useTrip: () => ({

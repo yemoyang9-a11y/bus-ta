@@ -1,6 +1,27 @@
 import { z } from "zod";
 
 export const RouteSegmentModeSchema = z.enum(["WALK", "BUS", "SUBWAY"]);
+export const RouteBusLegSchema = z.object({
+  routeNo: z.string().min(1),
+  localBusId: z.string().min(1),
+  gbisStationId: z.string().min(1),
+  boardingStation: z.object({
+    stationName: z.string().min(1),
+    latitude: z.number().min(-90).max(90),
+    longitude: z.number().min(-180).max(180),
+  }),
+  destinationStation: z.object({
+    stationName: z.string().min(1),
+    latitude: z.number().min(-90).max(90),
+    longitude: z.number().min(-180).max(180),
+  }),
+  stationList: z.array(z.object({
+    stationName: z.string().min(1),
+    latitude: z.number().min(-90).max(90),
+    longitude: z.number().min(-180).max(180),
+    sequence: z.number().int().nonnegative(),
+  })).min(2),
+});
 export const RouteSegmentSchema = z.object({
   mode: RouteSegmentModeSchema,
   startName: z.string().min(1),
@@ -9,6 +30,7 @@ export const RouteSegmentSchema = z.object({
   routeNumbers: z.array(z.string().min(1)),
   stationCount: z.number().int().nonnegative().optional(),
   sectionTime: z.number().int().nonnegative().optional(),
+  busLeg: RouteBusLegSchema.optional(),
 });
 export type RouteSegmentContract = z.infer<typeof RouteSegmentSchema>;
 
@@ -49,7 +71,19 @@ export const RouteCandidateSchema = z.object({
   guideMessage: z.string().optional(),
   routeMode: z.enum(["DIRECT_BUS", "MULTIMODAL"]).optional(),
   tripSupported: z.boolean().optional(),
+  journeySupported: z.boolean().optional(),
   segments: z.array(RouteSegmentSchema).optional(),
+}).superRefine((route, ctx) => {
+  if (route.journeySupported !== true) return;
+  if (route.routeMode !== "MULTIMODAL" || !route.segments?.some(segment => segment.mode === "BUS")) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["journeySupported"], message: "환승 여정의 버스 구간이 필요합니다." });
+    return;
+  }
+  route.segments.forEach((segment, index) => {
+    if (segment.mode === "BUS" && !segment.busLeg) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["segments", index, "busLeg"], message: "버스 구간 운행 정보가 필요합니다." });
+    }
+  });
 });
 
 export const RoutesSearchResponseSchema = z.object({

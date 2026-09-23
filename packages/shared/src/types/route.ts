@@ -11,6 +11,14 @@ export interface RouteSegment {
   routeNumbers: string[];
   stationCount?: number;
   sectionTime?: number;
+  busLeg?: {
+    routeNo: string;
+    localBusId: string;
+    gbisStationId: string;
+    boardingStation: Station;
+    destinationStation: Station;
+    stationList: StationListItem[];
+  };
 }
 
 export interface Route {
@@ -32,5 +40,6 @@ export interface Route {
   guideMessage?: string;
   routeMode?: RouteMode;
   tripSupported?: boolean;
+  journeySupported?: boolean;
   segments?: RouteSegment[];
 }

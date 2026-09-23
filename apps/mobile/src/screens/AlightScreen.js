@@ -1,7 +1,7 @@
 import React, { useRef, useState, useEffect } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator } from 'react-native';
 import * as Speech from 'expo-speech';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect, useIsFocused } from '@react-navigation/native';
 import { apiClient, ApiError } from '../api/client';
 import { useTrip } from '../state/TripContext';
 import { useRealtime } from '../realtime/RealtimeProvider';
@@ -26,6 +26,7 @@ export default function AlightScreen({ route, navigation }) {
   const { tripId, bellRequestId, command, guideMessage } = route.params;
   const resultSentRef = useRef(false); // 중복 전송 방지
   const { state, dispatch } = useTrip();
+  const isFocused = useIsFocused();
   const { session, isConnected, trackingError } = useRealtime();
   const [homeError, setHomeError] = useState(null);
   const endingRef = useRef(false);
@@ -39,9 +40,11 @@ export default function AlightScreen({ route, navigation }) {
   latestRef.current = { state, session, isConnected };
 
   useEffect(() => {
-    if (!state.tripId) navigation.navigate('Main');
+    if (!isFocused) return;
+    if (state.journeyPhase === 'BUS_ALIGHT_CONFIRM' || (state.journeyRoute && !state.tripId)) navigation.navigate('Transfer');
+    else if (!state.tripId) navigation.navigate('Main');
     if (trackingError) navigation.navigate('Error');
-  }, [state.tripId, trackingError]);
+  }, [state.tripId, state.journeyRoute, state.journeyPhase, trackingError, isFocused]);
 
   useEffect(() => {
     if (state.tripStatus === 'TRIP_DONE') stopSessionRef.current?.flow.stopSending();
@@ -202,7 +205,7 @@ export default function AlightScreen({ route, navigation }) {
         <View style={styles.messageBox}>
           <Text style={styles.messageIcon}>⚠️</Text>
           <Text style={styles.message}>
-            {state.tripStatus === 'TRIP_DONE' ? TRIP_COMPLETION_MESSAGE : '하차벨을 요청했습니다. 안전하게 하차하세요.'}
+            {state.tripStatus === 'TRIP_DONE' ? state.journeyRoute ? '이번 버스 구간에 도착했습니다. 실제로 내린 뒤 하차를 확인해 주세요.' : TRIP_COMPLETION_MESSAGE : '하차벨을 요청했습니다. 안전하게 하차하세요.'}
           </Text>
         </View>
 

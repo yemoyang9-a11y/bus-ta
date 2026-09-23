@@ -178,6 +178,8 @@ function buildRouteGuideFallback(selectedRoutes: Route[]): RouteGuideResult {
 }
 
 const MULTIMODAL_NOTICE = "이 경로는 안내 전용이며 운행 시작과 하차벨을 지원하지 않습니다.";
+const TRANSFER_NOTICE = "구간별 환승 안내를 시작할 수 있습니다. 버스 구간마다 운행과 하차벨을 안내하며, 실제 하차 후 다음 구간으로 넘어갑니다.";
+const multimodalNotice = (route: Route) => route.journeySupported ? TRANSFER_NOTICE : MULTIMODAL_NOTICE;
 
 function formatRouteSegments(route: Route): string {
   return (route.segments ?? []).map((segment) => {
@@ -197,7 +199,7 @@ function buildBasicRouteGuide(candidate: Route): string {
     candidate.intervalTime != null ? `${candidate.intervalTime}분` : "확인할 수 없습니다";
 
   if (candidate.routeMode === "MULTIMODAL") {
-    return `${formatRouteSegments(candidate)}하는 경로이며 총 소요시간은 ${totalTime}입니다. ${MULTIMODAL_NOTICE}`;
+    return `${formatRouteSegments(candidate)}하는 경로이며 총 소요시간은 ${totalTime}입니다. ${multimodalNotice(candidate)}`;
   }
 
   return `${routeNo}번은 예상 소요시간이 ${totalTime}이고 배차 간격은 ${intervalTime}입니다.`;
@@ -263,9 +265,10 @@ export async function generateRouteGuide({
 candidateId: ${candidate.candidateId}
 routeMode: ${candidate.routeMode ?? "DIRECT_BUS"}
 tripSupported: ${candidate.tripSupported ?? true}
+journeySupported: ${candidate.journeySupported ?? false}
 버스 번호: ${candidate.routeNo}
 ${candidate.routeMode === "MULTIMODAL"
-  ? `전체 이동 구간: ${formatRouteSegments(candidate)}\n${MULTIMODAL_NOTICE}`
+  ? `전체 이동 구간: ${formatRouteSegments(candidate)}\n${multimodalNotice(candidate)}`
   : `탑승 정류장: ${candidate.boardingStation.stationName}\n실제 하차 정류장: ${candidate.destinationStation.stationName}\n환승: 없음`}
 총 소요시간: ${candidate.totalTime ?? "정보 없음"}분
 도보 거리: ${candidate.totalWalk ?? "정보 없음"}m
@@ -284,7 +287,7 @@ ${candidateInfos}
 - 후보 목록에 있는 candidateId 전부에 대해 각각 안내 문장을 하나씩 만들어줘.
 - candidateId는 후보 목록에 있는 값을 그대로 사용해.
 - DIRECT_BUS의 guideMessage에는 해당 버스 번호, 총 소요시간, 배차 간격을 반드시 포함해.
-- MULTIMODAL은 전체 이동 구간의 도보, 지하철, 버스 순서와 총 소요시간을 안내해. 안내 전용이므로 선택 완료나 운행 시작을 말하지 마.
+- MULTIMODAL은 전체 이동 구간의 도보, 지하철, 버스 순서와 총 소요시간을 안내해. journeySupported가 true이면 구간별 환승 안내를 선택할 수 있다고 말하고, false이면 안내 전용이라고 말해.
 - 시간 정보가 없으면 숫자를 추측하지 말고 해당 정보를 확인할 수 없다고 안내해.
 - recommendationReason은 반환하지 마.
 - 질문 문장 없이 안내 문장만 만들어줘.

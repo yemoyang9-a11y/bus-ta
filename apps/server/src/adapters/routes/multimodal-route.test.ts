@@ -64,6 +64,25 @@ test("three bus transfers keep first bus stationList and the whole journey in se
   assert.deepEqual(route.stationList.map(s => s.stationName), ["첫탑승", "첫하차"]);
   assert.equal(route.destinationStation.stationName, "첫하차");
   assert.equal(route.segments?.at(-1)?.endName, "최종하차");
+  assert.equal(route.journeySupported, true);
+  assert.deepEqual(route.segments?.filter(s => s.mode === "BUS").map(s => [s.busLeg?.routeNo, s.busLeg?.localBusId, s.busLeg?.gbisStationId]), [
+    ["10", "route-10", "station-10"],
+    ["20", "route-20", "station-20"],
+    ["30", "route-30", "station-30"],
+  ]);
+  assert.deepEqual(route.segments?.[2]?.busLeg?.stationList.map(s => s.stationName), ["둘째탑승", "둘째하차"]);
+  assert.equal(RouteCandidateSchema.safeParse(route).success, true);
+});
+
+test("a transfer segment names only the lane used by its executable busLeg", async (t) => {
+  const second = bus("20", "환승탑승", "최종하차");
+  second.lane.push({ busNo: "21", busLocalBlID: "route-21" });
+  stub(t, [path([bus("10"), walk, second])], "MULTIMODAL");
+  const [route] = await searchRoutes(request);
+  assert.ok(route);
+  assert.equal(route.routeNo, "10 → 20");
+  assert.deepEqual(route.segments?.at(-1)?.routeNumbers, ["20"]);
+  assert.equal(route.segments?.at(-1)?.busLeg?.routeNo, "20");
 });
 
 test("bus then subway keeps guide candidate even when first bus ends far from destination", async (t) => {

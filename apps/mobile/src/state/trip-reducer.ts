@@ -1,4 +1,6 @@
 import { resetTripKeepingSearch } from "./trip-transition";
+import type { Route } from "@bus-ta/shared";
+import { canStartJourney } from "./transfer-journey";
 
 // 예모님 확정(2026-08-28): 후보 유효시간 5분
 export const ROUTE_CANDIDATES_TTL_MS = 5 * 60 * 1000;
@@ -12,6 +14,9 @@ export const initialState = {
   routeCandidatesExpiresAt: null as number | null,
   announcedCandidateIds: [] as unknown[],
   selectedRoute: null as unknown,
+  journeyRoute: null as Route | null,
+  journeySegmentIndex: null as number | null,
+  journeyPhase: null as "GUIDING" | "SUBWAY_ON_BOARD" | "BUS_ALIGHT_CONFIRM" | null,
   tripId: null as string | null,
   tripStatus: null as string | null,
   boardingMethod: null as string | null,
@@ -154,6 +159,46 @@ export function tripReducer(state: TripState, action: TripAction): TripState {
         ...state,
         selectedRoute: action.route,
       };
+
+    case "START_JOURNEY": {
+      const route = action.route as Route;
+      if (state.tripId || state.journeyRoute || !canStartJourney(route)) return state;
+      return { ...state, journeyRoute: route, journeySegmentIndex: 0, journeyPhase: "GUIDING", selectedRoute: null };
+    }
+
+    case "MARK_JOURNEY_BUS_ARRIVED": {
+      const segment = state.journeyRoute?.segments?.[state.journeySegmentIndex ?? -1];
+      if (segment?.mode !== "BUS" || state.tripId !== action.tripId ||
+        state.tripStatus !== "TRIP_DONE" || state.journeyPhase !== "GUIDING") return state;
+      return { ...state, journeyPhase: "BUS_ALIGHT_CONFIRM" };
+    }
+
+    case "CONFIRM_JOURNEY_STEP": {
+      const index = state.journeySegmentIndex;
+      const segments = state.journeyRoute?.segments;
+      if (index === null || !segments || action.expectedIndex !== index ||
+        (action.expectedPhase !== undefined && action.expectedPhase !== state.journeyPhase)) return state;
+      const segment = segments[index];
+      if (!segment) return state;
+      if (segment.mode === "SUBWAY" && state.journeyPhase === "GUIDING") {
+        return { ...state, journeyPhase: "SUBWAY_ON_BOARD" };
+      }
+      if (segment.mode === "BUS" && state.journeyPhase !== "BUS_ALIGHT_CONFIRM") return state;
+      if (segment.mode === "SUBWAY" && state.journeyPhase !== "SUBWAY_ON_BOARD") return state;
+      if (segment.mode === "WALK" && state.journeyPhase !== "GUIDING") return state;
+      if (index + 1 >= segments.length) return { ...initialState, beaconScanActive: state.beaconScanActive };
+      return {
+        ...initialState,
+        destination: state.destination,
+        routeCandidates: state.routeCandidates,
+        routeCandidatesExpiresAt: state.routeCandidatesExpiresAt,
+        announcedCandidateIds: state.announcedCandidateIds,
+        journeyRoute: state.journeyRoute,
+        journeySegmentIndex: index + 1,
+        journeyPhase: "GUIDING",
+        beaconScanActive: state.beaconScanActive,
+      };
+    }
 
     case "START_TRIP":
       return {

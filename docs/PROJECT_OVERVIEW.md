@@ -15,6 +15,8 @@
 → GPS 상태 업데이트 → 하차 준비 안내·하차벨 요청 → 도착 또는 운행 취소
 ```
 
+`ROUTE_SEARCH_SCOPE=MULTIMODAL`에서 `journeySupported=true`인 후보를 고르면 앱이 도보·지하철·버스 구간을 순서대로 진행한다. 버스 구간마다 위의 기존 운행 흐름을 적용한다. 서버의 `TRIP_DONE`은 그 버스 구간의 정류장 도착이며, 사용자의 실제 하차 확인 뒤 다음 구간으로 넘어간다. 마지막 구간 확인 후에만 전체 안내를 종료한다.
+
 ## 구성 요소와 책임
 
 - **프론트엔드**: 접근성 UI, 마이크·위치·BLE 권한, Realtime WebRTC 연결, Function/Event Dispatcher, GPS·BLE 결과 전송.
@@ -32,9 +34,11 @@
 6. 탑승확정 후 `remainingStations = 1`에서 새 하차벨 요청이 생성되면 앱은 `STOP_REQUEST`를 BLE 또는 mock 장치에 전달하고, 결과를 `POST /api/trips/{tripId}/bell/result`로 기록한다.
 7. 하차 화면에서도 위치 전송을 계속한다. `TRIP_DONE`은 목적지 정류장 도착을 뜻하며 실제 하차 감지는 아니다. 완료 음성의 출력 종료를 기다린 뒤 상태와 장치를 정리한다. 출력 실패에는 제한 시간과 로컬 음성 대체 경로를 둔다.
 
+환승 여정은 앱이 현재 구간을 보관한다. `start_journey`와 `confirm_journey_step`은 앱 내부 상태를 바꾸고, `start_journey_bus`만 현재 `BUS` 구간의 식별자·정류장 목록으로 기존 `POST /api/trips`를 호출한다. 도보 도착과 지하철 승하차는 사용자가 음성이나 버튼으로 확인한다. 지하철 실시간 위치와 도보 턴 안내는 제공하지 않는다.
+
 ## 구현 상태 표기
 
-- 문서의 계약과 현재 구현 사실은 구분한다. 이번 후속 작업은 `57e50ea` 기준의 `codex-rehearsal-backlog-20260922`에서 진행하며 원본 작업은 보존한다. 변경별 검증과 미확인 범위는 [리허설 결과](superpowers/plans/2026-09-22-rehearsal-results.md)를 기준으로 한다.
+- 문서의 계약과 현재 구현 사실은 구분한다. 환승 여정 구현 계획은 [2026-09-23 계획](superpowers/plans/2026-09-23-transfer-journey.md)을 따른다. 실물 검증과 미확인 범위는 [리허설 결과](superpowers/plans/2026-09-22-rehearsal-results.md)에도 기록한다.
 - `POST /api/realtime/session`의 로컬 구현·시험과 실제 OpenAI 연결·배포 환경 동작 검증은 별도다. 로컬 migration 성공을 운영 Supabase 적용 증거로 사용하지 않는다.
 - 중간평가·mock 중심 문서는 역사적 범위 설명이며, 현재 계약 판단에는 이 문서와 아래의 최종 명세를 사용한다.
 

@@ -123,7 +123,7 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
       Speech.speak(getAssistDeviceFallbackMessage(event), { language: 'ko' });
     }
   };
-  const getActiveTripId = () => stateRef.current.tripStatus === 'CANCELLED' ? null : stateRef.current.tripId;
+  const getActiveTripId = () => ['CANCELLED', 'TRIP_DONE'].includes(stateRef.current.tripStatus ?? '') ? null : stateRef.current.tripId;
 
   // Provider는 Riding → Alight 이동에도 유지된다. 실제 운행 변경에만 GATT를 정리한다.
   const activeBellTripId = getActiveTripId();
@@ -208,14 +208,20 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
       applyStatus: status => {
         dispatchRef.current({ type: 'UPDATE_TRIP_STATUS', status });
         if (status.tripStatus === 'CANCELLED') dispatchRef.current({ type: 'RESET_TRIP_KEEP_SEARCH' });
-        else sessionRef.current?.notifyStatusChange(toTripStatusSnapshot(status));
+        else if (!(status.tripStatus === 'TRIP_DONE' && stateRef.current.journeyRoute)) sessionRef.current?.notifyStatusChange(toTripStatusSnapshot(status));
       },
       announceCompletion: async () => {
+        if (stateRef.current.journeyRoute) {
+          if (stateRef.current.tripId === tripId) Speech.speak('이번 버스 구간의 하차 정류장에 도착했습니다. 안전하게 내린 뒤 내렸다고 말씀하거나 화면의 하차 확인 버튼을 눌러 주세요.', { language: 'ko' });
+          return;
+        }
         const played = await sessionRef.current?.announceTripCompletion(tripId);
         if (!played && stateRef.current.tripId === tripId) await speakCompletionFallback(Speech, 15000, completionAbort.signal);
       },
       finish: () => {
-        if (stateRef.current.tripId === tripId) dispatchRef.current({ type: 'RESET_TRIP' });
+        if (stateRef.current.tripId === tripId) dispatchRef.current(stateRef.current.journeyRoute
+          ? { type: 'MARK_JOURNEY_BUS_ARRIVED', tripId }
+          : { type: 'RESET_TRIP' });
       },
       onError: code => {
         // Transient network refresh failures keep tracking; never print raw location/error objects.

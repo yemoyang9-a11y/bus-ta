@@ -134,6 +134,18 @@ function normalizeSubPaths(subPaths: any[]): RouteSegment[] {
     const endName = String(subPath.endName ?? nextNamedStart ?? "목적지");
     const lanes = Array.isArray(subPath.lane) ? subPath.lane : [];
     const mode = subPath.trafficType === 1 ? "SUBWAY" : subPath.trafficType === 2 ? "BUS" : "WALK";
+    const lane = mode === "BUS" ? lanes.find((item: any) => item.busNo && item.busLocalBlID) : undefined;
+    const stationList = mode === "BUS" ? toStationList(subPath.passStopList?.stations ?? []) : [];
+    const boarding = stationList[0];
+    const destination = stationList.at(-1);
+    const busLeg = lane && boarding && destination && subPath.startLocalStationID ? {
+      routeNo: String(lane.busNo),
+      localBusId: String(lane.busLocalBlID),
+      gbisStationId: String(subPath.startLocalStationID),
+      boardingStation: { stationName: boarding.stationName, latitude: boarding.latitude, longitude: boarding.longitude },
+      destinationStation: { stationName: destination.stationName, latitude: destination.latitude, longitude: destination.longitude },
+      stationList,
+    } : undefined;
 
     return {
       mode,
@@ -142,14 +154,12 @@ function normalizeSubPaths(subPaths: any[]): RouteSegment[] {
       lineNames: lanes
         .map((lane: { name?: unknown }) => (typeof lane.name === "string" ? lane.name : ""))
         .filter(Boolean),
-      routeNumbers:
-        mode === "BUS"
-          ? lanes
-              .map((lane: { busNo?: unknown }) => (typeof lane.busNo === "string" ? lane.busNo : ""))
-              .filter(Boolean)
-          : [],
+      routeNumbers: busLeg ? [busLeg.routeNo] : mode === "BUS"
+        ? lanes.map((item: { busNo?: unknown }) => typeof item.busNo === "string" ? item.busNo : "").filter(Boolean)
+        : [],
       stationCount: typeof subPath.stationCount === "number" ? subPath.stationCount : undefined,
       sectionTime: typeof subPath.sectionTime === "number" ? subPath.sectionTime : undefined,
+      ...(busLeg ? { busLeg } : {}),
     };
   });
 }
@@ -183,10 +193,9 @@ function toStationList(stations: any[]) {
 function getBusRouteLabel(busSubPaths: any[]): string {
   return busSubPaths
     .map((subPath) => {
-      const routeNumbers = (Array.isArray(subPath.lane) ? subPath.lane : [])
-        .map((lane: { busNo?: unknown }) => (typeof lane.busNo === "string" ? lane.busNo : ""))
-        .filter(Boolean);
-      return [...new Set(routeNumbers)].join(" 또는 ");
+      const selected = (Array.isArray(subPath.lane) ? subPath.lane : [])
+        .find((lane: { busNo?: unknown; busLocalBlID?: unknown }) => lane.busNo && lane.busLocalBlID);
+      return selected ? String(selected.busNo) : "";
     })
     .filter(Boolean)
     .join(" → ");
@@ -222,7 +231,7 @@ export async function searchRoutes(request: RoutesSearchRequest): Promise<Route[
 
     if (busSubPaths.length === 0 || !busSubPaths.every(validBusSubPath)) continue;
     // Compatibility fields describe only the first bus leg, never a synthetic joined trip.
-    // The entire journey lives in segments and MULTIMODAL is guidance-only.
+    // The entire journey lives in segments; each BUS segment owns one executable trip.
     const firstBusSubPath = busSubPaths[0];
     const stationList = toStationList(firstBusSubPath.passStopList.stations);
     const firstBusLane = firstBusSubPath.lane.find((lane: any) => lane.busNo && lane.busLocalBlID);
@@ -281,7 +290,10 @@ export async function searchRoutes(request: RoutesSearchRequest): Promise<Route[
           intervalTime: subPath.intervalTime ?? undefined,
           routeMode: "DIRECT_BUS",
           tripSupported: true,
-          segments: segments.map((segment) => segment.mode === "BUS" ? { ...segment, routeNumbers: [routeNo] } : segment),
+          segments: segments.map((segment) => segment.mode === "BUS" ? {
+            ...segment, routeNumbers: [routeNo],
+            ...(segment.busLeg ? { busLeg: { ...segment.busLeg, routeNo, localBusId } } : {}),
+          } : segment),
         });
       }
       continue;
@@ -311,6 +323,7 @@ export async function searchRoutes(request: RoutesSearchRequest): Promise<Route[
       intervalTime: firstBusSubPath.intervalTime ?? undefined,
       routeMode: "MULTIMODAL",
       tripSupported: false,
+      journeySupported: segments.every(segment => segment.mode !== "BUS" || segment.busLeg != null),
       segments,
     });
   }

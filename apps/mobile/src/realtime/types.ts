@@ -11,6 +11,10 @@ export type RealtimeFunctionName =
   | "search_routes"
   | "get_next_route_candidates"
   | "create_trip"
+  | "start_journey"
+  | "confirm_journey_step"
+  | "start_journey_bus"
+  | "cancel_journey"
   | "confirm_boarding"
   | "get_trip_status"
   | "end_trip";
@@ -102,6 +106,9 @@ export type AppTripState = {
   announcedCandidateIds: number[];
 
   selectedRoute: Route | null;
+  journeyRoute?: Route | null;
+  journeySegmentIndex?: number | null;
+  journeyPhase?: "GUIDING" | "SUBWAY_ON_BOARD" | "BUS_ALIGHT_CONFIRM" | null;
   tripId: string | null;
   tripStatus: string | null;
   boardingMethod: BoardingMethod | null;
@@ -136,6 +143,9 @@ export type AppAction =
       candidateIds: number[];
     }
   | { type: "SELECT_ROUTE"; route: Route }
+  | { type: "START_JOURNEY"; route: Route }
+  | { type: "MARK_JOURNEY_BUS_ARRIVED"; tripId: string }
+  | { type: "CONFIRM_JOURNEY_STEP"; expectedIndex: number; expectedPhase?: "GUIDING" | "SUBWAY_ON_BOARD" | "BUS_ALIGHT_CONFIRM" }
   | { type: "START_TRIP"; tripId: string }
   | {
       type: "CONFIRM_BOARDING";

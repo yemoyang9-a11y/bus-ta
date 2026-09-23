@@ -11,6 +11,7 @@ import type {
   UpdateTripRequest,
 } from "@bus-ta/shared";
 import { toSpokenRouteNo } from "@bus-ta/shared";
+import { canStartJourney, startJourneyBus, toBusLegRoute } from "../state/transfer-journey";
 import {
   clearActiveTripContextKeepSearch,
 } from "./context";
@@ -42,6 +43,8 @@ type EndTripModelResult = EndTripResponse & {
   expired: boolean;
 };
 
+type JourneyResult = { success: true; message: string; completed?: boolean; nextSegmentIndex?: number };
+
 type FunctionResult =
   | RoutesSearchResponse
   | BoardingConfirmationResponse
@@ -49,6 +52,7 @@ type FunctionResult =
   | CreateTripResponse
   | EndTripResponse
   | NextRouteCandidatesResult
+  | JourneyResult
   | ApiErrorResult;
 
 type ModelFunctionResult =
@@ -58,6 +62,7 @@ type ModelFunctionResult =
 
 // 동일 함수+인자 조합의 병렬 재호출 방지 (create_trip은 선택당 1회만 등)
 const inFlightCalls = new Map<string, Promise<FunctionResult>>();
+const journeyOrigins = new WeakMap<object, { route: Route; index: number | null; tripId: string | null }>();
 let boardingRequestSequence = 0;
 
 function buildCallKey(
@@ -74,22 +79,27 @@ function buildFunctionResponseInstructions(name: RealtimeFunctionName): string {
   const common =
     "방금 전달된 Function 결과만 근거로 사용자에게 짧고 명확한 한국어 음성 안내를 생성한다. Function 결과가 오기 전의 추측은 사용하지 않는다. 내부 식별자와 오류 코드는 그대로 읽지 않는다. 노선 번호를 말할 때는 결과의 routeNoSpoken을 그대로 읽고 뒤에 '번'을 붙인다. 발음을 직접 계산하거나 일부만 읽지 않는다. routeNoSpoken이 없을 때만 routeNo 표기를 그대로 또박또박 읽고, 그때도 하이픈 뒤 숫자·알파벳·괄호 안 표시를 생략하지 않는다. 실제 routeNo 표기는 변경하지 않는다.";
 
-  const mixedGuidance = "routeMode가 MULTIMODAL이거나 tripSupported가 false인 후보는 안내 전용이다. segments 순서대로 도보, 버스, 지하철과 마지막 도착 구간을 모두 안내하고, 버스는 각 구간의 routeNumbersSpoken을 그대로 읽는다. 최상위 destinationStation은 첫 버스 구간이므로 최종 도착점으로 말하지 않는다. 운행 시작과 하차벨을 지원하지 않는다고 알리며 선택 완료를 말하거나 create_trip을 호출하지 않는다. 선택 질문은 지원되는 직행 후보에만 하고, 안내 전용 후보만 있으면 다른 경로를 검색할지 묻는다.";
+  const mixedGuidance = "MULTIMODAL 후보는 segments 순서대로 모든 구간을 안내한다. journeySupported가 true이면 선택 시 start_journey를 사용하고, 각 버스 구간의 운행과 하차벨을 지원한다. 도보와 지하철은 사용자가 이동 완료를 확인해야 한다. journeySupported가 false이면 안내 전용이라고 설명한다. 최상위 destinationStation은 첫 버스 구간이므로 전체 여정의 최종 도착점으로 말하지 않는다. create_trip은 직행 버스 후보에만 사용한다.";
 
   if (name === "search_routes") {
-    return `${common} ${mixedGuidance} success가 true이고 routes가 빈 배열일 때만 조건에 맞는 노선 후보가 없다고 안내한다. success가 false이면 result.message의 원인을 바꾸어 말하지 않고, 위치 확인 실패나 API 오류를 노선 없음으로 안내하지 않는다. 후보는 최대 두 개를 모두 설명한다. 직행 후보는 routeNo, totalTime, intervalTime을 사용해 "OO번은 예상 소요시간이 N분이고 배차 간격은 M분입니다" 형식으로 설명하고 지원되는 직행 후보가 있으면 "어떤 버스를 선택하시겠어요?"라고 묻는다. 값이 없는 시간은 추측하지 말고 확인할 수 없다고 말한다.`;
+    return `${common} ${mixedGuidance} success가 true이고 routes가 빈 배열일 때만 조건에 맞는 노선 후보가 없다고 안내한다. success가 false이면 result.message의 원인을 바꾸어 말하지 않고, 위치 확인 실패나 API 오류를 노선 없음으로 안내하지 않는다. 후보는 최대 두 개를 모두 설명한다. 직행 후보는 routeNo, totalTime, intervalTime을 사용해 "OO번은 예상 소요시간이 N분이고 배차 간격은 M분입니다" 형식으로 설명한다. 선택 가능한 직행 또는 환승 후보가 있으면 어느 경로를 선택할지 묻는다. 값이 없는 시간은 추측하지 말고 확인할 수 없다고 말한다.`;
   }
 
   // 예모님 확정(2026-08-28, 예외상황 1번): "다른 버스 없어요?"에 새 검색 없이
   // 앱에 보관된 후보 중 다음 2개를 candidates 필드로 안내한다. expired가 true이면
   // 5분 TTL이 지난 상태이므로 candidates를 무시하고 재검색을 유도해야 한다.
   if (name === "get_next_route_candidates") {
-    return `${common} ${mixedGuidance} expired가 true이면 이전에 검색한 노선 후보가 오래되어 더 이상 사용할 수 없다고 안내하고, 목적지를 다시 말씀해 달라고 요청한다. 이 경우 candidates는 절대 안내하지 않는다. expired가 true가 아니고 candidates가 비어 있지 않으면, 직행 후보는 routeNo와 boardingStation, destinationStation을 사용하고 안내 전용 후보는 전체 segments를 사용해 안내한다. guideMessage가 있으면 활용한다. lastBatch가 true이면 이번 후보가 마지막이라고 덧붙인다. 지원되는 직행 후보가 있으면 어떤 버스를 선택할지 묻는다. exhausted가 true이면(candidates가 비어 있고 expired도 아니면) 더 이상 안내할 다른 노선 후보가 없다고 말하고 새로 검색할지 묻는다.`;
+    return `${common} ${mixedGuidance} expired가 true이면 오래된 후보를 안내하지 말고 다시 검색하도록 요청한다. candidates가 있으면 그 후보만 설명하고 lastBatch가 true이면 마지막 후보라고 덧붙인다. 선택 가능한 직행 또는 환승 후보가 있으면 어느 경로를 선택할지 묻는다. exhausted가 true이면 다른 후보가 없다고 말한다.`;
   }
 
   if (name === "create_trip") {
     return `${common} success가 false이면 result.message의 실패 원인만 안내하고 선택 완료나 탑승 대기 성공을 말하지 않는다. 이후 성공 안내는 success가 true일 때만 적용한다. create_trip 성공은 실제 탑승 완료가 아니라 WAITING_BUS 상태의 탑승 대기 시작이다. 성공 결과이면 \"OO번 버스를 선택했습니다. OO 정류장에서 기다려 주세요.\"라고 routeNo와 앱이 제공한 탑승 정류장을 안내한다. arrivals의 첫 항목이 있으면 predictedArrivalMinutes를 사용해 \"버스는 약 N분 후 도착합니다.\"라고 반드시 말한다. arrivals가 비어 있으면 시간을 추측하지 말고 \"현재 실시간 버스 도착정보를 확인할 수 없습니다\"라고 반드시 말한다. 이 응답에서는 절대 \"탑승했습니다\", \"탑승 중입니다\", \"운행을 시작합니다\"라고 말하지 않는다. 두 번째 차량은 사용자가 물을 때만 안내한다.`;
   }
+
+  if (name === "start_journey") return `${common} success가 true이면 환승 안내를 시작하고 첫 구간의 이동 방법과 도착 지점을 안내한다. 도보와 지하철 이동·하차는 사용자가 직접 확인해야 한다고 알린다. 실패하면 message만 안내한다.`;
+  if (name === "confirm_journey_step") return `${common} success가 true일 때만 확인이 처리됐다고 말한다. completed가 true이면 목적지에 도착했고 전체 안내를 마친다고 말한다. 다음 구간이 남았으면 결과의 다음 구간 안내를 말한다. 실패하면 message만 안내한다.`;
+  if (name === "start_journey_bus") return `${common} success가 true이면 이번 버스 구간의 노선과 승차 정류장, 최신 도착 예정 시간을 안내한다. 이 단계는 탑승 대기이며 실제 탑승으로 말하지 않는다. 실패하면 message만 안내한다.`;
+  if (name === "cancel_journey") return `${common} success가 true이면 환승 안내가 종료됐다고 말한다. 실패하면 종료됐다고 말하지 말고 message만 안내한다.`;
 
   // 도착 예정 시간 안내의 단일 기준.
   //
@@ -110,7 +120,7 @@ function buildFunctionResponseInstructions(name: RealtimeFunctionName): string {
   }
 
   if (name === "end_trip") {
-    return `${common} ${mixedGuidance} success가 true이면 선택한 운행만 취소된 것이다. expired가 true이면 오래된 후보를 안내하지 말고 다시 검색할지 묻는다. expired가 false이고 result.routes가 있으면 취소한 노선은 다시 말하지 말고, 새 검색도 하지 않은 채 전달된 다른 직행 후보를 routeNo, totalTime, intervalTime으로 안내하고 안내 전용 후보는 전체 segments로 안내한다. 지원되는 직행 후보가 있으면 "어떤 버스를 선택하시겠어요?"라고 묻는다. result.routes가 비어 있을 때만 안내할 다른 보관 후보가 없다고 설명하고 다시 검색할지 묻는다. success가 false이면 후보를 다시 안내하거나 취소됐다고 말하지 말고 result.message의 확인된 실패 원인만 안내한다.`;
+    return `${common} ${mixedGuidance} success가 true이면 선택한 운행이 취소됐다. expired가 true이면 다시 검색할지 묻고, 아니면 취소한 노선은 다시 말하지 말고 result.routes의 다른 후보를 설명한다. result.routes가 비어 있으면 다시 검색할지 묻는다. 실패하면 result.message만 안내한다.`;
   }
 
   return common;
@@ -139,7 +149,7 @@ export async function dispatchRealtimeFunctionCall(
     }
 
     result = await callPromise;
-    result = rejectStaleTripResult(event.name, result, context);
+    result = await rejectStaleTripResult(event.name, result, context);
   }
 
   const modelResult = withSpokenRouteNumbers(
@@ -277,6 +287,12 @@ function buildModelFunctionResult(
     };
   }
 
+  if (name === "start_journey_bus" && result.success === true && "arrivals" in result) {
+    const state = context.getAppState();
+    const segment = state.journeySegmentIndex == null ? undefined : state.journeyRoute?.segments?.[state.journeySegmentIndex];
+    return segment?.busLeg ? { ...result, boardingStation: segment.busLeg.boardingStation } : result;
+  }
+
   if (name !== "create_trip" || result.success !== true || !("arrivals" in result)) {
     return result;
   }
@@ -285,11 +301,27 @@ function buildModelFunctionResult(
   return selectedRoute ? { ...result, boardingStation: selectedRoute.boardingStation } : result;
 }
 
-function rejectStaleTripResult(
+async function rejectStaleTripResult(
   name: RealtimeFunctionName,
   result: FunctionResult,
   context: RealtimeGuideContext,
-): FunctionResult {
+): Promise<FunctionResult> {
+  if (result.success === true && (name === "start_journey_bus" || name === "cancel_journey")) {
+    const origin = journeyOrigins.get(result);
+    const current = context.getAppState();
+    const stale = !origin || current.journeyRoute !== origin.route ||
+      current.journeySegmentIndex !== origin.index ||
+      (name === "start_journey_bus"
+        ? Boolean(current.tripId) || current.journeyPhase !== "GUIDING"
+        : current.tripId !== origin.tripId);
+    if (stale) {
+      if (name === "start_journey_bus" && "tripId" in result && typeof result.tripId === "string") {
+        await apiClient.trips.end(result.tripId, { action: "CANCEL" }).catch(() => undefined);
+      }
+      return { success: false, errorCode: "STALE_JOURNEY_CONTEXT", message: "환승 안내가 변경되어 이전 요청을 적용하지 않았습니다.", timestamp: new Date().toISOString() };
+    }
+    return result;
+  }
   if (
     result.success !== true ||
     (name !== "confirm_boarding" && name !== "end_trip" && name !== "get_trip_status")
@@ -327,6 +359,10 @@ export function isRealtimeFunctionCallEvent(event: unknown): event is RealtimeFu
       "search_routes",
       "get_next_route_candidates",
       "create_trip",
+      "start_journey",
+      "confirm_journey_step",
+      "start_journey_bus",
+      "cancel_journey",
       "confirm_boarding",
       "get_trip_status",
       "end_trip",
@@ -389,6 +425,53 @@ async function callBackendFunction(
     }
     case "create_trip":
       return apiClient.trips.create(assertCreateTripRequest(args, context));
+    case "start_journey": {
+      const value = assertRecord(args);
+      const state = context.getAppState();
+      if (state.tripId || state.journeyRoute) throw new Error("진행 중인 안내가 있습니다.");
+      if (!state.routeCandidatesExpiresAt || Date.now() > state.routeCandidatesExpiresAt) throw new Error("경로 후보가 만료되었습니다. 다시 검색해 주세요.");
+      const route = state.routeCandidates?.find((candidate) => candidate.candidateId === assertPositiveInteger(value.candidateId, "candidateId"));
+      if (!route || !canStartJourney(route)) throw new Error("운행 가능한 환승 경로 후보를 찾을 수 없습니다.");
+      const first = route.segments?.[0];
+      return { success: true, message: `환승 안내를 시작합니다. 첫 구간은 ${first?.startName}에서 ${first?.endName}까지 ${first?.mode === 'WALK' ? '도보' : first?.mode === 'SUBWAY' ? '지하철' : '버스'}입니다.`, nextSegmentIndex: 0 };
+    }
+    case "confirm_journey_step": {
+      const value = assertRecord(args);
+      const state = context.getAppState();
+      const index = state.journeySegmentIndex;
+      const segment = index == null ? undefined : state.journeyRoute?.segments?.[index];
+      const expectedStep = segment?.mode === 'WALK' ? 'WALK_ARRIVED'
+        : segment?.mode === 'SUBWAY' ? state.journeyPhase === 'GUIDING' ? 'SUBWAY_BOARDED' : 'SUBWAY_ALIGHTED'
+          : segment?.mode === 'BUS' && state.journeyPhase === 'BUS_ALIGHT_CONFIRM' ? 'BUS_ALIGHTED' : null;
+      if (!expectedStep || value.step !== expectedStep) throw new Error("현재 구간에서 확인할 수 없는 동작입니다.");
+      const completed = state.journeyRoute?.segments?.length === index! + 1 && expectedStep !== 'SUBWAY_BOARDED';
+      const next = completed ? undefined : expectedStep === 'SUBWAY_BOARDED' ? segment : state.journeyRoute?.segments?.[index! + 1];
+      return { success: true, completed, nextSegmentIndex: expectedStep === 'SUBWAY_BOARDED' ? index! : index! + 1,
+        message: completed ? '목적지에 도착했습니다. 안내를 마칩니다.'
+          : expectedStep === 'SUBWAY_BOARDED' ? `지하철 탑승을 확인했습니다. ${segment?.endName}에서 실제로 내린 뒤 하차를 확인해 주세요.` : next
+          ? `확인했습니다. ${next.startName}에서 ${next.endName}까지 ${next.mode === 'WALK' ? '도보' : next.mode === 'SUBWAY' ? '지하철' : '버스'} 구간입니다.` : '확인했습니다.' };
+    }
+    case "start_journey_bus": {
+      assertEmptyObject(args);
+      const state = context.getAppState();
+      const route = state.journeyRoute;
+      const index = state.journeySegmentIndex;
+      if (!route || index == null || state.journeyPhase !== 'GUIDING' || state.tripId) throw new Error("지금 시작할 버스 구간이 없습니다.");
+      const created = await startJourneyBus(route, index, apiClient.trips.create);
+      journeyOrigins.set(created, { route, index, tripId: null });
+      return created;
+    }
+    case "cancel_journey": {
+      assertEmptyObject(args);
+      const state = context.getAppState();
+      if (!state.journeyRoute) throw new Error("진행 중인 환승 안내가 없습니다.");
+      if (state.tripId && state.tripStatus !== 'TRIP_DONE' && state.tripStatus !== 'CANCELLED') {
+        await apiClient.trips.end(state.tripId, { action: 'CANCEL' });
+      }
+      const result: JourneyResult = { success: true, message: '환승 안내를 종료했습니다.' };
+      journeyOrigins.set(result, { route: state.journeyRoute, index: state.journeySegmentIndex ?? null, tripId: state.tripId });
+      return result;
+    }
     case "confirm_boarding": {
       assertEmptyObject(args);
       const tripId = assertCurrentTripId(context);
@@ -444,6 +527,34 @@ function updateContext(
       context.dispatchAppAction({ type: "SELECT_ROUTE", route: selectedRoute });
     }
     context.dispatchAppAction({ type: "START_TRIP", tripId: createResult.tripId });
+    return;
+  }
+
+  if (name === "start_journey") {
+    const selectedRoute = findSelectedRoute(args, context);
+    if (selectedRoute) context.dispatchAppAction({ type: "START_JOURNEY", route: selectedRoute });
+    return;
+  }
+
+  if (name === "confirm_journey_step") {
+    const current = context.getAppState();
+    if (current.journeySegmentIndex != null && current.journeyPhase) context.dispatchAppAction({
+      type: "CONFIRM_JOURNEY_STEP", expectedIndex: current.journeySegmentIndex, expectedPhase: current.journeyPhase,
+    });
+    return;
+  }
+
+  if (name === "start_journey_bus") {
+    const current = context.getAppState();
+    if (current.journeyRoute && current.journeySegmentIndex != null) {
+      context.dispatchAppAction({ type: "SELECT_ROUTE", route: toBusLegRoute(current.journeyRoute, current.journeySegmentIndex) });
+      context.dispatchAppAction({ type: "START_TRIP", tripId: (result as CreateTripResponse).tripId });
+    }
+    return;
+  }
+
+  if (name === "cancel_journey") {
+    context.dispatchAppAction({ type: "RESET_TRIP_KEEP_SEARCH" });
     return;
   }
 
@@ -523,7 +634,9 @@ function assertCreateTripRequest(
   }
 
   if (selectedRoute.tripSupported === false || selectedRoute.routeMode === "MULTIMODAL" || (selectedRoute.busTransitCount ?? 1) > 1) {
-    throw new Error("이 경로는 안내 전용입니다. 환승 경로의 운행 시작과 하차벨은 지원하지 않습니다.");
+    throw new Error(canStartJourney(selectedRoute)
+      ? "환승 경로는 전체 경로를 한 번에 운행 생성할 수 없습니다. start_journey로 구간별 안내를 시작해 주세요."
+      : "이 경로는 안내 전용입니다. 환승 경로의 운행 시작과 하차벨은 지원하지 않습니다.");
   }
 
   const appState = context.getAppState();
@@ -594,7 +707,7 @@ function assertEndTripRequest(
 
 function parseFunctionArguments(rawArguments: string, name: RealtimeFunctionName): unknown | ApiErrorResult {
   try {
-    if (rawArguments.trim() === "" && (name === "confirm_boarding" || name === "get_next_route_candidates")) return {};
+    if (rawArguments.trim() === "" && (name === "confirm_boarding" || name === "get_next_route_candidates" || name === "start_journey_bus" || name === "cancel_journey")) return {};
     return JSON.parse(rawArguments);
   } catch {
     return {

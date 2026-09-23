@@ -115,6 +115,115 @@ test("accepts get_next_route_candidates as a Realtime function event", () => {
   );
 });
 
+test("voice starts a supported transfer journey and confirms only the current alighting step", async () => {
+  const direct = makeRoute(8, "15-2");
+  const mixed: Route = { ...direct, routeMode: "MULTIMODAL", tripSupported: false, journeySupported: true,
+    segments: [
+      { mode: "BUS", startName: "첫 정류장", endName: "환승 정류장", lineNames: [], routeNumbers: ["15-2"],
+        busLeg: { routeNo: direct.routeNo, localBusId: direct.localBusId, gbisStationId: direct.gbisStationId,
+          boardingStation: direct.boardingStation, destinationStation: direct.destinationStation, stationList: direct.stationList } },
+      { mode: "WALK", startName: "환승 정류장", endName: "다음 정류장", lineNames: [], routeNumbers: [] },
+    ] };
+  const actions: AppAction[] = [];
+  const start = await dispatchRealtimeFunctionCall({ type: "response.function_call_arguments.done", call_id: "journey-start", name: "start_journey", arguments: JSON.stringify({ candidateId: 8 }) },
+    createContext(actions, { ...baseState, tripId: null, routeCandidates: [mixed], routeCandidatesExpiresAt: Date.now() + 60000 }));
+  assert.equal(readFunctionOutput(start).success, true);
+  assert.deepEqual(actions, [{ type: "START_JOURNEY", route: mixed }]);
+  const wrongTool = await dispatchRealtimeFunctionCall({ type: "response.function_call_arguments.done", call_id: "wrong-create", name: "create_trip", arguments: JSON.stringify({ candidateId: 8 }) },
+    createContext(actions, { ...baseState, tripId: null, routeCandidates: [mixed] }));
+  assert.equal(readFunctionOutput(wrongTool).success, false);
+  assert.match(String(readFunctionOutput(wrongTool).message), /start_journey/);
+
+  const current = { ...baseState, tripId: "first-bus", tripStatus: "TRIP_DONE", journeyRoute: mixed,
+    journeySegmentIndex: 0, journeyPhase: "BUS_ALIGHT_CONFIRM" as const };
+  const denied = await dispatchRealtimeFunctionCall({ type: "response.function_call_arguments.done", call_id: "wrong-step", name: "confirm_journey_step", arguments: JSON.stringify({ step: "SUBWAY_ALIGHTED" }) }, createContext(actions, current));
+  assert.equal(readFunctionOutput(denied).success, false);
+  assert.equal(actions.length, 1);
+  const confirmed = await dispatchRealtimeFunctionCall({ type: "response.function_call_arguments.done", call_id: "right-step", name: "confirm_journey_step", arguments: JSON.stringify({ step: "BUS_ALIGHTED" }) }, createContext(actions, current));
+  assert.equal(readFunctionOutput(confirmed).success, true);
+  assert.deepEqual(actions[1], { type: "CONFIRM_JOURNEY_STEP", expectedIndex: 0, expectedPhase: "BUS_ALIGHT_CONFIRM" });
+});
+
+test("voice starts a later bus using only that segment's station and route identifiers", async (t) => {
+  const first = makeRoute(9, "11");
+  const second = makeRoute(10, "22");
+  const mixed: Route = { ...first, routeMode: "MULTIMODAL", tripSupported: false, journeySupported: true,
+    segments: [
+      { mode: "WALK", startName: "출발", endName: "정류장", lineNames: [], routeNumbers: [] },
+      { mode: "BUS", startName: "정류장", endName: "목적지", lineNames: [], routeNumbers: ["22"],
+        busLeg: { routeNo: second.routeNo, localBusId: second.localBusId, gbisStationId: second.gbisStationId,
+          boardingStation: second.boardingStation, destinationStation: second.destinationStation, stationList: second.stationList } },
+    ] };
+  const sent: Record<string, unknown>[] = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (_input, init) => {
+    sent.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+    return Response.json({ success: true, tripId: "second-trip", routeNo: "22", localBusId: second.localBusId,
+      gbisStationId: second.gbisStationId, arrivals: [], tripStatus: TRIP_STATUS.WAITING_BUS,
+      bellStatus: "NOT_REQUESTED", shouldTriggerBell: false, createdAt: "2026-09-23T00:00:00.000Z",
+      message: "운행을 생성했습니다.", timestamp: "2026-09-23T00:00:00.000Z" });
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const actions: AppAction[] = [];
+  const result = await dispatchRealtimeFunctionCall({ type: "response.function_call_arguments.done", call_id: "next-bus", name: "start_journey_bus", arguments: "{}" },
+    createContext(actions, { ...baseState, tripId: null, journeyRoute: mixed, journeySegmentIndex: 1, journeyPhase: "GUIDING" }));
+  assert.equal(readFunctionOutput(result).success, true);
+  assert.equal(sent[0]?.routeNo, "22");
+  assert.equal(sent[0]?.localBusId, second.localBusId);
+  assert.equal(sent[0]?.busTransitCount, 1);
+  assert.equal(sent[0]?.routeMode, "DIRECT_BUS");
+  assert.equal(actions[0]?.type, "SELECT_ROUTE");
+  assert.deepEqual(actions[1], { type: "START_TRIP", tripId: "second-trip" });
+});
+
+test("voice can cancel an active transfer journey after server cancellation succeeds", async (t) => {
+  const direct = makeRoute(12, "33");
+  const mixed: Route = { ...direct, routeMode: "MULTIMODAL", tripSupported: false, journeySupported: true,
+    segments: [{ mode: "BUS", startName: "출발", endName: "환승", lineNames: [], routeNumbers: ["33"],
+      busLeg: { routeNo: direct.routeNo, localBusId: direct.localBusId, gbisStationId: direct.gbisStationId,
+        boardingStation: direct.boardingStation, destinationStation: direct.destinationStation, stationList: direct.stationList } }] };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => Response.json({ success: true, tripId: "cancel-me", tripStatus: "CANCELLED", message: "취소", timestamp: "2026-09-23T00:00:00.000Z" });
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const actions: AppAction[] = [];
+  const result = await dispatchRealtimeFunctionCall({ type: "response.function_call_arguments.done", call_id: "cancel-transfer", name: "cancel_journey", arguments: "{}" },
+    createContext(actions, { ...baseState, tripId: "cancel-me", journeyRoute: mixed, journeySegmentIndex: 0, journeyPhase: "GUIDING" }));
+  assert.equal(readFunctionOutput(result).success, true);
+  assert.deepEqual(actions, [{ type: "RESET_TRIP_KEEP_SEARCH" }]);
+});
+
+test("a late bus creation cannot attach to a replaced journey", async (t) => {
+  const direct = makeRoute(13, "44");
+  const mixed: Route = { ...direct, routeMode: "MULTIMODAL", tripSupported: false, journeySupported: true,
+    segments: [{ mode: "BUS", startName: "출발", endName: "환승", lineNames: [], routeNumbers: ["44"],
+      busLeg: { routeNo: direct.routeNo, localBusId: direct.localBusId, gbisStationId: direct.gbisStationId,
+        boardingStation: direct.boardingStation, destinationStation: direct.destinationStation, stationList: direct.stationList } }] };
+  let releaseCreate: ((value: Response) => void) | undefined;
+  let cancelCalls = 0;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (_input, init) => {
+    if (init?.method === "POST") return new Promise<Response>((resolve) => { releaseCreate = resolve; });
+    cancelCalls += 1;
+    return Response.json({ success: true, tripId: "late-trip", tripStatus: "CANCELLED", message: "취소", timestamp: "2026-09-23T00:00:00.000Z" });
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const actions: AppAction[] = [];
+  let current: AppTripState = { ...baseState, tripId: null, journeyRoute: mixed, journeySegmentIndex: 0, journeyPhase: "GUIDING" };
+  const context: RealtimeGuideContext = { ...createContext(actions), getAppState: () => current };
+  const pending = dispatchRealtimeFunctionCall({ type: "response.function_call_arguments.done", call_id: "late-create", name: "start_journey_bus", arguments: "{}" }, context);
+  await new Promise((resolve) => setImmediate(resolve));
+  current = { ...current, journeyRoute: { ...mixed }, journeySegmentIndex: 0 };
+  assert.ok(releaseCreate);
+  releaseCreate(Response.json({ success: true, tripId: "late-trip", routeNo: "44", localBusId: direct.localBusId,
+    gbisStationId: direct.gbisStationId, arrivals: [], tripStatus: TRIP_STATUS.WAITING_BUS,
+    bellStatus: "NOT_REQUESTED", shouldTriggerBell: false, createdAt: "2026-09-23T00:00:00.000Z",
+    message: "생성", timestamp: "2026-09-23T00:00:00.000Z" }));
+  const result = await pending;
+  assert.equal(readFunctionOutput(result).success, false);
+  assert.equal(cancelCalls, 1);
+  assert.deepEqual(actions, []);
+});
+
 test("explicit voice function supplies active trip and USER_CONFIRMED evidence to the API", async () => {
   const actions: AppAction[] = [];
   const requests: Array<{

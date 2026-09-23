@@ -141,13 +141,17 @@ Function은 사용자 의도를 처리하는 경로다. 자동 GPS·하차벨 �
 | 후보 필드 | 값과 의미 |
 | --- | --- |
 | `routeMode` | `DIRECT_BUS` 또는 `MULTIMODAL` |
-| `tripSupported` | 직행버스는 `true`, 환승 안내 전용은 `false` |
-| `segments` | 순서가 있는 `{ mode, startName, endName, lineNames, routeNumbers, stationCount?, sectionTime? }[]`. `mode`는 `WALK | BUS | SUBWAY`, 시간은 분 |
+| `tripSupported` | 후보 전체를 하나의 서버 trip으로 생성할 수 있는지. 직행은 `true`, 환승은 `false` |
+| `journeySupported` | 앱이 구간별로 실행할 수 있는 환승 후보는 `true`. 버스 구간 정보가 불완전하면 `false` |
+| `segments` | 순서가 있는 `{ mode, startName, endName, lineNames, routeNumbers, stationCount?, sectionTime?, busLeg? }[]`. `mode`는 `WALK | BUS | SUBWAY`, 시간은 분 |
+| `segments[].busLeg` | 실행 가능한 `BUS` 구간의 `{ routeNo, localBusId, gbisStationId, boardingStation, destinationStation, stationList }` |
 
-세 필드는 구버전 직행 응답 수용을 위해 공유 스키마에서는 선택 사항이다. 현재 검색 제공자는 채워 반환한다. ODsay 숫자형 `pathType`·`trafficType`은 외부 응답·운행 요청·DB에 사용하지 않는다. 직행버스는 기존 노선 번호 기준 중복 제거를 유지하고, 다중교통은 전체 `segments`가 같은 후보를 중복 제거한다.
+`routeMode`, `tripSupported`, `journeySupported`, `segments`는 구버전 직행 응답 수용을 위해 공유 스키마에서 선택 사항이다. 실제 검색 제공자는 경로에 맞게 채운다. `journeySupported=true`이면 모든 `BUS` segment에 유효한 `busLeg`가 있어야 한다. ODsay 숫자형 `pathType`·`trafficType`은 외부 응답·운행 요청·DB에 사용하지 않는다. 직행버스는 기존 노선 번호 기준 중복 제거를 유지하고, 다중교통은 전체 `segments`가 같은 후보를 중복 제거한다.
 
-다중교통 후보의 최상위 `localBusId`·`gbisStationId`·`boardingStation`·`destinationStation`·`stationList`는 호환용 **첫 번째 버스 구간**이다. `destinationStation`이 전체 여정의 마지막 정류장이라는 뜻이 아니다. 전체 이동 순서와 최종 도착 구간은 `segments`로 안내한다. 버스 구간의 정류장 목록을 이어 붙여 단일 운행 추적 경로로 만들지 않는다. `tripSupported=false` 후보는 검색·음성 안내만 가능하며 앱 화면과 Realtime `create_trip`에서 운행 시작을 차단한다.
-상위 2개에 포함된 다중교통 후보의 `guideMessage`는 서버가 모든 `segments`를 순서대로 조합하고 안내 전용 문구를 붙인다. 모델 응답이 일부 구간을 생략해도 반환 안내문에서는 해당 구간을 빠뜨리지 않는다. 앱의 모델 전용 전달값에는 각 버스 구간의 `routeNumbersSpoken`도 추가한다. 이는 공개 REST 필드나 DB 필드가 아니다.
+ODsay가 한 버스 구간에 여러 대체 노선을 제공하면 실행 가능한 환승 후보는 식별자가 확인된 첫 노선을 `busLeg`와 `routeNumbers`에 동일하게 표시한다. 안내한 번호와 실제 추적하는 번호가 달라지지 않도록 한다.
+
+다중교통 후보의 최상위 `localBusId`·`gbisStationId`·`boardingStation`·`destinationStation`·`stationList`는 호환용 **첫 번째 버스 구간**이다. `destinationStation`이 전체 여정의 마지막 정류장이라는 뜻이 아니다. 전체 이동 순서와 최종 도착 구간은 `segments`로 안내한다. 버스 구간의 정류장 목록을 이어 붙여 단일 운행 추적 경로로 만들지 않는다. `tripSupported=false`인 전체 환승 후보를 그대로 `POST /api/trips`에 보내면 거부한다. `journeySupported=true`이면 앱이 전체 여정과 현재 segment를 유지하고 각 버스의 `busLeg`로 **별도 직행 버스 trip**을 생성한다. 서버 `TRIP_DONE` 이후에도 실제 하차를 음성 또는 버튼으로 확인하기 전에는 다음 segment로 넘어가거나 전체 안내를 종료하지 않는다. 도보 도착과 지하철 탑승·하차도 사용자가 확인한다. 마지막 segment 확인 후에만 전체 여정이 끝난다.
+상위 2개에 포함된 다중교통 후보의 `guideMessage`는 서버가 모든 `segments`를 순서대로 조합한다. `journeySupported=true`이면 구간별 안내 가능 문구를, 그렇지 않으면 안내 전용 문구를 붙인다. 모델 응답이 일부 구간을 생략해도 반환 안내문에서는 해당 구간을 빠뜨리지 않는다. 앱의 모델 전용 전달값에는 각 버스 구간의 `routeNumbersSpoken`도 추가한다. 이는 공개 REST 필드나 DB 필드가 아니다.
 
 경로 검색 provider는 검색 1회당 한 번만 호출하고, 사용자가 다음 후보를 요청할 때는 앱이 이미 받은 `routes[]`를 재사용한다. 도착정보는 사용자가 후보를 선택한 뒤 `POST /api/trips`에서 최초 조회하고, 버스를 놓친 뒤 `get_trip_status`가 호출되면 `GET /api/trips/{tripId}/status`에서 선택 노선을 기준으로 새로 조회한다.
 
@@ -165,7 +169,7 @@ Function은 사용자 의도를 처리하는 경로다. 자동 GPS·하차벨 �
 
 ## 운행 생성 도착 정보
 
-`POST /api/trips`는 직행버스만 지원한다. 명시적 `tripSupported:false`, `routeMode:MULTIMODAL` 또는 `busTransitCount>1`은 도착정보 조회·DB 저장 전에 `400 INVALID_REQUEST`로 거부한다. 구버전 직행 요청은 새 필드를 생략할 수 있다. 서버의 현재 검증은 정류장 목록의 일관성 검사이며 저장된 검색 후보와 대조하지 않는다. 환승 메타데이터를 모두 제거하고 직행처럼 만든 요청의 검색 이력까지 검증하는 것은 아니다. 새 후보 인증·세션 API와 환승 추적 DB 필드는 이번 변경에 추가하지 않는다.
+`POST /api/trips` 요청 한 건은 버스 한 구간만 지원한다. 명시적 `tripSupported:false`, `routeMode:MULTIMODAL` 또는 `busTransitCount>1`은 도착정보 조회·DB 저장 전에 `400 INVALID_REQUEST`로 거부한다. 환승 앱은 현재 `BUS` segment의 `busLeg`를 `DIRECT_BUS`, `tripSupported:true`, `busTransitCount:1`인 요청으로 변환하여 구간마다 호출한다. 구버전 직행 요청은 새 필드를 생략할 수 있다. 서버의 현재 검증은 정류장 목록의 일관성 검사이며 저장된 검색 후보와 대조하지 않는다. 환승 메타데이터를 모두 제거하고 직행처럼 만든 요청의 검색 이력까지 검증하는 것은 아니다. 새 후보 인증·세션 API와 환승 추적 DB 필드는 이번 변경에 추가하지 않는다.
 
 `POST /api/trips` 성공 응답은 도착 예정 차량을 **`arrivals` 배열**로 반환한다. 도착 순서대로 최대 2대이며, GBIS가 1대만 주면 1개, 정보가 없거나 조회에 실패하면 빈 배열 `[]`이다. **조회 실패는 운행 생성을 막지 않는다** — `arrivals: []`로 `201`을 반환한다. GBIS 호출 timeout은 5초다.
 

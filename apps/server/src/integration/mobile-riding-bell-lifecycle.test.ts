@@ -116,7 +116,7 @@ function setup(options: { gps?: boolean; auto?: boolean; offlineCompletion?: boo
     ...shared,
     react: screenHooks.React,
     'react-native': { StyleSheet: { create: (value: unknown) => value } },
-    '@react-navigation/native': { useFocusEffect() {} },
+    '@react-navigation/native': { useFocusEffect() {}, useIsFocused: () => true },
     '../state/trip-transition': {
       isScreenTripActive: (active: string, screen: string) => active === screen,
     },

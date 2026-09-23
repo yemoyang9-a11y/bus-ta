@@ -15,6 +15,8 @@
 
 Function 매핑은 `search_routes → POST /api/routes/search`, `create_trip → POST /api/trips`, `confirm_boarding → POST /api/trips/{tripId}/boarding/confirm`, `get_trip_status → GET /api/trips/{tripId}/status`, `end_trip → PATCH /api/trips/{tripId}`이다. `get_next_route_candidates`는 REST API를 호출하지 않고 앱에 보관된 기존 후보에서 아직 안내하지 않은 다음 후보를 고르는 로컬 Function이다. `confirm_boarding`은 모델이 빈 객체만 보내고 Dispatcher가 활성 `tripId`, 전용 `requestId`, `USER_CONFIRMED`를 채운다. 모델이 식별자·좌표·판정값을 만들도록 두지 않는다. `confirm_boarding`과 `end_trip` 응답의 `tripId`가 현재 활성 운행과 다르면 `STALE_TRIP_CONTEXT`로 처리하고 TripContext를 변경하지 않는다.
 
+환승 후보는 `journeySupported=true`일 때 화면 선택 또는 `start_journey(candidateId)`로 앱 여정을 시작한다. `confirm_journey_step(step)`은 도보 도착·지하철 탑승/하차·버스 실제 하차를 현재 단계와 대조한다. `start_journey_bus({})`만 현재 버스 segment의 `busLeg`를 사용해 기존 `POST /api/trips`를 호출한다. 모델이 버스 구간 식별자나 정류장을 다시 조립하지 않는다. 환승 후보 전체에 `create_trip`을 호출하지 않는다.
+
 ## 앱 상태와 자동 이벤트
 
 앱 상태는 목적지, 최근 후보, 선택 후보, `tripId`, 운행 진행 여부와 최근 결과를 보관한다. Realtime 대화 기억은 상태 저장소가 아니다.
@@ -22,7 +24,7 @@ Function 매핑은 `search_routes → POST /api/routes/search`, `create_trip →
 - 운행 중 GPS watch는 약 2초 간격을 요청하며(실제 간격은 OS에 따라 다름), 새 GPS 또는 명시적 mock 위치를 `PATCH /api/trips/{tripId}/status`로 보낸다.
 - 탑승확정 전 GPS 응답은 `WAITING_BUS`로 유지한다. 화면 제목은 `버스 탑승 대기`이며 서버가 보낸 `boardingConfirmedAt`이 생긴 뒤에만 `탑승 중`으로 바꾼다.
 - 종료·취소 상태면 새 위치 전송을 멈춘다.
-- 정상 도착은 전체 상태를 초기화하지만, 사용자 취소는 검색 성공 후 5분 동안 현재 앱 세션 메모리의 목적지·경로 후보·안내 기록을 유지해 새 검색 없이 다시 선택할 수 있게 한다. 앱을 재시작하면 메모리 후보는 폐기한다. A 운행 취소 직후 B 후보를 선택하면 A의 실제 비콘 스캔 중지 완료를 먼저 기다린 뒤 B 운행 생성과 새 대상 비콘 설정을 시작한다.
+- 직행 버스의 정상 도착은 전체 상태를 초기화한다. 환승 여정에서는 버스의 `TRIP_DONE` 후 `BUS_ALIGHT_CONFIRM`으로 이동하고, 실제 하차 확인 뒤 해당 버스 상태만 정리한 채 다음 구간을 유지한다. 마지막 구간 확인 후 전체 상태를 초기화한다. 사용자 취소는 검색 성공 후 5분 동안 현재 앱 세션 메모리의 목적지·경로 후보·안내 기록을 유지해 다시 선택할 수 있게 한다. 앱을 재시작하면 메모리 후보와 여정 진행 상태는 폐기된다. A 운행 취소 직후 B 후보를 선택하면 A의 실제 비콘 스캔 중지 완료를 먼저 기다린 뒤 B 운행 생성과 새 대상 비콘 설정을 시작한다.
 - 상태가 실제로 변했을 때만 Event Dispatcher가 Realtime 세션에 알린다.
 - `GET /status`는 조회 전용이므로 하차벨을 실행하지 않는다.
 

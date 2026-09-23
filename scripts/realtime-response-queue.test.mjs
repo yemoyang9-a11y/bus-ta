@@ -164,8 +164,8 @@ test('연결 성공 안내는 Realtime 응답 한 건으로 생성한다', () =>
 test('버스를 놓친 발화는 도착정보 강제 갱신으로 보내고 운행을 종료하지 않는다', () => {
   assert.match(HANEUM_REALTIME_INSTRUCTIONS, /버스 놓쳤어요/);
   assert.match(HANEUM_REALTIME_INSTRUCTIONS, /refreshArrivals를 true/);
-  assert.match(HANEUM_REALTIME_INSTRUCTIONS, /end_trip을 호출하지 않는다/);
-  assert.match(HANEUM_REALTIME_INSTRUCTIONS, /일반 도착 질문에서는 refreshArrivals를 생략하거나 false/);
+  assert.match(HANEUM_REALTIME_INSTRUCTIONS, /이 발화만으로 취소하지 않는다/);
+  assert.match(HANEUM_REALTIME_INSTRUCTIONS, /일반 도착 질문에서는 refreshArrivals를 생략한다/);
 });
 
 test('보조기기 실패 이벤트는 시도 여부와 재시도 가능 여부를 보존한다', () => {

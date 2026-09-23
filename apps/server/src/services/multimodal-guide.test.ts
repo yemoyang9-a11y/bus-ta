@@ -43,3 +43,11 @@ test("different subway journeys sharing a bus number remain separate candidates"
   const other = { ...route, candidateId: 2, segments: route.segments!.map(s => s.mode === "SUBWAY" ? { ...s, lineNames: ["2호선"] } : s) };
   assert.equal(selectRouteCandidates([route, other]).length, 2);
 });
+
+test("supported transfer candidate offers segment guidance instead of guidance-only wording", async (t) => {
+  t.mock.method(OpenAI.Chat.Completions.prototype, "create", async () => ({ choices: [] }));
+  const result = await generateRouteGuide({ candidates: [{ ...route, journeySupported: true }] });
+  const guide = result.selectedCandidates[0]!.guideMessage;
+  assert.match(guide, /구간별 환승 안내/);
+  assert.doesNotMatch(guide, /안내 전용/);
+});
