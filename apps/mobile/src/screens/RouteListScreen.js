@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
+import { useIsFocused } from '@react-navigation/native';
 import {
   View,
   Text,
@@ -10,6 +11,7 @@ import {
 import { apiClient, ApiError } from '../api/client';
 import { useTrip } from '../state/TripContext';
 import { stopBeaconScan } from '../ble/bleManager';
+import { canStartJourney } from '../state/transfer-journey';
 
 // 예모님 확정(2026-08-28): 후보 유효시간 5분. TripContext.js와 동일한 값을 써야 하므로
 // 상수 자체는 여기서도 다시 정의하되, 계산 방식(검색 시각 + 5분)은 TripContext가 갖고 있다.
@@ -21,14 +23,19 @@ function isRouteCandidatesExpired(expiresAt) {
 }
 
 function isGuidanceOnly(route) {
-  return route.tripSupported === false || route.routeMode === 'MULTIMODAL' || route.busTransitCount > 1;
+  return !canStartJourney(route) && (route.tripSupported === false || route.routeMode === 'MULTIMODAL' || route.busTransitCount > 1);
 }
 
 export default function RouteListScreen({ navigation }) {
   // 예모님 확인(2026-08-15): ConfirmScreen 삭제에 따라 route.params 대신 TripContext에서 값을 가져온다.
   // destination, routeCandidates는 function-dispatcher.ts의 search_routes 처리 결과로 채워진다.
   const { state, dispatch } = useTrip();
+  const isFocused = useIsFocused();
   const { destination, routeCandidates, routeCandidatesExpiresAt } = state;
+
+  useEffect(() => {
+    if (isFocused && state.journeyRoute) navigation.navigate('Transfer');
+  }, [state.journeyRoute, navigation, isFocused]);
 
   const [loading, setLoading] = useState(false);
 
@@ -58,6 +65,7 @@ export default function RouteListScreen({ navigation }) {
   //
   // 노선 선택 시 POST /api/trips 호출 후 탑승 중 화면으로 이동
   const selectRoute = async (selectedRoute) => {
+    if (state.journeyRoute) return;
     // Disabled 카드 외의 호출 경로에서도 API·BLE·선택 상태를 바꾸지 않는다.
     if (isGuidanceOnly(selectedRoute)) return;
     // 예모님 지적(2026-08-28, P1): 화면에서 기존 후보를 선택할 때도 TTL을 확인하지 않고
@@ -66,6 +74,11 @@ export default function RouteListScreen({ navigation }) {
     // 사용자가 음성으로 다시 목적지를 말하거나, Realtime 쪽에서 재검색을 유도한다).
     if (isRouteCandidatesExpired(routeCandidatesExpiresAt)) {
       navigation.navigate('Main');
+      return;
+    }
+
+    if (canStartJourney(selectedRoute)) {
+      dispatch({ type: 'START_JOURNEY', route: selectedRoute });
       return;
     }
 
@@ -171,6 +184,7 @@ export default function RouteListScreen({ navigation }) {
           // 카드마다 강조색을 번갈아 사용 — 텍스트/기능은 그대로, 시각적 구분만 추가
           const accentColor = index % 2 === 0 ? '#FFD400' : '#2F8FFF';
           const guidanceOnly = isGuidanceOnly(item);
+          const transferJourney = canStartJourney(item);
 
           return (
             <TouchableOpacity
@@ -183,10 +197,10 @@ export default function RouteListScreen({ navigation }) {
               <View style={[styles.routeAccentBar, { backgroundColor: accentColor }]} />
               <View style={styles.routeCardContent}>
                 <Text style={styles.routeNo}>
-                  {guidanceOnly ? '환승 경로 (안내 전용)' : `${item.routeNo}번`}
+                  {transferJourney ? '환승 경로' : guidanceOnly ? '환승 경로 (안내 전용)' : `${item.routeNo}번`}
                 </Text>
 
-                {guidanceOnly ? (
+                {guidanceOnly || transferJourney ? (
                   <View>
                     {(item.segments || []).map((segment, segmentIndex) => (
                       <Text key={segmentIndex} style={styles.routeInfo}>
@@ -195,7 +209,7 @@ export default function RouteListScreen({ navigation }) {
                           : `${segment.routeNumbers.join(' 또는 ')}번 버스`}: {segment.startName} → {segment.endName}
                       </Text>
                     ))}
-                    <Text style={styles.routeInfo}>운행 시작과 하차벨은 지원하지 않습니다.</Text>
+                    <Text style={styles.routeInfo}>{transferJourney ? '버스 구간별 운행과 하차벨을 안내합니다. 도보와 지하철의 이동 완료는 직접 확인해 주세요.' : '운행 시작과 하차벨은 지원하지 않습니다.'}</Text>
                   </View>
                 ) : (
                   <View>

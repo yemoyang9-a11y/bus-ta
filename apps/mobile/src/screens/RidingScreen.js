@@ -1,7 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import * as Speech from 'expo-speech';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect, useIsFocused } from '@react-navigation/native';
 import { useTrip } from '../state/TripContext';
 import { isScreenTripActive } from '../state/trip-transition';
 import { TRIP_COMPLETION_MESSAGE } from '../realtime/trip-tracking';
@@ -45,7 +45,8 @@ export default function RidingScreen({ route, navigation }) {
   const connectingBellRef = useRef(false);
 
   const { state, dispatch } = useTrip();
-  const status = { ...INITIAL_STATUS, ...state, ...(state.tripStatus === 'TRIP_DONE' ? { guideMessage: TRIP_COMPLETION_MESSAGE } : {}) };
+  const isFocused = useIsFocused();
+  const status = { ...INITIAL_STATUS, ...state, ...(state.tripStatus === 'TRIP_DONE' ? { guideMessage: state.journeyRoute ? '이번 버스 구간에 도착했습니다. 실제로 내린 뒤 하차를 확인해 주세요.' : TRIP_COMPLETION_MESSAGE } : {}) };
   const {
     isConnected,
     notifyFailure,
@@ -60,6 +61,9 @@ export default function RidingScreen({ route, navigation }) {
   const activeTripIdRef = useRef(state.tripId);
   activeTripIdRef.current = state.tripId;
 
+  const preserveTransferSpeechRef = useRef(false);
+  preserveTransferSpeechRef.current = Boolean(state.journeyRoute && state.tripStatus === 'TRIP_DONE');
+
   const boardingConfirmedAtRef = useRef(boardingConfirmedAt);
   boardingConfirmedAtRef.current = boardingConfirmedAt;
 
@@ -70,9 +74,11 @@ export default function RidingScreen({ route, navigation }) {
 
   useEffect(() => {
     stoppedRef.current = state.tripId !== tripId || state.tripStatus === 'TRIP_DONE' || state.tripStatus === 'CANCELLED';
-    if (!state.tripId) navigation.navigate('Main');
+    if (!isFocused) return;
+    if (state.journeyPhase === 'BUS_ALIGHT_CONFIRM' || (state.journeyRoute && !state.tripId)) navigation.navigate('Transfer');
+    else if (!state.tripId) navigation.navigate('Main');
     if (trackingError) navigation.navigate('Error');
-  }, [state.tripId, state.tripStatus, tripId, trackingError]);
+  }, [state.tripId, state.tripStatus, state.journeyRoute, state.journeyPhase, tripId, trackingError, isFocused]);
 
   const screenTitle = (() => {
     switch (currentTripStatus) {
@@ -81,7 +87,7 @@ export default function RidingScreen({ route, navigation }) {
       case 'NEAR_DESTINATION':
         return '하차 준비';
       case 'TRIP_DONE':
-        return '목적지 도착';
+        return state.journeyRoute ? '버스 구간 도착' : '목적지 도착';
       case 'ON_BUS':
         return '버스 탑승 중';
       default:
@@ -101,7 +107,7 @@ export default function RidingScreen({ route, navigation }) {
 
       return () => {
         clearTimeout(timer);
-        Speech.stop();
+        if (!preserveTransferSpeechRef.current) Speech.stop();
       };
     }, [isConnected]),
   );

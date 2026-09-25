@@ -7,6 +7,7 @@ import { RealtimeProvider } from './src/realtime/RealtimeProvider';
 
 import MainScreen from './src/screens/MainScreen';
 import RouteListScreen from './src/screens/RouteListScreen';
+import TransferScreen from './src/screens/TransferScreen';
 import RidingScreen from './src/screens/RidingScreen';
 import AlightScreen from './src/screens/AlightScreen';
 import ErrorScreen from './src/screens/ErrorScreen';
@@ -30,6 +31,7 @@ export default function App() {
           >
             <Stack.Screen name="Main" component={MainScreen} options={{ title: '버스 도우미' }} />
             <Stack.Screen name="RouteList" component={RouteListScreen} options={{ title: '노선 선택' }} />
+            <Stack.Screen name="Transfer" component={TransferScreen} options={{ title: '환승 안내' }} />
             <Stack.Screen name="Riding" component={RidingScreen} options={{ title: '탑승 중' }} />
             <Stack.Screen name="Alight" component={AlightScreen} options={{ title: '하차 안내' }} />
             <Stack.Screen name="Error" component={ErrorScreen} options={{ title: '오류' }} />

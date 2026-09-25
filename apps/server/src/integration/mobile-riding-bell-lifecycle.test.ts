@@ -76,9 +76,10 @@ function setup(options: { gps?: boolean; auto?: boolean; offlineCompletion?: boo
   let clock=Date.now();
   let delivered = true;
   let realtime: any;
-  const calls = { events: [] as any[], speech: [] as string[], releases: [] as string[], connects: 0, actions: [] as any[], patches: [] as any[], gpsRemoved: 0, autoRemoved: 0, autoRequests: [] as any[], completions: 0, navigations: [] as any[] };
+  let ridingFocusCleanup = () => {};
+  const calls = { events: [] as any[], speech: [] as string[], speechStops: 0, releases: [] as string[], connects: 0, actions: [] as any[], patches: [] as any[], gpsRemoved: 0, autoRemoved: 0, autoRequests: [] as any[], completions: 0, navigations: [] as any[] };
   const shared = {
-    'expo-speech': { speak: (message: string, options:any) => {calls.speech.push(message);speechOptions=options;if(message!==tracking.TRIP_COMPLETION_MESSAGE)options?.onDone?.();}, stop() {} },
+    'expo-speech': { speak: (message: string, options:any) => {calls.speech.push(message);speechOptions=options;if(message!==tracking.TRIP_COMPLETION_MESSAGE)options?.onDone?.();}, stop() { calls.speechStops++; } },
     'expo-location': {
       Accuracy:{High:1},requestForegroundPermissionsAsync: () => options.gps ? Promise.resolve({status:'granted'}) : new Promise(() => {}),
       watchPositionAsync: async (_options:any,callback:any) => {locationCallback=callback;return {remove(){calls.gpsRemoved++;}};},
@@ -116,7 +117,7 @@ function setup(options: { gps?: boolean; auto?: boolean; offlineCompletion?: boo
     ...shared,
     react: screenHooks.React,
     'react-native': { StyleSheet: { create: (value: unknown) => value } },
-    '@react-navigation/native': { useFocusEffect() {} },
+    '@react-navigation/native': { useFocusEffect(callback: () => void | (() => void)) { ridingFocusCleanup = callback() ?? (() => {}); }, useIsFocused: () => true },
     '../state/trip-transition': {
       isScreenTripActive: (active: string, screen: string) => active === screen,
     },
@@ -144,8 +145,8 @@ function setup(options: { gps?: boolean; auto?: boolean; offlineCompletion?: boo
       screenHooks.render(() => Screen({ route: { params: { tripId } }, navigation: {navigate:(...args:any[])=>calls.navigations.push(args)} }));
     },
     offline() { delivered = false; },
-    leaveRiding() { screenHooks.unmount(); },
-    dispose() { screenHooks.unmount(); providerHooks.unmount(); },
+    leaveRiding() { ridingFocusCleanup(); screenHooks.unmount(); },
+    dispose() { ridingFocusCleanup(); screenHooks.unmount(); providerHooks.unmount(); },
     get state() { return state; },
   };
 }
@@ -212,6 +213,26 @@ test('Realtime 연결이 없는 Provider도 로컬 완료음성이 실제 끝난
   app.setStatus({tripId:'A',tripStatus:'TRIP_DONE'});await app.sampleLocation();app.provider();await flush();
   assert.equal(app.calls.speech.at(-1),tracking.TRIP_COMPLETION_MESSAGE);assert.equal(app.state.tripId,'A');
   app.localSpeechDone();await flush();assert.equal(app.state.tripId,null);app.dispose();
+});
+
+test('환승 버스 도착으로 Riding을 떠날 때 하차 확인 음성을 끊지 않는다', async () => {
+  const app = setup({ gps: true, offlineCompletion: true });
+  const journeyRoute = { segments: [{ mode: 'BUS', startName: '출발', endName: '환승',
+    busLeg: { routeNo: '15', boardingStation: { stationName: '출발' } } }] };
+  app.provider({ ...app.state, journeyRoute, journeySegmentIndex: 0, journeyPhase: 'GUIDING' });
+  app.screen();
+  await flush();
+  app.setStatus({ tripId: 'A', tripStatus: 'TRIP_DONE', boardingConfirmedAt: 'now', remainingStations: 0, bellStatus: 'SUCCESS' });
+  await app.sampleLocation();
+  app.provider();
+  await flush();
+  assert.equal(app.state.journeyPhase, 'BUS_ALIGHT_CONFIRM');
+  assert.ok(app.calls.speech.some((message) => message.includes('안전하게 내린 뒤')));
+  app.screen();
+  assert.ok(app.calls.navigations.some((item) => item[0] === 'Transfer'));
+  app.leaveRiding();
+  assert.equal(app.calls.speechStops, 0);
+  app.dispose();
 });
 
 test('실제 Provider caneNotify→detector→AUTO_DETECTED API는 성공 전 상태를 바꾸지 않는다',async()=>{
