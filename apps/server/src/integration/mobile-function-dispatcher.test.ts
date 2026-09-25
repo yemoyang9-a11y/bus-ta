@@ -16,8 +16,6 @@ import type {
   RealtimeGuideContext,
 } from "../../../mobile/src/realtime/types.js";
 import { initialState, tripReducer } from "../../../mobile/src/state/trip-reducer.js";
-import { startJourneyBus, toBusLegRoute } from "../../../mobile/src/state/transfer-journey.js";
-import { apiClient } from "../../../mobile/src/api/client.js";
 
 const baseState: AppTripState = {
   destination: "수원대학교",
@@ -187,14 +185,12 @@ test("voice must not cancel a bus trip already adopted by the screen", async (t)
         boardingStation: direct.boardingStation, destinationStation: direct.destinationStation, stationList: direct.stationList } }] };
   let createCalls = 0;
   let cancelCalls = 0;
+  let releaseCreate: ((value: Response) => void) | undefined;
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (_input, init) => {
     if (init?.method === "POST") {
       createCalls += 1;
-      return Response.json({ success: true, tripId: "shared-trip", routeNo: "18", localBusId: direct.localBusId,
-        gbisStationId: direct.gbisStationId, arrivals: [], tripStatus: TRIP_STATUS.WAITING_BUS,
-        bellStatus: "NOT_REQUESTED", shouldTriggerBell: false, createdAt: "2026-09-23T00:00:00.000Z",
-        message: "생성", timestamp: "2026-09-23T00:00:00.000Z" });
+      return new Promise<Response>((resolve) => { releaseCreate = resolve; });
     }
     cancelCalls += 1;
     return Response.json({ success: true, tripId: "shared-trip", tripStatus: "CANCELLED", message: "취소", timestamp: "2026-09-23T00:00:00.000Z" });
@@ -206,13 +202,17 @@ test("voice must not cancel a bus trip already adopted by the screen", async (t)
     getAppState: () => current as unknown as AppTripState,
     dispatchAppAction: (action) => { current = tripReducer(current, action); },
   };
-  const screen = startJourneyBus(mixed, 0, current.journeyGeneration, apiClient.trips.create).then((created) => {
-    current = tripReducer(current, { type: "SELECT_ROUTE", route: toBusLegRoute(mixed, 0) });
-    current = tripReducer(current, { type: "START_TRIP", tripId: created.tripId });
-  });
   const voice = dispatchRealtimeFunctionCall({ type: "response.function_call_arguments.done",
     call_id: "voice-start", name: "start_journey_bus", arguments: "{}" }, context);
-  const [, result] = await Promise.all([screen, voice]);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(releaseCreate);
+  current = tripReducer(current, { type: "SELECT_ROUTE", route: direct });
+  current = tripReducer(current, { type: "START_TRIP", tripId: "shared-trip" });
+  releaseCreate(Response.json({ success: true, tripId: "shared-trip", routeNo: "18", localBusId: direct.localBusId,
+    gbisStationId: direct.gbisStationId, arrivals: [], tripStatus: TRIP_STATUS.WAITING_BUS,
+    bellStatus: "NOT_REQUESTED", shouldTriggerBell: false, createdAt: "2026-09-23T00:00:00.000Z",
+    message: "생성", timestamp: "2026-09-23T00:00:00.000Z" }));
+  const result = await voice;
   assert.equal(createCalls, 1);
   assert.equal(cancelCalls, 0);
   assert.equal(readFunctionOutput(result).success, true);
