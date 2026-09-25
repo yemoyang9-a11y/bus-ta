@@ -81,18 +81,20 @@ test("last confirmed segment ends the journey while a direct bus remains unchang
 });
 
 test("simultaneous screen and voice bus starts share one server request", async () => {
+  const journey = { ...route };
   let calls = 0;
   const response: CreateTripResponse = { success: true, tripId: "one-trip", routeNo: "1551",
     localBusId: firstBus.localBusId, gbisStationId: firstBus.gbisStationId, arrivals: [],
     tripStatus: "WAITING_BUS", bellStatus: "NOT_REQUESTED", shouldTriggerBell: false,
     createdAt: "2026-09-23T00:00:00.000Z", message: "생성", timestamp: "2026-09-23T00:00:00.000Z" };
   const create = async () => { calls += 1; return response; };
-  const [screen, voice] = await Promise.all([startJourneyBus(route, 0, 1, create), startJourneyBus(route, 0, 1, create)]);
+  const [screen, voice] = await Promise.all([startJourneyBus(journey, 0, 1, create), startJourneyBus(journey, 0, 1, create)]);
   assert.equal(calls, 1);
   assert.equal(screen.tripId, voice.tripId);
 });
 
 test("a restarted journey does not share the previous pending bus request", async () => {
+  const journey = { ...route };
   let calls = 0;
   let finishFirst: ((value: CreateTripResponse) => void) | undefined;
   const response = (tripId: string): CreateTripResponse => ({ success: true, tripId, routeNo: "1551",
@@ -104,14 +106,44 @@ test("a restarted journey does not share the previous pending bus request", asyn
     if (calls === 1) return new Promise<CreateTripResponse>((resolve) => { finishFirst = resolve; });
     return response("new-trip");
   };
-  const oldRequest = startJourneyBus(route, 0, 1, create);
-  const newRequest = startJourneyBus(route, 0, 2, create);
+  const oldRequest = startJourneyBus(journey, 0, 1, create);
+  const newRequest = startJourneyBus(journey, 0, 2, create);
   await newRequest;
   assert.equal(calls, 2);
   assert.equal((await newRequest).tripId, "new-trip");
   assert.ok(finishFirst);
   finishFirst(response("old-trip"));
   assert.equal((await oldRequest).tripId, "old-trip");
+});
+
+test("the same journey reuses its successful bus creation after the request settles", async () => {
+  const journey = { ...route };
+  let calls = 0;
+  const response: CreateTripResponse = { success: true, tripId: "once", routeNo: "1551",
+    localBusId: firstBus.localBusId, gbisStationId: firstBus.gbisStationId, arrivals: [],
+    tripStatus: "WAITING_BUS", bellStatus: "NOT_REQUESTED", shouldTriggerBell: false,
+    createdAt: "2026-09-23T00:00:00.000Z", message: "생성", timestamp: "2026-09-23T00:00:00.000Z" };
+  const create = async () => { calls += 1; return response; };
+  const first = await startJourneyBus(journey, 0, 99, create);
+  const second = await startJourneyBus(journey, 0, 99, create);
+  assert.equal(calls, 1);
+  assert.equal(first.tripId, second.tripId);
+});
+
+test("a failed bus creation can be retried within the same journey", async () => {
+  const journey = { ...route };
+  let calls = 0;
+  const create = async (): Promise<CreateTripResponse> => {
+    calls += 1;
+    if (calls === 1) throw new Error("temporary failure");
+    return { success: true, tripId: "retry-trip", routeNo: "1551",
+      localBusId: firstBus.localBusId, gbisStationId: firstBus.gbisStationId, arrivals: [],
+      tripStatus: "WAITING_BUS", bellStatus: "NOT_REQUESTED", shouldTriggerBell: false,
+      createdAt: "2026-09-23T00:00:00.000Z", message: "생성", timestamp: "2026-09-23T00:00:00.000Z" };
+  };
+  await assert.rejects(startJourneyBus(journey, 0, 1, create), /temporary failure/);
+  assert.equal((await startJourneyBus(journey, 0, 1, create)).tripId, "retry-trip");
+  assert.equal(calls, 2);
 });
 
 test("adopting the same bus trip twice does not reset confirmed boarding", () => {

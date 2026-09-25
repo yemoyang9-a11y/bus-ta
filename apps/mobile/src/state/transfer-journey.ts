@@ -9,7 +9,10 @@ export function startJourneyBus(route: Route, index: number, generation: number,
   const existing = byIndex.get(key);
   if (existing) return existing;
   const request = toBusLegCreateRequest(route, index);
-  const flight = Promise.resolve().then(() => create(request)).finally(() => byIndex?.delete(key));
+  const flight = Promise.resolve().then(() => create(request)).catch((error) => {
+    byIndex?.delete(key);
+    throw error;
+  });
   byIndex.set(key, flight);
   return flight;
 }
