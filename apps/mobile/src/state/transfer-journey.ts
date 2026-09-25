@@ -1,15 +1,16 @@
 import type { CreateTripRequest, CreateTripResponse, Route } from "@bus-ta/shared";
 
-const busStartFlights = new WeakMap<Route, Map<number, Promise<CreateTripResponse>>>();
+const busStartFlights = new WeakMap<Route, Map<string, Promise<CreateTripResponse>>>();
 
-export function startJourneyBus(route: Route, index: number, create: (request: CreateTripRequest) => Promise<CreateTripResponse>): Promise<CreateTripResponse> {
+export function startJourneyBus(route: Route, index: number, generation: number, create: (request: CreateTripRequest) => Promise<CreateTripResponse>): Promise<CreateTripResponse> {
   let byIndex = busStartFlights.get(route);
   if (!byIndex) { byIndex = new Map(); busStartFlights.set(route, byIndex); }
-  const existing = byIndex.get(index);
+  const key = `${generation}:${index}`;
+  const existing = byIndex.get(key);
   if (existing) return existing;
   const request = toBusLegCreateRequest(route, index);
-  const flight = Promise.resolve().then(() => create(request)).finally(() => byIndex?.delete(index));
-  byIndex.set(index, flight);
+  const flight = Promise.resolve().then(() => create(request)).finally(() => byIndex?.delete(key));
+  byIndex.set(key, flight);
   return flight;
 }
 

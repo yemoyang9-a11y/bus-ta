@@ -61,6 +61,9 @@ export default function RidingScreen({ route, navigation }) {
   const activeTripIdRef = useRef(state.tripId);
   activeTripIdRef.current = state.tripId;
 
+  const preserveTransferSpeechRef = useRef(false);
+  preserveTransferSpeechRef.current = Boolean(state.journeyRoute && state.tripStatus === 'TRIP_DONE');
+
   const boardingConfirmedAtRef = useRef(boardingConfirmedAt);
   boardingConfirmedAtRef.current = boardingConfirmedAt;
 
@@ -104,7 +107,7 @@ export default function RidingScreen({ route, navigation }) {
 
       return () => {
         clearTimeout(timer);
-        Speech.stop();
+        if (!preserveTransferSpeechRef.current) Speech.stop();
       };
     }, [isConnected]),
   );

@@ -15,6 +15,7 @@ export const initialState = {
   announcedCandidateIds: [] as unknown[],
   selectedRoute: null as unknown,
   journeyRoute: null as Route | null,
+  journeyGeneration: 0,
   journeySegmentIndex: null as number | null,
   journeyPhase: null as "GUIDING" | "SUBWAY_ON_BOARD" | "BUS_ALIGHT_CONFIRM" | null,
   tripId: null as string | null,
@@ -163,7 +164,8 @@ export function tripReducer(state: TripState, action: TripAction): TripState {
     case "START_JOURNEY": {
       const route = action.route as Route;
       if (state.tripId || state.journeyRoute || !canStartJourney(route)) return state;
-      return { ...state, journeyRoute: route, journeySegmentIndex: 0, journeyPhase: "GUIDING", selectedRoute: null };
+      return { ...state, journeyRoute: route, journeyGeneration: state.journeyGeneration + 1,
+        journeySegmentIndex: 0, journeyPhase: "GUIDING", selectedRoute: null };
     }
 
     case "MARK_JOURNEY_BUS_ARRIVED": {
@@ -186,9 +188,11 @@ export function tripReducer(state: TripState, action: TripAction): TripState {
       if (segment.mode === "BUS" && state.journeyPhase !== "BUS_ALIGHT_CONFIRM") return state;
       if (segment.mode === "SUBWAY" && state.journeyPhase !== "SUBWAY_ON_BOARD") return state;
       if (segment.mode === "WALK" && state.journeyPhase !== "GUIDING") return state;
-      if (index + 1 >= segments.length) return { ...initialState, beaconScanActive: state.beaconScanActive };
+      if (index + 1 >= segments.length) return { ...initialState, journeyGeneration: state.journeyGeneration,
+        beaconScanActive: state.beaconScanActive };
       return {
         ...initialState,
+        journeyGeneration: state.journeyGeneration,
         destination: state.destination,
         routeCandidates: state.routeCandidates,
         routeCandidatesExpiresAt: state.routeCandidatesExpiresAt,
@@ -201,6 +205,7 @@ export function tripReducer(state: TripState, action: TripAction): TripState {
     }
 
     case "START_TRIP":
+      if (state.tripId === action.tripId) return state;
       return {
         ...state,
         ...CLEARED_ARRIVAL_FIELDS,
@@ -302,12 +307,13 @@ export function tripReducer(state: TripState, action: TripAction): TripState {
 
     // 운행만 종료하고, 유효한 기존 목적지·후보 노선(및 TTL, 안내 기록)은 유지한다.
     case "RESET_TRIP_KEEP_SEARCH":
-      return resetTripKeepingSearch(initialState, state);
+      return { ...resetTripKeepingSearch(initialState, state), journeyGeneration: state.journeyGeneration };
 
     // TRIP_DONE, TRIP_NOT_FOUND 발생 시 호출 — 다음 운행을 위해 전체 초기화
     case "RESET_TRIP":
       return {
         ...initialState,
+        journeyGeneration: state.journeyGeneration,
         beaconScanActive: state.beaconScanActive,
       };
 

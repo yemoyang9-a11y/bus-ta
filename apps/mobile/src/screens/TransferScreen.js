@@ -9,7 +9,7 @@ import { startJourneyBus, toBusLegRoute } from '../state/transfer-journey';
 export default function TransferScreen({ navigation }) {
   const { state, dispatch } = useTrip();
   const isFocused = useIsFocused();
-  const { journeyRoute, journeySegmentIndex: index, journeyPhase, tripId } = state;
+  const { journeyRoute, journeyGeneration, journeySegmentIndex: index, journeyPhase, tripId } = state;
   const segment = index === null ? null : journeyRoute?.segments?.[index];
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
@@ -69,10 +69,12 @@ export default function TransferScreen({ navigation }) {
     setError(null);
     try {
       const busRoute = toBusLegRoute(journeyRoute, index);
-      const created = await startJourneyBus(journeyRoute, index, apiClient.trips.create);
+      const created = await startJourneyBus(journeyRoute, index, journeyGeneration, apiClient.trips.create);
       const latest = latestRef.current;
-      if (latest.journeyRoute !== journeyRoute || latest.journeySegmentIndex !== index || latest.journeyPhase !== 'GUIDING' || latest.tripId) {
-        await apiClient.trips.end(created.tripId, { action: 'CANCEL' }).catch(() => undefined);
+      if (latest.tripId === created.tripId && latest.journeyGeneration === journeyGeneration) return;
+      if (latest.journeyRoute !== journeyRoute || latest.journeyGeneration !== journeyGeneration ||
+        latest.journeySegmentIndex !== index || latest.journeyPhase !== 'GUIDING' || latest.tripId) {
+        if (latest.tripId !== created.tripId) await apiClient.trips.end(created.tripId, { action: 'CANCEL' }).catch(() => undefined);
         return;
       }
       dispatch({ type: 'SELECT_ROUTE', route: busRoute });

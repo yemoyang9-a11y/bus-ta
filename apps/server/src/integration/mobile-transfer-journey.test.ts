@@ -87,9 +87,47 @@ test("simultaneous screen and voice bus starts share one server request", async 
     tripStatus: "WAITING_BUS", bellStatus: "NOT_REQUESTED", shouldTriggerBell: false,
     createdAt: "2026-09-23T00:00:00.000Z", message: "생성", timestamp: "2026-09-23T00:00:00.000Z" };
   const create = async () => { calls += 1; return response; };
-  const [screen, voice] = await Promise.all([startJourneyBus(route, 0, create), startJourneyBus(route, 0, create)]);
+  const [screen, voice] = await Promise.all([startJourneyBus(route, 0, 1, create), startJourneyBus(route, 0, 1, create)]);
   assert.equal(calls, 1);
   assert.equal(screen.tripId, voice.tripId);
+});
+
+test("a restarted journey does not share the previous pending bus request", async () => {
+  let calls = 0;
+  let finishFirst: ((value: CreateTripResponse) => void) | undefined;
+  const response = (tripId: string): CreateTripResponse => ({ success: true, tripId, routeNo: "1551",
+    localBusId: firstBus.localBusId, gbisStationId: firstBus.gbisStationId, arrivals: [],
+    tripStatus: "WAITING_BUS", bellStatus: "NOT_REQUESTED", shouldTriggerBell: false,
+    createdAt: "2026-09-23T00:00:00.000Z", message: "생성", timestamp: "2026-09-23T00:00:00.000Z" });
+  const create = async () => {
+    calls += 1;
+    if (calls === 1) return new Promise<CreateTripResponse>((resolve) => { finishFirst = resolve; });
+    return response("new-trip");
+  };
+  const oldRequest = startJourneyBus(route, 0, 1, create);
+  const newRequest = startJourneyBus(route, 0, 2, create);
+  await newRequest;
+  assert.equal(calls, 2);
+  assert.equal((await newRequest).tripId, "new-trip");
+  assert.ok(finishFirst);
+  finishFirst(response("old-trip"));
+  assert.equal((await oldRequest).tripId, "old-trip");
+});
+
+test("adopting the same bus trip twice does not reset confirmed boarding", () => {
+  const begun = tripReducer(initialState, { type: "START_JOURNEY", route });
+  const waiting = tripReducer(begun, { type: "START_TRIP", tripId: "shared-trip" });
+  const boarded = tripReducer(waiting, { type: "CONFIRM_BOARDING", tripId: "shared-trip",
+    tripStatus: "ON_BUS", boardingMethod: "USER_CONFIRMED", boardingConfirmedAt: "2026-09-23T00:00:00.000Z" });
+  assert.equal(tripReducer(boarded, { type: "START_TRIP", tripId: "shared-trip" }), boarded);
+});
+
+test("reselecting the same route after cancellation creates a new journey generation", () => {
+  const first = tripReducer(initialState, { type: "START_JOURNEY", route });
+  const cancelled = tripReducer(first, { type: "RESET_TRIP_KEEP_SEARCH" });
+  const second = tripReducer(cancelled, { type: "START_JOURNEY", route });
+  assert.equal(second.journeyRoute, first.journeyRoute);
+  assert.notEqual(second.journeyGeneration, first.journeyGeneration);
 });
 
 test("boarding the final subway does not complete the journey before actual alighting", () => {

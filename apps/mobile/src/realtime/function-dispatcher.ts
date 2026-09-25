@@ -62,7 +62,7 @@ type ModelFunctionResult =
 
 // 동일 함수+인자 조합의 병렬 재호출 방지 (create_trip은 선택당 1회만 등)
 const inFlightCalls = new Map<string, Promise<FunctionResult>>();
-const journeyOrigins = new WeakMap<object, { route: Route; index: number | null; tripId: string | null }>();
+const journeyOrigins = new WeakMap<object, { route: Route; generation: number; index: number | null; tripId: string | null }>();
 let boardingRequestSequence = 0;
 
 function buildCallKey(
@@ -71,6 +71,9 @@ function buildCallKey(
 ): string {
   if (event.name === "confirm_boarding") {
     return `${event.name}:${context.getAppState().tripId ?? "NO_ACTIVE_TRIP"}`;
+  }
+  if (["start_journey_bus", "confirm_journey_step", "cancel_journey"].includes(event.name)) {
+    return `${event.name}:${context.getAppState().journeyGeneration ?? 0}:${event.arguments}`;
   }
   return `${event.name}:${event.arguments}`;
 }
@@ -309,14 +312,17 @@ async function rejectStaleTripResult(
   if (result.success === true && (name === "start_journey_bus" || name === "cancel_journey")) {
     const origin = journeyOrigins.get(result);
     const current = context.getAppState();
-    const stale = !origin || current.journeyRoute !== origin.route ||
-      current.journeySegmentIndex !== origin.index ||
+    const resultTripId = "tripId" in result && typeof result.tripId === "string" ? result.tripId : null;
+    const sameJourney = Boolean(origin && current.journeyRoute === origin.route &&
+      current.journeySegmentIndex === origin.index && (current.journeyGeneration ?? 0) === origin.generation);
+    if (name === "start_journey_bus" && sameJourney && resultTripId && current.tripId === resultTripId) return result;
+    const stale = !sameJourney ||
       (name === "start_journey_bus"
         ? Boolean(current.tripId) || current.journeyPhase !== "GUIDING"
-        : current.tripId !== origin.tripId);
+        : current.tripId !== origin?.tripId);
     if (stale) {
-      if (name === "start_journey_bus" && "tripId" in result && typeof result.tripId === "string") {
-        await apiClient.trips.end(result.tripId, { action: "CANCEL" }).catch(() => undefined);
+      if (name === "start_journey_bus" && resultTripId && current.tripId !== resultTripId) {
+        await apiClient.trips.end(resultTripId, { action: "CANCEL" }).catch(() => undefined);
       }
       return { success: false, errorCode: "STALE_JOURNEY_CONTEXT", message: "환승 안내가 변경되어 이전 요청을 적용하지 않았습니다.", timestamp: new Date().toISOString() };
     }
@@ -457,8 +463,9 @@ async function callBackendFunction(
       const route = state.journeyRoute;
       const index = state.journeySegmentIndex;
       if (!route || index == null || state.journeyPhase !== 'GUIDING' || state.tripId) throw new Error("지금 시작할 버스 구간이 없습니다.");
-      const created = await startJourneyBus(route, index, apiClient.trips.create);
-      journeyOrigins.set(created, { route, index, tripId: null });
+      const generation = state.journeyGeneration ?? 0;
+      const created = await startJourneyBus(route, index, generation, apiClient.trips.create);
+      journeyOrigins.set(created, { route, generation, index, tripId: null });
       return created;
     }
     case "cancel_journey": {
@@ -469,7 +476,8 @@ async function callBackendFunction(
         await apiClient.trips.end(state.tripId, { action: 'CANCEL' });
       }
       const result: JourneyResult = { success: true, message: '환승 안내를 종료했습니다.' };
-      journeyOrigins.set(result, { route: state.journeyRoute, index: state.journeySegmentIndex ?? null, tripId: state.tripId });
+      journeyOrigins.set(result, { route: state.journeyRoute, generation: state.journeyGeneration ?? 0,
+        index: state.journeySegmentIndex ?? null, tripId: state.tripId });
       return result;
     }
     case "confirm_boarding": {
@@ -546,6 +554,7 @@ function updateContext(
 
   if (name === "start_journey_bus") {
     const current = context.getAppState();
+    if (current.tripId === (result as CreateTripResponse).tripId) return;
     if (current.journeyRoute && current.journeySegmentIndex != null) {
       context.dispatchAppAction({ type: "SELECT_ROUTE", route: toBusLegRoute(current.journeyRoute, current.journeySegmentIndex) });
       context.dispatchAppAction({ type: "START_TRIP", tripId: (result as CreateTripResponse).tripId });

@@ -107,6 +107,7 @@ export type AppTripState = {
 
   selectedRoute: Route | null;
   journeyRoute?: Route | null;
+  journeyGeneration?: number;
   journeySegmentIndex?: number | null;
   journeyPhase?: "GUIDING" | "SUBWAY_ON_BOARD" | "BUS_ALIGHT_CONFIRM" | null;
   tripId: string | null;
