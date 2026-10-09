@@ -1,3 +1,5 @@
+import * as tripTransition from '../../../mobile/src/state/trip-transition.js';
+import { startDirectTrip } from '../../../mobile/src/state/direct-trip-selection.js';
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
@@ -69,13 +71,19 @@ test("session guide permits returned mixed routes but prohibits subway-only and 
 function screen(route: Route) {
   const calls = { requests: [] as unknown[], actions: [] as any[], navigation: [] as unknown[], stops: 0 };
   const exports: any = {};
-  const React = { createElement: (type: unknown, props: unknown, ...children: unknown[]) => ({ type, props, children }), useState: () => [false, () => {}], useEffect: () => {} };
+  const refs: any[] = []; let cursor = 0;
+  const effects: (() => void)[] = [];
+  const state: any = { destination: "최종목적지", routeCandidates: [route], routeCandidatesExpiresAt: Date.now() + 60000, beaconScanActive: true };
+  const dispatch = (action: any) => { calls.actions.push(action); if (action.type === "SELECT_ROUTE") state.selectedRoute = action.route; if (action.type === "START_TRIP") { state.tripId = action.tripId; state.tripStatus = "WAITING_BUS"; } };
+  const React = { createElement: (type: unknown, props: unknown, ...children: unknown[]) => ({ type, props, children }), useState: () => [false, () => {}], useEffect: (effect: () => void) => effects.push(effect), useRef: (value: unknown) => refs[cursor++] ?? (refs[cursor - 1] = { current: value }) };
   const modules: Record<string, unknown> = {
+    "../state/trip-transition": tripTransition,
     react: React,
+    "../state/direct-trip-selection": { startDirectTrip },
     "@react-navigation/native": { useIsFocused: () => true },
     "react-native": { View: "View", Text: "Text", TouchableOpacity: "TouchableOpacity", FlatList: "FlatList", StyleSheet: { create: (x: unknown) => x } },
-    "../state/TripContext": { useTrip: () => ({ state: { destination: "최종목적지", routeCandidates: [route], routeCandidatesExpiresAt: Date.now() + 60000, beaconScanActive: true }, dispatch: (action: any) => calls.actions.push(action) }) },
-    "../api/client": { ApiError: class extends Error {}, apiClient: { trips: { create: async (request: unknown) => { calls.requests.push(request); return { tripId: "direct-trip" }; } } } },
+    "../state/TripContext": { useTrip: () => ({ state, dispatch }) },
+    "../api/client": { ApiError: class extends Error {}, apiClient: { trips: { create: async (request: unknown) => { calls.requests.push(request); return { success: true, tripId: "direct-trip" }; } } } },
     "../ble/bleManager": { stopBeaconScan: async () => { calls.stops++; } },
     "../state/transfer-journey": { canStartJourney: (candidate: Route) => candidate.routeMode === "MULTIMODAL" && candidate.journeySupported === true && candidate.segments?.every(s => s.mode !== "BUS" || Boolean(s.busLeg)) },
   };
@@ -85,6 +93,8 @@ function screen(route: Route) {
   const tree = exports.default({ navigation: { navigate: (...args: unknown[]) => calls.navigation.push(args) } });
   const list = tree.children.find((child: any) => child?.type === "FlatList");
   const card = list.props.renderItem({ item: route, index: 0 });
+  const originalPress = card.props.onPress;
+  card.props.onPress = async () => { await originalPress(); effects.forEach(effect => effect()); };
   return { calls, card };
 }
 function renderedText(node: any): string {

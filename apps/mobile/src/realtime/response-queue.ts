@@ -11,6 +11,7 @@ export type PendingResponse = {
   // 일반 응답이나 상태 안내에는 없거나 빈 배열이다.
   candidateIdsToMark?: number[];
   completionTripId?: string;
+  selectionGeneration?: number;
 };
 
 type DurablePendingResponse = PendingResponse & {

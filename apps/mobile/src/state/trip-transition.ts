@@ -6,6 +6,26 @@ type SearchState = {
   beaconScanActive: unknown;
 };
 
+type SelectionState = { tripId: string | null; routeCandidates: unknown[] | null; directSelectionGeneration?: number; journeyRoute?: unknown };
+const selectionWaiters = new Set<{ candidates: unknown[] | null; generation: number; finish: (ready: boolean) => void }>();
+
+// A navigation request is not proof that the destination screen has focused.
+export function waitForRouteSelection(state: SelectionState, generation: number): Promise<boolean> {
+  return new Promise(resolve => {
+    const waiter = { candidates: state.routeCandidates, generation, finish: (ready: boolean) => {
+      clearTimeout(timer); selectionWaiters.delete(waiter); resolve(ready);
+    } };
+    const timer = setTimeout(() => waiter.finish(false), 5000);
+    selectionWaiters.add(waiter);
+  });
+}
+export function confirmRouteSelectionScreen(state: SelectionState) {
+  if (state.tripId || state.journeyRoute) return;
+  for (const waiter of selectionWaiters) {
+    if (waiter.candidates === state.routeCandidates && waiter.generation === (state.directSelectionGeneration ?? 0)) waiter.finish(true);
+  }
+}
+
 export function resetTripKeepingSearch<T extends SearchState>(
   initialState: T,
   state: T,

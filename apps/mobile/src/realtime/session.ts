@@ -180,6 +180,7 @@ export class HaneumRealtimeSession {
   cancelTripCompletion(tripId: string) {
     if (this.completion?.tripId === tripId) this.completion.finish(false);
     this.responseQueue.discardTripStatus(tripId);
+    if ((this.awaitingRetry as (PendingResponse & { tripId?: string }) | null)?.tripId === tripId) this.awaitingRetry = null;
   }
 
   private trackCompletion(value: Record<string, unknown>) {
@@ -398,6 +399,13 @@ export class HaneumRealtimeSession {
       }
 
       const completedStatus = clientEvents.some(item => item.type === 'conversation.item.create' && JSON.parse(item.item.output)?.tripStatus === 'TRIP_DONE');
+      if (event.name === 'end_trip' && hasSuccessfulFunctionResult(clientEvents)) {
+        const ended = clientEvents.find(item => item.type === 'conversation.item.create');
+        if (ended?.type === 'conversation.item.create') {
+          const tripId = JSON.parse(ended.item.output)?.tripId;
+          if (typeof tripId === 'string') this.responseQueue.discardTripStatus(tripId);
+        }
+      }
       for (const clientEvent of clientEvents) {
         if (completedStatus && clientEvent.type === 'response.create') continue;
         this.send(clientEvent, transport);
@@ -608,6 +616,14 @@ export class HaneumRealtimeSession {
     }
 
     this.awaitingRetry = null;
+    if (next.selectionGeneration !== undefined &&
+      (this.context.getAppState().tripId || this.context.getAppState().journeyRoute ||
+       (this.context.getAppState().directSelectionGeneration ?? 0) !== next.selectionGeneration ||
+       (Boolean(next.candidateIdsToMark?.length) &&
+        (!this.context.getAppState().routeCandidatesExpiresAt || Date.now() > this.context.getAppState().routeCandidatesExpiresAt!)))) {
+      this.flushPendingResponse();
+      return;
+    }
     this.dispatchResponseCreate(next);
   }
 
@@ -693,6 +709,7 @@ export class HaneumRealtimeSession {
           instructions?: string;
         };
         candidateIdsToMark?: number[];
+        selectionGeneration?: number;
       };
 
       const instructions =
@@ -707,11 +724,11 @@ export class HaneumRealtimeSession {
           : undefined;
 
       this.responseQueue.enqueueDirect(
-        this.createPendingResponse(
+        { ...this.createPendingResponse(
           instructions,
           [],
           candidateIdsToMark,
-        ),
+        ), ...(responseEvent.selectionGeneration === undefined ? {} : { selectionGeneration: responseEvent.selectionGeneration }) },
       );
 
       this.flushPendingResponse();

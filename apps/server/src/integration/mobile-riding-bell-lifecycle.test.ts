@@ -1,3 +1,4 @@
+import * as tripTransition from '../../../mobile/src/state/trip-transition.js';
 import * as tracking from '../../../mobile/src/realtime/trip-tracking.js';
 import * as automaticBoarding from '../../../mobile/src/realtime/automatic-boarding.js';
 import * as completionSpeech from '../../../mobile/src/realtime/completion-speech.js';
@@ -15,8 +16,29 @@ import * as oneStopGuide from '../../../mobile/src/realtime/one-stop-alight-guid
 import * as safeSpeech from '../../../mobile/src/realtime/safe-speech.js';
 import * as voiceRecovery from '../../../mobile/src/realtime/voice-recovery.js';
 import * as connectBestEffort from '../../../mobile/src/realtime/connect-best-effort.js';
+import { dispatchRealtimeFunctionCall } from '../../../mobile/src/realtime/function-dispatcher.js';
+import { DEMO_ROUTE } from '@bus-ta/shared';
 
 const flush = async () => { for (let i = 0; i < 50; i++) await Promise.resolve(); };
+
+test('missed waiting trip stops actual Provider GPS and releases Riding bell resources', async t => {
+  const app = setup({ gps: true });
+  app.provider({ ...app.state, tripStatus: 'WAITING_BUS', boardingConfirmedAt: null,
+    destination: '목적지', routeCandidates: [DEMO_ROUTE], routeCandidatesExpiresAt: Date.now() + 60000,
+    directSelectionGeneration: 0, selectedRoute: DEMO_ROUTE });
+  app.screen('A'); await flush();
+  t.mock.method(globalThis, 'fetch', async () => Response.json({ success: true, tripId: 'A', tripStatus: 'CANCELLED' }));
+  await dispatchRealtimeFunctionCall({ type: 'response.function_call_arguments.done', call_id: 'missed-cleanup', name: 'end_trip',
+    arguments: JSON.stringify({ tripId: 'A', action: 'CANCEL', reason: 'MISSED_BUS' }) }, {
+    getAppState: () => app.state, getCurrentLocation: () => undefined, refreshCurrentLocation: async () => {},
+    dispatchAppAction: action => app.provider(tripReducer(app.state, action)),
+  });
+  app.screen('A'); await flush();
+  assert.equal(app.state.tripId, null); assert.equal(app.calls.gpsRemoved, 1);
+  assert.ok(app.calls.releases.includes('A')); assert.ok(app.calls.caneReleases.includes('A')); assert.equal(app.calls.navigations.at(-1)?.[0], 'RouteList');
+  const patches = app.calls.patches.length; await app.sampleLocation(); assert.equal(app.calls.patches.length, patches);
+  app.dispose();
+});
 
 // 화면/Provider의 실제 소스와 effect 의존성을 실행한다. RN/외부 IO만 대체한다.
 function hooks() {
@@ -61,6 +83,7 @@ function load(path: string, modules: Record<string, unknown>) {
     setTimeout: (callback: () => void, ms: number) => { if (ms === 2000) queueMicrotask(callback); return 1; },
     clearTimeout() {}, setInterval: () => 1, clearInterval() {},
     require: (name: string) => {
+      if (name === "../state/trip-transition" && !(name in modules)) return tripTransition;
       if (!(name in modules)) throw new Error(`Unexpected module ${name}`);
       return modules[name];
     },
@@ -87,7 +110,7 @@ function setup(options: { gps?: boolean; auto?: boolean; offlineCompletion?: boo
   let pendingVoice: Promise<void> | undefined;
   let realtime: any;
   let ridingFocusCleanup = () => {};
-  const calls = { voiceConnects:0,voiceCloses:0,voiceSyncs:0,readyFlags:[] as boolean[],guides: 0, events: [] as any[], speech: [] as string[], speechStops: 0, releases: [] as string[], connects: 0, actions: [] as any[], patches: [] as any[], gpsRemoved: 0, autoRemoved: 0, autoRequests: [] as any[], completions: 0, navigations: [] as any[] };
+  const calls = { voiceConnects:0,voiceCloses:0,voiceSyncs:0,readyFlags:[] as boolean[],guides: 0, events: [] as any[], speech: [] as string[], speechStops: 0, releases: [] as string[], caneReleases: [] as string[], connects: 0, actions: [] as any[], patches: [] as any[], gpsRemoved: 0, autoRemoved: 0, autoRequests: [] as any[], completions: 0, navigations: [] as any[] };
   const shared = {
     'expo-speech': { speak: (message: string, speech:any) => {
       calls.speech.push(message);speechOptions=speech;
@@ -134,7 +157,7 @@ function setup(options: { gps?: boolean; auto?: boolean; offlineCompletion?: boo
     './context': { createRealtimeGuideContext: () => ({}) },
     './connect-best-effort': connectBestEffort,
     './location-refresh': { createLocationRefreshCoordinator: () => async () => {} },
-    './assist-device-preparation': { createAssistDevicePreparation: () => ({ prepare() {}, release() {} }) },
+    './assist-device-preparation': { createAssistDevicePreparation: () => ({ prepare() {}, release(tripId: string) { calls.caneReleases.push(tripId); } }) },
     './assist-device-status': assistStatus,
     './trip-tracking': tracking,
     './status-snapshot': statusSnapshot,

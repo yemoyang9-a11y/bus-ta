@@ -110,6 +110,7 @@ export type AppTripState = {
   selectedRoute: Route | null;
   journeyRoute?: Route | null;
   journeyGeneration?: number;
+  directSelectionGeneration?: number;
   journeySegmentIndex?: number | null;
   journeyPhase?: "GUIDING" | "SUBWAY_ON_BOARD" | "BUS_ALIGHT_CONFIRM" | null;
   tripId: string | null;
@@ -180,6 +181,9 @@ export type RealtimeGuideContext = {
   getAppState(): AppTripState;
   getCurrentLocation(): { latitude: number; longitude: number } | undefined;
   refreshCurrentLocation(): Promise<void>;
+  stopBeaconScan?: () => Promise<unknown>;
+  waitForRouteSelection?: (generation: number) => Promise<boolean>;
+  onTripEnded?: (tripId: string) => void;
   dispatchAppAction(action: AppAction): void;
   lastFunctionResult?: unknown;
 };
@@ -203,6 +207,7 @@ export type RealtimeClientEvent =
       // OpenAI 서버로 그대로 보내는 값이 아니라 session.ts가 PendingResponse에
       // 옮겨 담고, 해당 음성 응답이 성공적으로 끝났을 때 안내 완료 처리에 사용한다.
       candidateIdsToMark?: number[];
+      selectionGeneration?: number;
     };
 
 export type ApiErrorResult = {

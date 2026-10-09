@@ -21,6 +21,7 @@ import { createAutomaticBoarding } from './automatic-boarding';
 import { releaseCane } from '../ble/cane-release-controller';
 import { HaneumRealtimeSession } from './session';
 import { createRealtimeGuideContext } from './context';
+import { waitForRouteSelection } from '../state/trip-transition';
 import { connectWithBestEffortLocation } from './connect-best-effort';
 import { createLocationRefreshCoordinator } from './location-refresh';
 import { createAssistDevicePreparation } from './assist-device-preparation';
@@ -120,6 +121,9 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
       getAppState: () => stateRef.current,
       getCurrentLocation: () => currentLocationRef.current,
       refreshCurrentLocation,
+      stopBeaconScan,
+      waitForRouteSelection: generation => waitForRouteSelection(stateRef.current, generation),
+      onTripEnded: tripId => sessionRef.current?.cancelTripCompletion(tripId),
       dispatchAppAction: (action: AppAction) => dispatchRef.current(action),
     });
     sessionRef.current = new HaneumRealtimeSession(guideContext, () => {

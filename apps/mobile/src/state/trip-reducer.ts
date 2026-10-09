@@ -16,6 +16,7 @@ export const initialState = {
   selectedRoute: null as unknown,
   journeyRoute: null as Route | null,
   journeyGeneration: 0,
+  directSelectionGeneration: 0,
   journeySegmentIndex: null as number | null,
   journeyPhase: null as "GUIDING" | "SUBWAY_ON_BOARD" | "BUS_ALIGHT_CONFIRM" | null,
   tripId: null as string | null,
@@ -138,6 +139,7 @@ export function tripReducer(state: TripState, action: TripAction): TripState {
       // 새 검색 결과이므로 이전 검색에서 안내했던 후보 기록과 만료 시각을 새로 계산한다.
       return {
         ...state,
+        directSelectionGeneration: state.directSelectionGeneration + 1,
         destination: action.destination,
         routeCandidates: action.routes as unknown[] | null,
         routeCandidatesExpiresAt: Date.now() + ROUTE_CANDIDATES_TTL_MS,
@@ -164,7 +166,7 @@ export function tripReducer(state: TripState, action: TripAction): TripState {
     case "START_JOURNEY": {
       const route = action.route as Route;
       if (state.tripId || state.journeyRoute || !canStartJourney(route)) return state;
-      return { ...state, journeyRoute: route, journeyGeneration: state.journeyGeneration + 1,
+      return { ...state, directSelectionGeneration: state.directSelectionGeneration + 1, journeyRoute: route, journeyGeneration: state.journeyGeneration + 1,
         journeySegmentIndex: 0, journeyPhase: "GUIDING", selectedRoute: null };
     }
 
@@ -307,12 +309,13 @@ export function tripReducer(state: TripState, action: TripAction): TripState {
 
     // 운행만 종료하고, 유효한 기존 목적지·후보 노선(및 TTL, 안내 기록)은 유지한다.
     case "RESET_TRIP_KEEP_SEARCH":
-      return { ...resetTripKeepingSearch(initialState, state), journeyGeneration: state.journeyGeneration };
+      return { ...resetTripKeepingSearch(initialState, state), journeyGeneration: state.journeyGeneration, directSelectionGeneration: state.directSelectionGeneration + 1 };
 
     // TRIP_DONE, TRIP_NOT_FOUND 발생 시 호출 — 다음 운행을 위해 전체 초기화
     case "RESET_TRIP":
       return {
         ...initialState,
+        directSelectionGeneration: state.directSelectionGeneration + 1,
         journeyGeneration: state.journeyGeneration,
         beaconScanActive: state.beaconScanActive,
       };

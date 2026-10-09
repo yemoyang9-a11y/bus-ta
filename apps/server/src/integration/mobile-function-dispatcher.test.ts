@@ -1303,7 +1303,7 @@ test("create_trip 결과에도 읽을 발음이 실린다", async (t) => {
       name: "create_trip",
       arguments: JSON.stringify({ destination: "수원역", candidateId: 1 }),
     },
-    createContext([], { ...baseState, routeCandidates: [route] }),
+    createContext([], { ...baseState, tripId: null, tripStatus: null, routeCandidatesExpiresAt: Date.now() + 60000, routeCandidates: [route] }),
   );
 
   const output = readFunctionOutput(events);
