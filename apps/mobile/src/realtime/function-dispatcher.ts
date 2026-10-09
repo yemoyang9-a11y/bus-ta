@@ -1,4 +1,5 @@
 import { startDirectTrip } from '../state/direct-trip-selection';
+import { logVoiceRouteDiagnostic } from './voice-route-diagnostic';
 import { apiClient, ApiError } from "../api/client";
 import type {
   BoardingConfirmationResponse,
@@ -156,10 +157,13 @@ export async function dispatchRealtimeFunctionCall(
 
     result = await callPromise;
     if (event.name === "end_trip") {
-      if (endedResults.has(result)) return [{ type: "conversation.item.create", item: {
+      if (endedResults.has(result)) {
+        logVoiceRouteDiagnostic('duplicate_end', { tool: event.name, success: result.success });
+        return [{ type: "conversation.item.create", item: {
         type: "function_call_output", call_id: event.call_id,
         output: JSON.stringify({ success: result.success, message: "같은 종료 요청은 이미 처리 중이거나 처리되었습니다." }),
       } }];
+      }
       endedResults.add(result);
     }
     result = await rejectStaleTripResult(event.name, result, context);
@@ -168,6 +172,8 @@ export async function dispatchRealtimeFunctionCall(
   let modelResult = withSpokenRouteNumbers(
     buildModelFunctionResult(event.name, args, result, context),
   );
+  logVoiceRouteDiagnostic('function_result', { tool: event.name, success: result.success,
+    phase: context.getAppState().tripStatus, hasTrip: Boolean(context.getAppState().tripId) });
   let candidateIdsToMark = collectCandidateIdsToMark(event.name, result, modelResult);
   // end_trip 성공 시 Context가 즉시 초기화돼도 직전 검색 후보를 잃지 않도록
   // 모델 결과를 먼저 만든 뒤 상태를 갱신한다.
@@ -539,7 +545,13 @@ async function callBackendFunction(
       if (!flights) { flights = new Map(); endTripFlights.set(context, flights); }
       const existing = flights.get(tripId);
       if (existing) return existing;
-      const flight = apiClient.trips.end(tripId, body).catch(error => { flights!.delete(tripId); throw error; });
+      const flight = apiClient.trips.end(tripId, body).then(result => {
+        logVoiceRouteDiagnostic('end_api_result', { tool: 'end_trip', success: result.success === true });
+        return result;
+      }).catch(error => {
+        logVoiceRouteDiagnostic('end_api_result', { tool: 'end_trip', success: false });
+        flights!.delete(tripId); throw error;
+      });
       flights.clear(); flights.set(tripId, flight);
       return flight;
     }
@@ -630,6 +642,7 @@ function updateContext(
   if (name === "end_trip") {
     context.onTripEnded?.((result as EndTripResponse).tripId);
     clearActiveTripContextKeepSearch(context);
+    logVoiceRouteDiagnostic('reset_requested', { tool: 'end_trip', success: true });
   }
 }
 

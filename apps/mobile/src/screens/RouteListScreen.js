@@ -41,7 +41,7 @@ export default function RouteListScreen({ navigation }) {
   useEffect(() => {
     if (!isFocused) { navigatedRef.current = null; return; }
     if (state.journeyRoute) { navigation.navigate('Transfer'); return; }
-    if (!state.tripId) confirmRouteSelectionScreen(state);
+    if (!state.tripId) confirmRouteSelectionScreen(state, 'RouteList');
     const key = state.tripId;
     if (!key || !state.selectedRoute || !['WAITING_BUS', 'ON_BUS', 'NEAR_DESTINATION'].includes(state.tripStatus)) return;
     if (navigatedRef.current === key) return;

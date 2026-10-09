@@ -1,6 +1,7 @@
 import { TRIP_COMPLETION_MESSAGE } from './trip-tracking';
 import { ONE_STOP_GUIDE_MESSAGE, ONE_STOP_REALTIME_PLAYBACK_TIMEOUT_MS } from './one-stop-alight-guide';
 import { toTripStatusSnapshot } from './status-snapshot';
+import { logVoiceRouteDiagnostic } from './voice-route-diagnostic';
 import { apiClient } from "../api/client";
 import {
   dispatchRealtimeFunctionCall,
@@ -10,6 +11,7 @@ import { checkAndDispatchStatusChange } from "./event-dispatcher";
 import {
   createRealtimeReadyResponseEvent,
   createRealtimeSessionUpdateEvent,
+  MISSED_BUS_POLICY_VERSION,
 } from "./guide";
 import type {
   CreateRealtimeSessionResponse,
@@ -260,6 +262,7 @@ export class HaneumRealtimeSession {
 
   sendSessionUpdate(transport: RealtimeTransport) {
     transport.send(createRealtimeSessionUpdateEvent());
+    logVoiceRouteDiagnostic('policy_sent', { policy: 'sent' });
   }
 
   recoverOutput(): boolean {
@@ -320,7 +323,7 @@ export class HaneumRealtimeSession {
                 this.handleServerEvent(
                   event,
                   transport,
-                ).catch(() => {});
+                ).catch(() => logVoiceRouteDiagnostic('handler_failed'));
               },
               onClose: () => { if (this.transport === transport) this.handleTransportClose(); },
               onError: () => {
@@ -363,6 +366,11 @@ export class HaneumRealtimeSession {
     event: unknown,
     transport: RealtimeTransport,
   ) {
+    if (event && typeof event === 'object' && (event as Record<string, unknown>).type === 'session.updated') {
+      const reported = (event as { session?: { instructions?: unknown } }).session?.instructions;
+      logVoiceRouteDiagnostic('policy_ack', { policy: typeof reported === 'string'
+        ? reported.includes(MISSED_BUS_POLICY_VERSION) ? 'confirmed' : 'different' : 'unavailable' });
+    }
     if (this.closedTransports.has(transport)) return;
     this.trackResponseLifecycle(event);
 
@@ -382,6 +390,15 @@ export class HaneumRealtimeSession {
     }
 
     if (isRealtimeFunctionCallEvent(event)) {
+      let flags: Record<string, unknown> = {};
+      try {
+        const parsed: unknown = JSON.parse(event.arguments);
+        if (parsed && typeof parsed === 'object') flags = parsed as Record<string, unknown>;
+      } catch { /* Dispatcher reports invalid arguments without exposing them. */ }
+      logVoiceRouteDiagnostic('function_received', { tool: event.name,
+        phase: this.context.getAppState().tripStatus, hasTrip: Boolean(this.context.getAppState().tripId),
+        missedBus: flags.reason === 'MISSED_BUS', cancelRequested: flags.action === 'CANCEL',
+        refreshArrivals: flags.refreshArrivals === true });
       if (this.handledFunctionCalls.has(event.call_id)) return;
       this.handledFunctionCalls.add(event.call_id);
       if (this.handledFunctionCalls.size > 256) this.handledFunctionCalls.delete(this.handledFunctionCalls.values().next().value!);

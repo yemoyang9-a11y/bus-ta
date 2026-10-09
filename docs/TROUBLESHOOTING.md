@@ -175,3 +175,13 @@ curl -X POST "$URL" -H "Content-Type: application/json" \
 - 재발 방지 방법: 한글 목적지로 API 를 테스트할 때는 항상 stdin 또는 파일로 본문을 넘긴다.
   "같은 요청인데 결과가 달라졌다"고 판단하기 전에, 요청을 보낸 **명령 형태가 정말 같았는지**
   먼저 대조한다.
+
+## 2026-10-09: 버스 놓침 안내 후 노선 선택 화면에 남지 못하는 문제
+
+- 관찰: 직행 탑승 대기에서 놓침 발화 후 다른 버스 정보는 안내했지만 화면은 복귀하지 않았다. 당시 Function Call 및 종료 API 결과가 없어 실기기 원인은 아직 확정하지 못했다.
+- 코드 확인: rebase 전후 종료 성공 → 상태 초기화 → 활성 노선 선택 화면 확인 → 후보 안내 흐름은 유지됐다. 조회/후보 조회는 운행을 종료하지 않는다. 기존 도구 설명의 명확한 종료 요청 조건과 놓침 규칙이 혼동될 여지가 있어, 놓침 의미는 별도 취소 표현 없이 종료를 먼저 실행하도록 우선순위를 명시했다. 특정 발화 문자열로 앱에서 의도를 판별하지 않는다.
+- 개발 빌드에서 새 Realtime 연결을 시작하고 Metro 또는 React Native DevTools 콘솔에서 `[VoiceRoute]`를 확인한다. 로그는 개발 모드에서만 출력하며 발화, 전체 인자, 운행 ID, 좌표, 토큰, 오류 본문은 기록하지 않는다.
+- `policy_sent` 이후 `policy_ack.policy=confirmed`이면 서버가 보고한 지침에 현재 정책 표시가 있다. `different`이면 다른 지침이 보고됐으므로 세션 재연결을 확인한다. `unavailable`은 서버 이벤트에 지침이 없다는 뜻으로, 적용 실패를 증명하지 않는다.
+- 정상 놓침 흐름: `function_received`의 tool=end_trip, phase=WAITING_BUS, missedBus=true, cancelRequested=true → `end_api_result.success=true` → `function_result.success=true` → `reset_requested` → `screen_ready.screen=RouteList`. 후보가 없거나 만료되면 Main으로 복귀한다.
+- 종료 없이 get_trip_status/get_next_route_candidates만 호출됐다면 모델 도구 선택을 확인한다. end_api_result=false이면 종료 API 실패이며 기존 운행은 유지해야 한다. API 성공 후 앱 결과가 실패하면 오래된 운행 응답 또는 상태 검증을 확인한다. screen_timeout이면 화면 포커스/복귀 조건을 확인한다. Function 로그가 없으면 세션 연결 및 도구 이벤트 수신 여부부터 확인한다.
+- 자동 테스트는 실제 세션 설정, 도구 실행, 상태와 화면 포커스, 후보 재안내를 검증한다. 실제 Realtime 모델의 자연어 해석 및 휴대폰 음성·BLE·GPS 동작은 별도 실기기 검증이 필요하다.

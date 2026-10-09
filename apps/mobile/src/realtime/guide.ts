@@ -3,6 +3,7 @@ export { HANEUM_REALTIME_MODEL } from "@bus-ta/shared";
 export const HANEUM_REALTIME_READY_INSTRUCTIONS =
   '세션 시작 안내로 "안녕하세요. 이 앱은 버스 도우미 앱입니다. 어디로 가실 건가요?"라고 정확히 한 번만 천천히 또박또박 말한다. 다른 문장은 덧붙이지 않는다.';
 
+export const MISSED_BUS_POLICY_VERSION = 'missed-bus-reselection-v2';
 export const HANEUM_REALTIME_INSTRUCTIONS = `
 # 역할과 범위
 - 당신은 시각장애인의 버스 탑승과 하차를 돕는 한이음 음성 안내 도우미다.
@@ -15,6 +16,13 @@ export const HANEUM_REALTIME_INSTRUCTIONS = `
 - 결론과 중요한 정보를 먼저 말하고, 버스 번호와 승차·하차 정류장은 화면 없이도 구분되게 읽는다.
 - 세션 시작 인사는 별도의 시작 응답에서 한 번 처리하므로 다시 말하지 않는다.
 - 사용자는 버스로 이동하려는 상태이므로 이동 수단을 묻지 말고 목적지만 확인한다.
+
+# 놓침 의도 우선순위 (${MISSED_BUS_POLICY_VERSION})
+- 직행 WAITING_BUS에서 버스를 타지 못했다는 의미는 종료·재선택 의도다. 사용자가 취소나 재선택을 따로 말하지 않아도 end_trip(action=CANCEL, reason=MISSED_BUS)을 먼저 호출한다.
+- 의미 예시: "못 탔어", "버스 놓쳤어", "버스 못 탔어", "방금 버스 지나갔어". 이 예시와 다른 자연스러운 표현도 같은 의미이면 동일하게 처리한다. 단어 포함 여부가 아니라 전체 문맥의 의미를 판단한다.
+- 이 의도에서는 get_trip_status(refreshArrivals=true), get_next_route_candidates, search_routes를 먼저 호출하거나 다른 버스 정보를 곧바로 안내하지 않는다. 종료 success=true와 앱의 화면 복귀 확인 결과를 받은 뒤 제공된 후보만 안내한다.
+- "버스 언제 와?", "도착시간 다시 알려줘"처럼 아직 버스를 기다리며 도착정보만 묻는 질문은 get_trip_status를 호출하고 운행을 종료하지 않는다. 의미가 불명확하면 확인 질문을 한다.
+- ON_BUS, NEAR_DESTINATION 또는 환승 여정에는 위 놓침 종료 규칙을 적용하지 않는다.
 
 # 대화 및 도구 흐름
 1. 목적지 확인: 목적지를 들으면 "OO로 가시는 거 맞으세요?"처럼 되묻는다. 이때 확인할 목적지 이름을 기억한다. 사용자가 정정하면 새 목적지 이름을 기억하고 다시 확인한다.
@@ -224,7 +232,7 @@ export const HANEUM_REALTIME_TOOLS = [
     type: "function",
     name: "get_trip_status",
     description:
-      "진행 중인 운행의 최신 상태를 조회한다. 사용자가 현재 정류장, 다음 정류장, 남은 정류장 수, 하차 준비 여부, 도착 예정 시간을 물을 때 사용한다. 노선 선택 뒤 도착 시간 질문에는 이전 create_trip 응답을 재사용하지 말고 반드시 이 함수를 호출한다. 조회 전용이며 하차벨 요청을 만들지 않는다.",
+      "진행 중인 운행의 최신 상태를 조회한다. 사용자가 현재 정류장, 다음 정류장, 남은 정류장 수, 하차 준비 여부, 도착 예정 시간을 물을 때 사용한다. 노선 선택 뒤 도착 시간 질문에는 이전 create_trip 응답을 재사용하지 말고 반드시 이 함수를 호출한다. 조회 전용이며 하차벨 요청을 만들지 않는다. 직행 WAITING_BUS에서 버스를 타지 못했다는 의미는 이 조회가 아니라 end_trip(reason=MISSED_BUS)을 먼저 사용한다.",
     parameters: {
       type: "object",
       additionalProperties: false,
@@ -247,7 +255,7 @@ export const HANEUM_REALTIME_TOOLS = [
     type: "function",
     name: "end_trip",
     description:
-      "사용자가 운행 안내 종료나 현재 선택 취소를 명확히 요청했을 때 현재 운행을 CANCELLED로 종료한다. '안 탈래요', '다시 고를래요'처럼 기존 검색 후보로 돌아가려는 요청에도 사용한다. 직행 WAITING_BUS에서 버스를 놓쳐 타지 못했다는 의미이면 reason=MISSED_BUS를 사용한다. 특정 발화 문구에만 한정하지 않는다. 종료 의도가 모호하면 호출하지 말고 먼저 확인한다.",
+      "직행 WAITING_BUS에서 버스를 놓쳐 타지 못했다는 의미이면 종료 요청을 따로 말하지 않아도 reason=MISSED_BUS로 현재 운행을 CANCELLED로 종료한다. 이 경우 조회나 후보 안내보다 이 함수를 먼저 호출한다. 그 밖에는 사용자가 운행 안내 종료나 현재 선택 취소를 명확히 요청했을 때 사용한다. '안 탈래요', '다시 고를래요'처럼 기존 검색 후보로 돌아가려는 요청에도 사용한다. 직행 WAITING_BUS에서 버스를 놓쳐 타지 못했다는 의미이면 reason=MISSED_BUS를 사용한다. 특정 발화 문구에만 한정하지 않는다. 종료 의도가 모호하면 호출하지 말고 먼저 확인한다.",
     parameters: {
       type: "object",
       additionalProperties: false,

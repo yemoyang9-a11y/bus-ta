@@ -5,7 +5,7 @@ import { DEMO_ROUTE } from '@bus-ta/shared';
 import { initialState, tripReducer } from '../../../mobile/src/state/trip-reducer.js';
 import { waitForRouteSelection, confirmRouteSelectionScreen } from '../../../mobile/src/state/trip-transition.js';
 import { dispatchRealtimeFunctionCall } from '../../../mobile/src/realtime/function-dispatcher.js';
-import { createRealtimeSessionUpdateEvent } from '../../../mobile/src/realtime/guide.js';
+import { createRealtimeSessionUpdateEvent, MISSED_BUS_POLICY_VERSION } from '../../../mobile/src/realtime/guide.js';
 import { runInNewContext } from 'node:vm';
 import { createRequire } from 'node:module';
 import ts from 'typescript';
@@ -123,6 +123,31 @@ test('semantic tool instructions distinguish missed bus from arrival refresh wit
   assert.match(update.session.instructions, /단순 도착시간 질문은 get_trip_status/);
   const end = update.session.tools.find(tool => tool.name === 'end_trip'); assert.ok(end);
   assert.ok('reason' in end.parameters.properties);
+  assert.ok(update.session.instructions.includes(MISSED_BUS_POLICY_VERSION));
+  for (const phrase of ['못 탔어', '버스 놓쳤어', '버스 못 탔어', '방금 버스 지나갔어', '버스 언제 와?', '도착시간 다시 알려줘']) {
+    assert.ok(update.session.instructions.includes(phrase));
+  }
+  assert.match(end.description, /종료 요청을 따로 말하지 않아도/);
+});
+
+test('actual session sends current semantic policy and distinguishes acknowledged, old and missing policy', async () => {
+  const a = setup(); const diagnostics: any[] = []; const sent: any[] = [];
+  const sessionPath = new URL('../../../mobile/src/realtime/session.ts', import.meta.url);
+  const realRequire = createRequire(sessionPath); const exports: any = {};
+  runInNewContext(ts.transpileModule(readFileSync(sessionPath, 'utf8'), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, esModuleInterop: true },
+  }).outputText, { exports, require: (name: string) => name === './voice-route-diagnostic'
+    ? { logVoiceRouteDiagnostic: (stage: string, fields: unknown) => diagnostics.push({ stage, fields }) }
+    : realRequire(name), console, setTimeout, clearTimeout });
+  const session = new exports.HaneumRealtimeSession(a.context);
+  const transport = { send: (event: unknown) => sent.push(event) }; session.transport = transport;
+  session.sendSessionUpdate(transport);
+  assert.ok(sent[0].session.instructions.includes(MISSED_BUS_POLICY_VERSION));
+  for (const instructions of [sent[0].session.instructions, 'old instructions', undefined]) {
+    await session.handleServerEvent({ type: 'session.updated', session: { instructions } }, transport);
+  }
+  assert.deepEqual(diagnostics.filter(d => d.stage === 'policy_ack').map(d => d.fields.policy),
+    ['confirmed', 'different', 'unavailable']);
 });
 
 test('missing destination focus expires without generating stale candidate audio', async t => {

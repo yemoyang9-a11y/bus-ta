@@ -29,7 +29,7 @@ export default function MainScreen({ navigation }) {
     }
     const candidatesValid = state.routeCandidatesExpiresAt && Date.now() <= state.routeCandidatesExpiresAt;
     const target = getTripNavigationTarget({ tripId, routeCandidates: candidatesValid ? routeCandidates : null });
-    if (!tripId && target !== 'RouteList') confirmRouteSelectionScreen(state);
+    if (!tripId && target !== 'RouteList') confirmRouteSelectionScreen(state, 'Main');
 
     if (target === 'Riding') {
       navigation.navigate('Riding', { tripId, selectedRoute });
