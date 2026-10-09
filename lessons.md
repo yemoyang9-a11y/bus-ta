@@ -702,3 +702,27 @@ esbuild(=tsx)의 `.js` 로더는 JSX를 켜지 않아
   왔을 때" 규칙이 있어야 한다. 없으면 `undefined` 덮어쓰기로 조용히 사라진다.
 - 진단 로그는 구간 경계마다 같은 식별자로 남겨야 쓸모가 있다. 로그 하나로는 어디서 끊겼는지
   알 수 없다(`docs/ARRIVAL_POLLING.md`의 8단계 순서).
+
+---
+
+## 2026-10-09 — `...initialState` 전개는 "늘어나기만 해야 하는" 카운터를 되감는다
+
+**증상.** PR #60 리뷰에서, 직행 운행 → 놓침 취소 → 환승 경로 선택 → 도보 구간 확인 → 환승 취소 →
+같은 직행 노선 재선택 순서를 밟으면 서버 호출 없이 이미 취소된 trip-1의 성공 결과가 돌아왔다.
+앱 상태의 tripId는 null이라 GPS·지팡이·하차벨이 동작하지 않는데 모델은 "선택했습니다"라고 말한다.
+
+**원인.** `startDirectTrip`은 (후보 배열, `directSelectionGeneration`)을 키로 성공 결과를 캐시하고
+"세대 값은 늘어나기만 한다"를 전제한다. `CONFIRM_JOURNEY_STEP`이 `{ ...initialState, ... }`로 상태를
+만들면서 이 값을 0으로 되돌렸고, 같은 후보 배열에서 세대 1이 다시 나타났다.
+
+**해결.** `CONFIRM_JOURNEY_STEP`의 두 반환에서 `directSelectionGeneration`을 이어받는다.
+`mobile-direct-route-navigation.test.ts`의 "journey step confirm does not rewind..." 테스트가 수정 전
+실패(요청 1회), 수정 후 통과를 확인했다.
+
+**교훈.** 캐시·중복 방지 키로 쓰는 카운터를 reducer에 두면, `...initialState`로 상태를 다시 만드는
+모든 분기를 찾아 그 값을 명시적으로 이어받게 한다(`journeyGeneration`이 이미 그렇게 하고 있었다).
+
+**환경 특이사항 — CI(Node 22)와 로컬(Node 24) 출력 형식이 다르다.** 바뀐 테스트를 CI 버전으로 돌리려면
+`apps/server`에서 `pnpm --package=node@22.17.0 dlx node --import tsx --test <파일>`을 쓴다.
+Node 22는 TAP 형식이라 요약이 `ℹ pass`가 아니라 `# pass`로 나온다. grep 패턴을 바꾸지 않으면
+결과가 비어 보인다.

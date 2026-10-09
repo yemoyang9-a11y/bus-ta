@@ -121,7 +121,7 @@ function buildFunctionResponseInstructions(name: RealtimeFunctionName): string {
   // 도착 예정 시간을 create_trip 전용으로 묶어 두었기 때문이다. 이 Function 은 매번
   // 서버가 갱신한 값을 들고 오므로 답변 근거를 방금 받은 결과로 못박는다.
   if (name === "get_trip_status") {
-    return `${common} 도착 예정 시간과 남은 정류장 수는 방금 전달된 이 get_trip_status 결과만 근거로 말한다. 이전 create_trip 응답, 앞선 대화에서 안내했던 도착 시간, 앱이 기억하던 값은 절대 다시 사용하지 않는다. arrivalStatus 가 AVAILABLE 이면 arrivals의 첫 항목 predictedArrivalMinutes 를 사용해 \"버스는 약 N분 후 도착합니다\"처럼 안내한다. NO_VEHICLE 이면 조회는 됐고 지금 이 정류장에 오는 해당 노선 차량이 없다고 안내하며, 이때는 다른 노선을 제안해도 된다. NO_PREDICTION 이면 차가 없다고 단정하지 말고 도착시간 정보를 확인할 수 없다고 안내한다. UPSTREAM_ERROR 이면 \"지금은 도착 정보를 확인할 수 없습니다\"라고만 안내하고, 절대 버스가 없다거나 차량이 없다는 취지로 말하지 않으며, arrivals 에 값이 남아 있어도 그것을 방금 확인한 최신 도착시간처럼 말하지 않는다. 상태 조회 자체는 운행을 취소하지 않으며, 이 결과만으로 end_trip을 호출하지 않는다. 사용자가 어떤 버스가 지나갔다고 말한 뒤 이 결과를 받았다면, 선택한 버스가 아직 오고 있을 때는 그 시간을 안내하고, 이미 지나간 것으로 보일 때는 놓쳤는지 확인 질문만 한다. 사용자가 놓쳤다고 확인한 뒤에만 end_trip(reason=MISSED_BUS)을 호출한다. \"몇 정류장 남았어요?\"의 뜻은 탑승 전후가 다르다. tripStatus 가 WAITING_BUS 이면 remainingStations 를 버스가 승차 정류장까지 남긴 정류장 수로 말하지 않고, 남은 정류장 수는 확인할 수 없다고 밝힌 뒤 최신 도착 예정 시간을 안내한다. tripStatus 가 ON_BUS 또는 NEAR_DESTINATION 이면 remainingStations 를 목적지까지 남은 정류장 수로 안내한다.`;
+    return `${common} 도착 예정 시간과 남은 정류장 수는 방금 전달된 이 get_trip_status 결과만 근거로 말한다. 이전 create_trip 응답, 앞선 대화에서 안내했던 도착 시간, 앱이 기억하던 값은 절대 다시 사용하지 않는다. arrivalStatus 가 AVAILABLE 이면 arrivals의 첫 항목 predictedArrivalMinutes 를 사용해 \"버스는 약 N분 후 도착합니다\"처럼 안내한다. NO_VEHICLE 이면 조회는 됐고 지금 이 정류장에 오는 해당 노선 차량이 없다고 안내하며, 이때는 다른 노선을 제안해도 된다. NO_PREDICTION 이면 차가 없다고 단정하지 말고 도착시간 정보를 확인할 수 없다고 안내한다. UPSTREAM_ERROR 이면 \"지금은 도착 정보를 확인할 수 없습니다\"라고만 안내하고, 절대 버스가 없다거나 차량이 없다는 취지로 말하지 않으며, arrivals 에 값이 남아 있어도 그것을 방금 확인한 최신 도착시간처럼 말하지 않는다. 상태 조회 자체는 운행을 취소하지 않으며, 이 결과만으로 end_trip을 호출하지 않는다. 환승 여정이 아닌 직행 WAITING_BUS에서 사용자가 어떤 버스가 지나갔다고 말한 뒤 이 결과를 받았다면, 위 기준대로 최신 도착 시간(UPSTREAM_ERROR이면 확인할 수 없다는 안내)을 말한 뒤 방금 지나간 버스가 사용자의 버스였는지, 놓쳤으면 취소하고 다른 버스를 안내할지 확인 질문을 덧붙이고, 다음 사용자 발화에서 놓쳤다고 확인한 경우에만 end_trip(reason=MISSED_BUS)을 호출한다. 환승 여정의 버스 구간이면 end_trip을 호출하지 않고 다음 차량 도착 시간만 안내한다. \"몇 정류장 남았어요?\"의 뜻은 탑승 전후가 다르다. tripStatus 가 WAITING_BUS 이면 remainingStations 를 버스가 승차 정류장까지 남긴 정류장 수로 말하지 않고, 남은 정류장 수는 확인할 수 없다고 밝힌 뒤 최신 도착 예정 시간을 안내한다. tripStatus 가 ON_BUS 또는 NEAR_DESTINATION 이면 remainingStations 를 목적지까지 남은 정류장 수로 안내한다.`;
   }
 
   if (name === "confirm_boarding") {
@@ -318,12 +318,16 @@ function buildModelFunctionResult(
     const expired =
       !appState.routeCandidatesExpiresAt ||
       Date.now() > appState.routeCandidatesExpiresAt;
-    const cancelledCandidateId = appState.selectedRoute?.candidateId;
+    const selected = appState.selectedRoute;
+    // candidateId 는 검색마다 1부터 다시 매겨진다. 운행 중 새 검색이 있었다면 번호만 같은
+    // 다른 노선일 수 있어 노선 번호까지 같아야 취소한 노선으로 본다.
+    const isCancelled = (route: Route) =>
+      Boolean(selected) && route.candidateId === selected?.candidateId && route.routeNo === selected?.routeNo;
     const candidates = (appState.routeCandidates ?? []) as Route[];
-    const others = candidates.filter((route) => route.candidateId !== cancelledCandidateId);
+    const others = candidates.filter((route) => !isCancelled(route));
     // 버스를 놓친 경우 같은 노선의 다음 차를 기다리는 선택지를 없애지 않는다.
     const missedRoute = (args as { reason?: unknown } | null)?.reason === "MISSED_BUS"
-      ? candidates.find((route) => route.candidateId === cancelledCandidateId)
+      ? candidates.find(isCancelled)
       : undefined;
     const routes = expired ? [] : (missedRoute ? [missedRoute, ...others] : others).slice(0, 2);
 

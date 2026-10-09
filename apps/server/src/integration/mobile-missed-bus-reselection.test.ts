@@ -69,6 +69,16 @@ test('missed waiting bus ends successfully, waits for focused RouteList, reannou
   assert.equal(a.getState().tripId, 'trip-B'); assert.equal(a.getState().selectedRoute?.routeNo, '504');
   a.focus(); assert.equal(a.navigate.at(-1)[0], 'Riding'); assert.equal(a.navigate.at(-1)[1].tripId, 'trip-B');
 });
+test('a new search during the trip cannot relabel a different route as the missed one', async t => {
+  const a = setup();
+  const lookalike = { ...DEMO_ROUTE, routeNo: '999' }; const third = { ...DEMO_ROUTE, candidateId: 3, routeNo: '777' };
+  a.dispatch({ type: 'SET_DESTINATION_AND_ROUTES', destination: '다른 곳', routes: [lookalike, third] });
+  t.mock.method(globalThis, 'fetch', async () => Response.json(ended));
+  const pending = call(a); await until(a.waiting); a.focus();
+  const result = output(await pending);
+  assert.equal(result.missedRouteCandidateId, undefined);
+  assert.deepEqual(result.routes.map((r: any) => r.routeNo), ['999', '777']);
+});
 test('explicit cancel without missed reason still omits the cancelled route', async t => {
   const a = setup(); t.mock.method(globalThis, 'fetch', async () => Response.json(ended));
   const pending = call(a, 'end_trip', { tripId: 'trip-A', action: 'CANCEL' }, 'explicit'); await until(a.waiting); a.focus();
@@ -138,6 +148,8 @@ test('only a first-person missed statement ends immediately; a passing bus is re
   const passing = instructions.split('\n').find(line => line.includes('방금 버스 지나갔어'));
   assert.ok(passing);
   assert.match(passing, /종료하지 않는다/); assert.match(passing, /refreshArrivals=true/); assert.match(passing, /놓치셨나요/);
+  // Status data cannot tell whether the passing bus was the user's, so always confirm; cancel only for direct trips.
+  assert.match(passing, /^- 직행 WAITING_BUS에서/); assert.match(passing, /항상/); assert.match(passing, /UPSTREAM_ERROR/);
   assert.match(instructions, /단순 도착시간 질문은 get_trip_status/);
   assert.match(instructions, /환승 여정의 버스 구간[^\n]*refreshArrivals=true/);
   const end = update.session.tools.find(tool => tool.name === 'end_trip'); assert.ok(end);
@@ -152,7 +164,10 @@ test('status result instructions forbid chaining a cancel from the status result
   const events = await call(a, 'get_trip_status', { tripId: 'trip-A', refreshArrivals: true });
   const response = events.find(e => e.type === 'response.create');
   assert.ok(response && response.type === 'response.create');
-  assert.match(response.response?.instructions ?? '', /이 결과만으로 end_trip을 호출하지 않는다/);
+  const instructions = response.response?.instructions ?? '';
+  assert.match(instructions, /이 결과만으로 end_trip을 호출하지 않는다/);
+  assert.match(instructions, /환승 여정의 버스 구간이면 end_trip을 호출하지 않/);
+  assert.match(instructions, /환승 여정이 아닌 직행 WAITING_BUS[^.]*end_trip\(reason=MISSED_BUS\)/);
 });
 
 test('actual session sends current semantic policy and distinguishes acknowledged, old and missing policy', async () => {

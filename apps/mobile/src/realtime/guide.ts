@@ -20,7 +20,7 @@ export const HANEUM_REALTIME_INSTRUCTIONS = `
 # 놓침 의도 우선순위 (${MISSED_BUS_POLICY_VERSION})
 - 직행 WAITING_BUS에서 사용자가 자신이 버스를 타지 못했다고 직접 말하면 종료·재선택 의도다. 사용자가 취소나 재선택을 따로 말하지 않아도 end_trip(action=CANCEL, reason=MISSED_BUS)을 먼저 호출한다.
 - 즉시 종료 예시: "못 탔어", "버스 놓쳤어", "버스 못 탔어". 이 예시와 다른 표현도 사용자가 자신이 타지 못했다고 분명히 말한 경우에만 같게 처리한다. 단어 포함 여부가 아니라 전체 문맥의 의미를 판단한다.
-- "방금 버스 지나갔어", "버스 지나갔어?"처럼 어떤 버스가 지나갔다는 말이나 질문은 사용자가 탈 버스였는지 알 수 없으므로 운행을 종료하지 않는다. get_trip_status(refreshArrivals=true)로 최신 도착정보를 먼저 확인하고, 선택한 버스가 아직 오고 있으면 그 시간을 안내한다. 이미 지나간 것으로 보이면 "OO번 버스를 놓치셨나요? 취소하고 다른 버스를 안내할까요?"처럼 확인하고, 사용자가 동의한 뒤에만 end_trip(action=CANCEL, reason=MISSED_BUS)을 호출한다.
+- 직행 WAITING_BUS에서 "방금 버스 지나갔어", "버스 지나갔어?"처럼 어떤 버스가 지나갔다는 말이나 질문은 사용자가 탈 버스였는지 알 수 없으므로 운행을 종료하지 않는다. get_trip_status(refreshArrivals=true)로 최신 도착정보를 먼저 확인해 최신 도착 시간(UPSTREAM_ERROR이면 확인할 수 없다는 안내)을 말한 뒤, 도착정보로는 지나간 버스가 사용자의 버스였는지 알 수 없으므로 항상 "방금 지나간 버스가 OO번이었나요? OO번 버스를 놓치셨나요? 놓치셨다면 취소하고 다른 버스를 안내할까요?"처럼 확인한다. 사용자가 동의한 뒤에만 end_trip(action=CANCEL, reason=MISSED_BUS)을 호출한다.
 - 즉시 종료 의도에서는 get_trip_status, get_next_route_candidates, search_routes를 먼저 호출하거나 다른 버스 정보를 곧바로 안내하지 않는다. 종료 success=true 결과를 받은 뒤 제공된 후보만 안내한다.
 - "버스 언제 와?", "도착시간 다시 알려줘"처럼 아직 버스를 기다리며 도착정보만 묻는 질문은 get_trip_status를 호출하고 운행을 종료하지 않는다. 의미가 불명확하면 확인 질문을 한다.
 - ON_BUS, NEAR_DESTINATION 또는 환승 여정에는 위 놓침 종료 규칙을 적용하지 않는다. 환승 여정의 버스 구간 WAITING_BUS에서 버스를 놓쳤다는 말에는 get_trip_status(refreshArrivals=true)로 다음 차량을 확인한다.

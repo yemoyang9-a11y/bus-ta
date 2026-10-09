@@ -130,7 +130,10 @@ export default function RouteListScreen({ navigation }) {
       if (!latestRef.current.tripId && !latestRef.current.journeyRoute) {
         setSelectionError(error instanceof Error ? error.message : '운행을 준비하지 못했습니다. 다시 선택해 주세요.');
         // 화면 문구만으로는 화면을 볼 수 없는 사용자에게 실패가 전달되지 않는다.
-        Speech.speak('운행을 준비하지 못했습니다. 다시 선택해 주세요.', { language: 'ko' });
+        // 다른 선택이 아직 진행 중이면 그 결과가 곧 안내되므로 다시 고르라고 말하지 않는다.
+        if (error?.code !== 'SELECTION_IN_PROGRESS') {
+          Speech.speak('운행을 준비하지 못했습니다. 다시 선택해 주세요.', { language: 'ko' });
+        }
       }
     } finally {
       setLoading(false);

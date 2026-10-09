@@ -22,7 +22,7 @@ export function startDirectTrip(deps: {
   if (!entries) { entries = new Map(); selections.set(candidates, entries); }
   const existing = entries.get(generation);
   if (existing) return existing.route === deps.route ? existing.promise
-    : Promise.reject(Error('다른 노선의 운행을 준비하고 있습니다.'));
+    : Promise.reject(Object.assign(Error('다른 노선의 운행을 준비하고 있습니다.'), { code: 'SELECTION_IN_PROGRESS' }));
   const current = () => {
     const latest = deps.getState();
     return latest.routeCandidates === candidates && (latest.directSelectionGeneration ?? 0) === generation &&

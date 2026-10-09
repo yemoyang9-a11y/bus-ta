@@ -175,7 +175,10 @@ test('different voice and touch candidates share exclusion without mismatching d
   t.mock.method(globalThis, 'fetch', async () => { requests++;
     await new Promise<void>(done => { release = done; markStarted(); }); return Response.json(response()); });
   const pending = voice(a, winner); await started;
-  await a.press(other); release(); await pending; a.render();
+  await a.press(other);
+  // Another selection is still running; telling the user to choose again would contradict it.
+  assert.equal(a.spoken.length, 0);
+  release(); await pending; a.render();
   assert.equal(requests, 1); assert.equal(a.navigation.length, 1);
   assert.equal(a.navigation[0][1].selectedRoute, winner);
 });
