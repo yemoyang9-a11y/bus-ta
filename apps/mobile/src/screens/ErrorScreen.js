@@ -1,6 +1,8 @@
 import React from 'react';
 import { View, Text, TouchableWithoutFeedback, StyleSheet } from 'react-native';
-import * as Speech from 'expo-speech';
+import * as NativeSpeech from 'expo-speech';
+import { getSafeSpeech } from '../realtime/safe-speech';
+const Speech = getSafeSpeech(NativeSpeech);
 
 // 오류 화면
 // API 호출 실패 시 navigation.navigate('Error')로 이동

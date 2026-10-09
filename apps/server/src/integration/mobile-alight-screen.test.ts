@@ -5,6 +5,9 @@ import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import ts from 'typescript';
 import { createBellStopSession } from '../../../mobile/src/ble/bell-stop-session.js';
+import { createOneStopAlightGuide } from '../../../mobile/src/realtime/one-stop-alight-guide.js';
+import * as safeSpeech from '../../../mobile/src/realtime/safe-speech.js';
+import { createVoiceRecovery } from '../../../mobile/src/realtime/voice-recovery.js';
 
 const flush = async () => { for (let i = 0; i < 40; i++) await Promise.resolve(); };
 
@@ -31,6 +34,9 @@ function setup() {
   let getPromise: Promise<void> | undefined;
   const notified: unknown[] = [];
   const speech:string[]=[];
+  let speechStopFailure=false;
+  let voiceRecoveryVersion=0;
+  const nativeSpeech={speak:(message:string)=>speech.push(message),stop(){if(speechStopFailure)throw Error('native stop');}};
   const navigations:string[]=[];
   const dispatched:any[]=[];
   let endResolve:((result:any)=>void)|null=null;
@@ -69,7 +75,9 @@ function setup() {
     require: (name: string) => {
       if (name === 'react') return React;
       if (name === 'react-native') return { StyleSheet: { create: (value: unknown) => value } };
-      if (name === 'expo-speech') return { speak:(message:string)=>speech.push(message), stop() {} };
+      if (name === 'expo-speech') return nativeSpeech;
+      if (name === '../realtime/safe-speech') return safeSpeech;
+      if (name === '../realtime/VoiceRecoveryControl') return {default:()=>null};
       if (name === '@react-navigation/native') return { useFocusEffect: (next: typeof effect) => { effect = next; }, useIsFocused: () => true };
       if (name === '../realtime/trip-tracking') return tripTracking;
       if (name === '../ble/bell-stop-session') return { createBellStopSession };
@@ -77,7 +85,9 @@ function setup() {
         state: { tripId: currentTripId, tripStatus: currentStatus, targetBeaconId: 'BUS_A', bleIsMock: false },
         dispatch: (action:any) => { calls.dispatches++;dispatched.push(action);if(action.type==='RESET_TRIP')currentTripId=null; },
       }) };
-      if (name === '../realtime/RealtimeProvider') return { useRealtime: () => ({ isConnected: connected, session: { notifyStatusChange: (status: unknown) => notified.push(status) } }) };
+      if (name === '../realtime/RealtimeProvider') return { useRealtime: () => ({ isConnected: connected,
+        speechBlocked:!safeSpeech.getSafeSpeech(nativeSpeech).canSpeak(),voiceRecoveryVersion,
+        session: { notifyStatusChange: (status: unknown) => notified.push(status) } }) };
       if (name === '../api/client') return { ApiError: class extends Error {}, apiClient: { trips: {
         bell: { result: async (tripId: string, body: { result: string }) => {calls.posts++; if(postFailures-- > 0)throw Error('network');if(postPromise)await postPromise; calls.results.push(tripId); const alreadyRecorded = storedBellStatus !== undefined; storedBellStatus ??= body.result; return { success: true, resultCode: alreadyRecorded ? 'ALREADY_RECORDED' : 'RECORDED', bellStatus: storedBellStatus }; } },
         end:async()=>{calls.ends++;if(endReject)throw Error('network');return endPromise ?? {success:true,tripId:currentTripId};},
@@ -97,6 +107,13 @@ function setup() {
   });
   return {
     calls, callbacks, resolveWrite, speech, navigations, dispatched, notified,
+    safeSpeech:safeSpeech.getSafeSpeech(nativeSpeech),
+    failSpeechStop:()=>{speechStopFailure=true;},
+    recoverSpeech:async()=>{
+      speechStopFailure=false;const manager=safeSpeech.getSafeSpeech(nativeSpeech);
+      if(!manager.repairExternalOutput())return false;
+      manager.clearExternalBlock();const ok=await manager.recover();if(ok)voiceRecoveryVersion++;return ok;
+    },
     storedResult: (status: string) => { storedBellStatus = status; },
     statusResponse: (status: Record<string, unknown>) => { fetchedStatus = status; },
     failGet: () => { getFailure = true; },
@@ -108,12 +125,13 @@ function setup() {
     waitEnd:()=>{endPromise=new Promise(r=>{endResolve=r;});},finishEnd:()=>endResolve?.({success:true}),
     deferPost:(promise:Promise<void>)=>{postPromise=promise;},failPosts:(count:number)=>{postFailures=count;},
     completeTrip:()=>{currentStatus='TRIP_DONE';},
-    render(tripId = 'A', realtimeConnected = true) {
+    render(tripId = 'A', realtimeConnected = true, suppressGuideSpeech = false) {
+      if(suppressGuideSpeech) safeSpeech.getSafeSpeech(nativeSpeech).blockExternal();
       cursor = 0;
       connected = realtimeConnected;
       currentTripId = tripId;
       const previous = effect;
-      exports.default({ route: { params: { tripId, bellRequestId: `bell-${tripId}`, command: 'STOP_REQUEST' } },navigation:{navigate:(name:string)=>navigations.push(name)} });
+      exports.default({ route: { params: { tripId, bellRequestId: `bell-${tripId}`, command: 'STOP_REQUEST', suppressGuideSpeech } },navigation:{navigate:(name:string)=>navigations.push(name)} });
       if (effect! !== previous || !cleanup) {
         cleanup?.();
         cleanup = effect!();
@@ -123,6 +141,43 @@ function setup() {
     blur() { cleanup?.(); cleanup = undefined; },
   };
 }
+
+test('guide completion enters real Alight flow and sends existing STOP once',async()=>{
+  const screen=setup();let options:any;
+  const guide=createOneStopAlightGuide({tripId:'A',bellRequestId:'bell-A',isCurrent:()=>true,
+    speech:{speak(_message,value){options=value;},stop(){}}});
+  const complete=guide.start().then(()=>screen.render('A',false));
+  await flush();assert.equal(screen.calls.sends,0);
+  options.onDone();options.onDone();await complete;await flush();
+  assert.equal(screen.calls.sends,1);screen.render('A',false);await flush();assert.equal(screen.calls.sends,1);
+  screen.resolveWrite();screen.callbacks[0]!({result:'SUCCESS'});await flush();screen.blur();
+});
+
+test('unsafe prior audio suppresses Alight TTS but preserves one BLE request and result',async()=>{
+  const screen=setup();screen.render('A',false,true);await flush();
+  assert.equal(screen.calls.sends,1);assert.equal(screen.speech.length,0);
+  screen.resolveWrite();screen.callbacks[0]!({result:'SUCCESS'});await flush();
+  assert.deepEqual(screen.calls.results,['A']);assert.equal(screen.speech.length,0);screen.blur();
+});
+
+test('failed voice reconnect in Alight leaves BLE write and result processing unchanged',async()=>{
+  const screen=setup();screen.render('A',false);await flush();
+  const recovery=createVoiceRecovery({speech:screen.safeSpeech,getContext:()=> 'A',repairOutput:()=>true,
+    connect:async()=>{throw Error('network');},publish(){assert.fail('unexpected connection');},discard(){},onStatus(){}});
+  assert.equal(await recovery.run(),false);assert.equal(screen.calls.sends,1);
+  screen.resolveWrite();screen.callbacks[0]!({result:'SUCCESS'});await flush();
+  assert.deepEqual(screen.calls.results,['A']);assert.equal(screen.calls.sends,1);
+  assert.ok(screen.speech.includes('하차벨이 정상적으로 작동했습니다.'));screen.blur();
+});
+
+test('Alight replays a suppressed confirmed bell result after successful audio recovery without resending BLE',async()=>{
+  const screen=setup();screen.failSpeechStop();assert.equal(await screen.safeSpeech.stop(),false);
+  screen.render('A',false);await flush();assert.equal(screen.calls.sends,1);
+  screen.resolveWrite();screen.callbacks[0]!({result:'SUCCESS'});await flush();assert.equal(screen.speech.length,0);
+  assert.equal(await screen.recoverSpeech(),true);screen.render('A',false);await flush();
+  assert.deepEqual(screen.speech,['하차벨이 정상적으로 작동했습니다.']);assert.equal(screen.calls.sends,1);
+  screen.render('A',false);await flush();assert.equal(screen.speech.length,1);screen.blur();
+});
 
 test('Realtime 변화와 focus 재진입 중 pending STOP_REQUEST는 1회만 전송한다', async () => {
   const screen = setup();

@@ -1,4 +1,6 @@
 import { TRIP_COMPLETION_MESSAGE } from './trip-tracking';
+import { ONE_STOP_GUIDE_MESSAGE, ONE_STOP_REALTIME_PLAYBACK_TIMEOUT_MS } from './one-stop-alight-guide';
+import { toTripStatusSnapshot } from './status-snapshot';
 import { apiClient } from "../api/client";
 import {
   dispatchRealtimeFunctionCall,
@@ -39,7 +41,7 @@ const ACTIVE_RESPONSE_ERROR_CODE =
   "conversation_already_has_active_response";
 
 const STATUS_RESPONSE_INSTRUCTIONS =
-  "방금 전달된 운행 상태 변화만 근거로 사용자에게 짧고 명확한 한국어 음성 안내를 생성한다. tripStatus가 WAITING_BUS이거나 boardingConfirmedAt이 없으면 탑승 정류장에서 버스를 기다리는 상태이며, 절대 '탑승했습니다', '탑승 중입니다', '운행을 시작합니다'라고 말하지 않는다. boardingConfirmedAt이 있고 tripStatus가 ON_BUS 또는 NEAR_DESTINATION이며 아직 같은 탑승 확인 안내를 하지 않은 경우에만 탑승을 안내한다. boardingMethod가 AUTO_DETECTED이면 '버스 탑승이 감지되었습니다. 하차 안내를 시작합니다.'라고 말하고, USER_CONFIRMED이면 '탑승이 확인되었습니다. 하차까지 남은 정류장을 안내하겠습니다.'라고 말한다. 하차벨 안내는 다음 규칙을 우선한다. remainingStations가 2이고 bellStatus가 NOT_REQUESTED이면 '하차 정류장까지 두 정거장 남았습니다. 미리 내릴 준비를 해주세요.'라고만 안내하고, 하차벨을 요청했거나 눌렀다고 말하지 않는다. remainingStations가 1이고 bellStatus가 PENDING으로 바뀐 경우에만 '하차 정류장까지 한 정거장 남았습니다. 하차벨을 요청했습니다.'라고 안내한다. 서버에서 bellStatus가 SUCCESS로 확정된 후에만 '하차벨이 켜졌습니다. 안전하게 하차하세요.'라고 안내한다. 서버에서 bellStatus가 FAIL로 확정되면 절대 성공했다고 말하지 않고 '하차벨 응답을 받지 못했습니다. 기사님께 직접 말씀해주세요.'라고 안내한다. bellStatus가 NOT_REQUESTED이고 remainingStations가 2가 아니면 하차벨을 별도로 언급하지 않는다. 선택된 실제 routeNo를 확인할 수 있으면 문장 앞에 노선 번호를 붙이고, 확인할 수 없으면 번호를 만들지 않는다. routeNo는 먼저 하이픈(-)을 기준으로 나누고 하이픈 양쪽 숫자를 이어 붙여 전체 자릿수를 계산하지 않는다. 나뉜 각 숫자 덩어리가 네 자리 이상이면 각 숫자를 한 자리씩 읽고, 세 자리 이하면 일반적인 한국어 수 읽기 방식으로 읽는다. 알파벳, 하이픈 뒤 숫자, 괄호 안 표시는 생략하지 않으며, 하이픈(-)은 반드시 '다시'라고 읽는다. boardingMethod, boardingConfirmedAt, tripStatus, bellStatus 같은 내부 필드명과 오류 코드는 그대로 읽지 않는다.";
+  "방금 전달된 운행 상태 변화만 근거로 사용자에게 짧고 명확한 한국어 음성 안내를 생성한다. tripStatus가 WAITING_BUS이거나 boardingConfirmedAt이 없으면 탑승 정류장에서 버스를 기다리는 상태이며, 절대 '탑승했습니다', '탑승 중입니다', '운행을 시작합니다'라고 말하지 않는다. boardingConfirmedAt이 있고 tripStatus가 ON_BUS 또는 NEAR_DESTINATION이며 아직 같은 탑승 확인 안내를 하지 않은 경우에만 탑승을 안내한다. boardingMethod가 AUTO_DETECTED이면 '버스 탑승이 감지되었습니다. 하차 안내를 시작합니다.'라고 말하고, USER_CONFIRMED이면 '탑승이 확인되었습니다. 하차까지 남은 정류장을 안내하겠습니다.'라고 말한다. 하차벨 안내는 다음 규칙을 우선한다. remainingStations가 2이고 bellStatus가 NOT_REQUESTED이면 '하차 정류장까지 두 정거장 남았습니다. 미리 내릴 준비를 해주세요.'라고만 안내하고, 하차벨을 요청했거나 눌렀다고 말하지 않는다. remainingStations가 1이고 bellStatus가 PENDING이면 서버에 요청만 생성된 상태이며 BLE 전송 완료가 아니다. 한 정거장 전 자동 안내는 앱이 전용 음성 응답으로 처리하므로 중복 생성하지 않고, 하차벨을 요청했거나 눌렀다고 말하지 않는다. 서버에서 bellStatus가 SUCCESS로 확정된 후에만 '하차벨이 켜졌습니다. 안전하게 하차하세요.'라고 안내한다. 서버에서 bellStatus가 FAIL로 확정되면 절대 성공했다고 말하지 않고 '하차벨 응답을 받지 못했습니다. 기사님께 직접 말씀해주세요.'라고 안내한다. bellStatus가 NOT_REQUESTED이고 remainingStations가 2가 아니면 하차벨을 별도로 언급하지 않는다. 선택된 실제 routeNo를 확인할 수 있으면 문장 앞에 노선 번호를 붙이고, 확인할 수 없으면 번호를 만들지 않는다. routeNo는 먼저 하이픈(-)을 기준으로 나누고 하이픈 양쪽 숫자를 이어 붙여 전체 자릿수를 계산하지 않는다. 나뉜 각 숫자 덩어리가 네 자리 이상이면 각 숫자를 한 자리씩 읽고, 세 자리 이하면 일반적인 한국어 수 읽기 방식으로 읽는다. 알파벳, 하이픈 뒤 숫자, 괄호 안 표시는 생략하지 않으며, 하이픈(-)은 반드시 '다시'라고 읽는다. boardingMethod, boardingConfirmedAt, tripStatus, bellStatus 같은 내부 필드명과 오류 코드는 그대로 읽지 않는다.";
 
 function hasSuccessfulFunctionResult(events: unknown[]): boolean {
   for (const event of events) {
@@ -75,6 +77,8 @@ export class HaneumRealtimeSession {
   readonly context: RealtimeGuideContext;
 
   private transport: RealtimeTransport | null = null;
+  private closedTransports = new WeakSet<RealtimeTransport>();
+  private failedOutputTransport: RealtimeTransport | null = null;
   private isResponseActive = false;
   private isOutputAudioActive = false;
   private outputAudioResponseId: string | null = null;
@@ -90,21 +94,44 @@ export class HaneumRealtimeSession {
   private hasSentReadyResponse = false;
   private queuedAssistDeviceEventKeys = new Set<string>();
 
-  private completion: { tripId: string; eventId: string; responseId?: string; generated: boolean; started: boolean; stopped: boolean; finish: (ok: boolean) => void; promise: Promise<boolean> } | null = null;
+  private completion: { tripId: string; bellRequestId?: string; eventId: string; responseId?: string; generated: boolean; started: boolean; stopped: boolean; playbackStarted: () => void; finish: (ok: boolean, cleanupFailed?: boolean) => void; promise: Promise<boolean> } | null = null;
 
   announceTripCompletion(tripId: string, timeoutMs = 20000): Promise<boolean> {
+    return this.announceTrackedSpeech(tripId, TRIP_COMPLETION_MESSAGE, timeoutMs);
+  }
+
+  announceOneStopGuide(tripId: string, bellRequestId: string, timeoutMs = 8000): Promise<boolean> {
+    return this.announceTrackedSpeech(tripId, ONE_STOP_GUIDE_MESSAGE, timeoutMs, bellRequestId);
+  }
+
+  cancelOneStopGuide(tripId: string, bellRequestId: string) {
+    if (this.completion?.tripId === tripId && this.completion.bellRequestId === bellRequestId) this.completion.finish(false);
+  }
+
+  private announceTrackedSpeech(tripId: string, message: string, timeoutMs: number, bellRequestId?: string): Promise<boolean> {
     if (!this.transport) return Promise.resolve(false);
-    if (this.completion?.tripId === tripId) return this.completion.promise;
+    if (this.completion?.tripId === tripId && this.completion.bellRequestId === bellRequestId) return this.completion.promise;
     this.completion?.finish(false);
+    if (!this.transport) return Promise.resolve(false);
     this.responseQueue.discardTripStatus(tripId);
-    const pending = { ...this.createPendingResponse(`다른 설명 없이 다음 문장만 정확히 한 번 읽는다: ${TRIP_COMPLETION_MESSAGE}`), completionTripId: tripId };
+    const pending = { ...this.createPendingResponse(`다른 설명 없이 다음 문장만 정확히 한 번 읽는다: ${message}`), completionTripId: tripId };
     let resolve!: (ok: boolean) => void;
-    const promise = new Promise<boolean>(done => { resolve = done; });
-    const timer = setTimeout(() => finish(false), timeoutMs);
-    const finish = (ok: boolean) => {
+    let reject!: (error: Error) => void;
+    const promise = new Promise<boolean>((done, fail) => { resolve = done; reject = fail; });
+    let timer = setTimeout(() => finish(false), timeoutMs);
+    const playbackStarted = () => {
+      // Keep the existing terminal-trip policy; only the one-stop guide gets a
+      // separate missing-playback-event watchdog after output actually starts.
+      if (!bellRequestId) return;
+      clearTimeout(timer);
+      timer = setTimeout(() => finish(false), ONE_STOP_REALTIME_PLAYBACK_TIMEOUT_MS);
+    };
+    const finish = (ok: boolean, cleanupFailed = false) => {
       if (this.completion?.eventId !== pending.eventId) return;
       clearTimeout(timer);
       const responseId = this.completion.responseId;
+      const mustCloseOutput = Boolean(bellRequestId && !ok &&
+        (responseId || this.activeResponse?.eventId === pending.eventId));
       this.completion = null;
       this.responseQueue.discard(pending.eventId);
       if (this.awaitingRetry?.eventId === pending.eventId) this.awaitingRetry = null;
@@ -123,9 +150,28 @@ export class HaneumRealtimeSession {
           }
         }
       }
-      resolve(ok);
+      if (mustCloseOutput && this.transport) {
+        // Sending clear is not an acknowledgement that native output stopped.
+        // On failure tear down the output before allowing local fallback.
+        const transport = this.transport;
+        this.transport = null;
+        this.closedTransports.add(transport);
+        try {
+          if (!transport.close) throw new Error('Output teardown unavailable');
+          transport.close();
+        }
+        catch {
+          this.failedOutputTransport = transport;
+          this.handleTransportClose();
+          reject(new Error('GUIDE_AUDIO_CLEANUP_FAILED'));
+          return;
+        }
+        this.handleTransportClose();
+      }
+      if (bellRequestId && cleanupFailed) reject(new Error('GUIDE_AUDIO_CLEANUP_FAILED'));
+      else resolve(ok);
     };
-    this.completion = { tripId, eventId: pending.eventId, generated: false, started: false, stopped: false, finish, promise };
+    this.completion = { tripId, ...(bellRequestId ? { bellRequestId } : {}), eventId: pending.eventId, generated: false, started: false, stopped: false, playbackStarted, finish, promise };
     this.responseQueue.enqueueDirect(pending);
     try { this.flushPendingResponse(); } catch { finish(false); }
     return promise;
@@ -137,6 +183,10 @@ export class HaneumRealtimeSession {
   }
 
   private trackCompletion(value: Record<string, unknown>) {
+    if (value.type === 'error' && this.completion) {
+      const { code, clientEventId } = getRealtimeErrorDetails(value);
+      if (clientEventId === this.completion.eventId && code !== ACTIVE_RESPONSE_ERROR_CODE) this.completion.finish(false);
+    }
     const incoming = value.response as { id?: string; metadata?: { completionKey?: string } } | undefined;
     if (value.type === 'response.created' && incoming?.id && incoming.metadata?.completionKey && this.discardedCompletionKeys.has(incoming.metadata.completionKey)) {
       this.discardedCompletionResponses.add(incoming.id);
@@ -152,7 +202,10 @@ export class HaneumRealtimeSession {
     if (value.type === 'response.created' && response?.metadata?.completionKey === completion.eventId) completion.responseId = response.id;
     const id = response?.id ?? value.response_id;
     if (!completion.responseId || id !== completion.responseId) return;
-    if (value.type === 'output_audio_buffer.started') completion.started = true;
+    if (value.type === 'output_audio_buffer.started' && !completion.started) {
+      completion.started = true;
+      completion.playbackStarted();
+    }
     if (value.type === 'output_audio_buffer.stopped') completion.stopped = true;
     if (value.type === 'output_audio_buffer.cleared') { completion.finish(false); return; }
     if (value.type === 'response.done') {
@@ -164,8 +217,30 @@ export class HaneumRealtimeSession {
 
   // context는 RealtimeProvider가 TripContext와 연결해서 만든 것을 그대로 받는다.
   // (2026-08-12, 예모님 확정 구조: TripContext를 운행 상태의 유일한 원본으로 사용)
-  constructor(context: RealtimeGuideContext) {
+  constructor(context: RealtimeGuideContext, private readonly onDisconnected?: () => void) {
     this.context = context;
+  }
+
+  handleTransportClose() {
+    const transport = this.transport;
+    this.transport = null;
+    // The close event may precede native peer cleanup. Stop output first.
+    let cleanupFailed = false;
+    if (transport) this.closedTransports.add(transport);
+    try {
+      if (transport && !transport.close && this.completion?.bellRequestId) {
+        cleanupFailed = true;
+        this.failedOutputTransport = transport;
+      }
+      transport?.close?.();
+    } catch { cleanupFailed = true; this.failedOutputTransport = transport; }
+    this.completion?.finish(false, cleanupFailed);
+    this.isResponseActive = false;
+    this.isOutputAudioActive = false;
+    this.outputAudioResponseId = null;
+    this.activeResponse = null;
+    this.awaitingRetry = null;
+    this.onDisconnected?.();
   }
 
   async createClientSecret(
@@ -186,9 +261,40 @@ export class HaneumRealtimeSession {
     transport.send(createRealtimeSessionUpdateEvent());
   }
 
+  recoverOutput(): boolean {
+    const transport = this.failedOutputTransport;
+    if (!transport) return true;
+    try {
+      if (!transport.close) return false;
+      transport.close();
+      this.failedOutputTransport = null;
+      return true;
+    } catch { return false; }
+  }
+
+  hasOutputCleanupFailure(): boolean { return Boolean(this.failedOutputTransport); }
+  hasActiveConnection(): boolean { return Boolean(this.transport); }
+
+  restoreActiveContext() {
+    const state = this.context.getAppState();
+    const segment = state.journeyRoute?.segments?.[state.journeySegmentIndex ?? -1];
+    this.transport?.send({ type: 'conversation.item.create', item: { type: 'message', role: 'system',
+      content: [{ type: 'input_text', text: JSON.stringify({ type: 'APP_VOICE_RECOVERED',
+        tripId: state.tripId, tripStatus: state.tripStatus, boardingConfirmedAt: state.boardingConfirmedAt,
+        remainingStations: state.remainingStations, bellStatus: state.bellStatus,
+        journeySegmentIndex: state.journeySegmentIndex, journeyPhase: state.journeyPhase,
+        segment: segment ? { mode: segment.mode, startName: segment.startName, endName: segment.endName,
+          lineNames: segment.lineNames, routeNumbers: segment.routeNumbers } : null,
+      }) }],
+    } });
+    if (this.transport) this.context.dispatchAppAction({ type: 'SET_LAST_INJECTED_STATUS', status: toTripStatusSnapshot(state) });
+  }
+
   async connectWebRTC(
     sharedSecret?: string,
     totalTimeoutMs = DEFAULT_REALTIME_CONNECTION_TIMEOUT_MS,
+    recoverySignal?: AbortSignal,
+    announceReady = true,
   ): Promise<RealtimeWebRTCTransport> {
     const { RealtimeWebRTCTransport } =
       await import("./webrtc-transport");
@@ -197,43 +303,55 @@ export class HaneumRealtimeSession {
     try {
       const connected = await runWithRealtimeConnectionTimeout(
         async (signal) => {
+          if (signal.aborted) throw new Error('VOICE_RECOVERY_CANCELLED');
           const { clientSecret } =
             await this.createClientSecret(
               sharedSecret,
               signal,
             );
-
+          if (signal.aborted) throw new Error('VOICE_RECOVERY_CANCELLED');
           const transport =
             new RealtimeWebRTCTransport({
               clientSecret,
               signal,
               onServerEvent: (event) => {
+                if (signal.aborted) return;
                 this.handleServerEvent(
                   event,
                   transport,
                 ).catch(() => {});
+              },
+              onClose: () => { if (this.transport === transport) this.handleTransportClose(); },
+              onError: () => {
+                if (this.transport === transport) { this.handleTransportClose(); transport.close(); }
               },
             });
 
           pendingTransport = transport;
 
           await transport.connect();
-
+          if (signal.aborted) { transport.close(); throw new Error('VOICE_RECOVERY_CANCELLED'); }
           this.transport = transport;
-          this.hasSentReadyResponse = false;
+          if (!announceReady) this.responseQueue = new RealtimeResponseQueue();
+          this.hasSentReadyResponse = !announceReady;
           this.sendSessionUpdate(transport);
 
           return transport;
         },
         totalTimeoutMs,
+        recoverySignal,
       );
 
       return connected;
     } catch (error) {
       if (pendingTransport) {
-        (
-          pendingTransport as RealtimeWebRTCTransport
-        ).close();
+        const transport = pendingTransport as RealtimeWebRTCTransport;
+        this.closedTransports.add(transport);
+        try { transport.close(); }
+        catch {
+          this.failedOutputTransport = transport;
+          throw new Error('GUIDE_AUDIO_CLEANUP_FAILED');
+        }
       }
 
       throw error;
@@ -244,6 +362,7 @@ export class HaneumRealtimeSession {
     event: unknown,
     transport: RealtimeTransport,
   ) {
+    if (this.closedTransports.has(transport)) return;
     this.trackResponseLifecycle(event);
 
     if (
@@ -636,6 +755,12 @@ export class HaneumRealtimeSession {
           },
         };
 
+        // Riding owns the one-stop speech and navigation. Keep facts current without
+        // generating a second status utterance for the same pending bell request.
+        if (event.remainingStations === 1 && event.bellStatus === 'PENDING') {
+          this.transport?.send(statusEvent);
+          return;
+        }
         this.responseQueue.enqueueStatus(
           this.createPendingResponse(
             STATUS_RESPONSE_INSTRUCTIONS,

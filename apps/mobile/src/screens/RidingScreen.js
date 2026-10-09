@@ -1,10 +1,14 @@
 import React, { useEffect, useRef } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
-import * as Speech from 'expo-speech';
+import * as NativeSpeech from 'expo-speech';
+import { getSafeSpeech } from '../realtime/safe-speech';
+import VoiceRecoveryControl from '../realtime/VoiceRecoveryControl';
 import { useFocusEffect, useIsFocused } from '@react-navigation/native';
 import { useTrip } from '../state/TripContext';
 import { isScreenTripActive } from '../state/trip-transition';
 import { TRIP_COMPLETION_MESSAGE } from '../realtime/trip-tracking';
+import { createOneStopAlightGuide, ONE_STOP_GUIDE_MESSAGE } from '../realtime/one-stop-alight-guide';
+const Speech = getSafeSpeech(NativeSpeech);
 import { useRealtime } from '../realtime/RealtimeProvider';
 import {
   connectBell,
@@ -48,15 +52,25 @@ export default function RidingScreen({ route, navigation }) {
   const isFocused = useIsFocused();
   const status = { ...INITIAL_STATUS, ...state, ...(state.tripStatus === 'TRIP_DONE' ? { guideMessage: state.journeyRoute ? '이번 버스 구간에 도착했습니다. 실제로 내린 뒤 하차를 확인해 주세요.' : TRIP_COMPLETION_MESSAGE } : {}) };
   const {
+    session,
     isConnected,
     notifyFailure,
     getActiveTripId,
     trackingError,
   } = useRealtime();
 
+  const latestGuideRef = useRef(null);
+  latestGuideRef.current = { state, isFocused, trackingError };
+  const guideFlowRef = useRef(null);
+  const guideStartedKeyRef = useRef(null);
+  const guideMessage = status.remainingStations === 1 && status.bellStatus === 'PENDING'
+    ? ONE_STOP_GUIDE_MESSAGE : status.guideMessage;
+
   const currentTripStatus = state.tripStatus ?? status.tripStatus;
   const boardingConfirmedAt =
     state.boardingConfirmedAt ?? status.boardingConfirmedAt;
+  const isGuideTripActive = state.tripId === tripId &&
+    ['ON_BUS', 'NEAR_DESTINATION'].includes(state.tripStatus);
 
   const activeTripIdRef = useRef(state.tripId);
   activeTripIdRef.current = state.tripId;
@@ -70,7 +84,7 @@ export default function RidingScreen({ route, navigation }) {
   const waitBeforeRetry = (ms) =>
     new Promise((resolve) => setTimeout(resolve, ms));
 
-  useEffect(() => { bellHandledRef.current = false; }, [tripId]);
+  useEffect(() => { bellHandledRef.current = false; guideStartedKeyRef.current = null; }, [tripId]);
 
   useEffect(() => {
     stoppedRef.current = state.tripId !== tripId || state.tripStatus === 'TRIP_DONE' || state.tripStatus === 'CANCELLED';
@@ -100,6 +114,7 @@ export default function RidingScreen({ route, navigation }) {
       if (isConnected) return;
 
       const timer = setTimeout(() => {
+        if (guideStartedKeyRef.current || !latestGuideRef.current.isFocused) return;
         Speech.speak('버스 위치를 확인하는 중입니다.', {
           language: 'ko',
         });
@@ -107,13 +122,13 @@ export default function RidingScreen({ route, navigation }) {
 
       return () => {
         clearTimeout(timer);
-        if (!preserveTransferSpeechRef.current) Speech.stop();
+        if (!preserveTransferSpeechRef.current && !guideFlowRef.current) Speech.stop();
       };
     }, [isConnected]),
   );
 
   useEffect(() => {
-    if (isConnected) return;
+    if (isConnected || !isFocused || guideStartedKeyRef.current) return;
 
     if (status.tripStatus !== 'TRIP_DONE' && status.guideMessage && status.remainingStations !== 1) {
       const timer = setTimeout(() => {
@@ -310,50 +325,51 @@ export default function RidingScreen({ route, navigation }) {
   ]);
 
   useEffect(() => {
-    if (
-      status.shouldTriggerBell === true &&
-      status.bellStatus === 'PENDING' &&
-      status.remainingStations === 1 &&
-      status.bellRequestId &&
-      status.command === 'STOP_REQUEST' &&
-      !bellHandledRef.current
-    ) {
-      if (isConnected) {
-        handleAlightNavigation();
-        return;
-      }
+    const bellRequestId = status.bellRequestId;
+    const journeyGeneration = state.journeyGeneration;
+    const journeySegmentIndex = state.journeySegmentIndex;
+    const journeyPhase = state.journeyPhase;
+    const key = JSON.stringify([tripId, bellRequestId]);
+    const isCurrent = () => {
+      const latest = latestGuideRef.current;
+      return latest.isFocused && !latest.trackingError && latest.state.tripId === tripId &&
+        latest.state.journeyGeneration === journeyGeneration &&
+        latest.state.journeySegmentIndex === journeySegmentIndex && latest.state.journeyPhase === journeyPhase &&
+        (!latest.state.journeyRoute || (latest.state.journeyPhase === 'GUIDING' &&
+          latest.state.journeyRoute.segments?.[latest.state.journeySegmentIndex]?.mode === 'BUS')) &&
+        ['ON_BUS', 'NEAR_DESTINATION'].includes(latest.state.tripStatus) &&
+        latest.state.bellRequestId === bellRequestId && latest.state.remainingStations === 1 &&
+        latest.state.bellStatus === 'PENDING' && latest.state.command === 'STOP_REQUEST';
+    };
+    if (!isCurrent() || !boardingConfirmedAt || status.remainingStations !== 1 ||
+      status.bellStatus !== 'PENDING' || !bellRequestId || status.command !== 'STOP_REQUEST' ||
+      bellHandledRef.current || guideStartedKeyRef.current === key) return;
 
-      const timer = setTimeout(() => {
-        Speech.speak(status.guideMessage, {
-          language: 'ko',
-          onDone: () => {
-            handleAlightNavigation();
-          },
-        });
-      }, 500);
-
-      return () => clearTimeout(timer);
-    }
-  }, [status, isConnected]);
-
-  const handleAlightNavigation = () => {
-    if (bellHandledRef.current) {
-      return;
-    }
-
-    bellHandledRef.current = true;
-    Speech.stop();
-
-    navigation.navigate('Alight', {
-      tripId,
-      bellRequestId:
-        status.bellRequestId,
-      command:
-        status.command,
-      guideMessage:
-        status.guideMessage,
+    guideStartedKeyRef.current = key;
+    const flow = createOneStopAlightGuide({
+      tripId, bellRequestId, session: isConnected ? session : null,
+      speech: NativeSpeech, isCurrent,
     });
-  };
+    guideFlowRef.current = flow;
+    void flow.start().then(playback => {
+      if (playback === 'cancelled' || !isCurrent() || bellHandledRef.current) return;
+      bellHandledRef.current = true;
+      navigation.navigate('Alight', {
+        tripId, bellRequestId, command: 'STOP_REQUEST',
+        guideMessage: ONE_STOP_GUIDE_MESSAGE, guidePlayback: playback,
+      });
+    });
+    return () => {
+      // GPS completion has its own speech; do not stop that new utterance.
+      flow.cancel(latestGuideRef.current.state.tripStatus !== 'TRIP_DONE');
+      if (guideFlowRef.current === flow) guideFlowRef.current = null;
+      if (!bellHandledRef.current && guideStartedKeyRef.current === key) guideStartedKeyRef.current = null;
+    };
+    // shouldTriggerBell is a one-response pulse. Subsequent PATCHes must not cancel
+    // the captured server request while the same pending guide is playing.
+  }, [tripId, status.bellRequestId, status.bellStatus, status.remainingStations,
+    status.command, boardingConfirmedAt, isGuideTripActive, isFocused, trackingError,
+    state.journeyGeneration, state.journeySegmentIndex, state.journeyPhase]);
 
   const isBoarded = Boolean(
     status.boardingConfirmedAt,
@@ -373,6 +389,7 @@ export default function RidingScreen({ route, navigation }) {
         <Text style={styles.subtitle}>
           지정한 목적지까지 안전하게 안내합니다.
         </Text>
+        <VoiceRecoveryControl />
 
         <View style={styles.guideBox}>
           <Text style={styles.guideIcon}>
@@ -380,7 +397,7 @@ export default function RidingScreen({ route, navigation }) {
           </Text>
 
           <Text style={styles.guideText}>
-            {status.guideMessage}
+            {guideMessage}
           </Text>
         </View>
       </View>
@@ -396,6 +413,7 @@ export default function RidingScreen({ route, navigation }) {
       <Text style={styles.subtitle}>
         지정한 목적지까지 안전하게 안내합니다.
       </Text>
+      <VoiceRecoveryControl />
 
       <View style={styles.infoBox}>
         <View style={styles.labelRow}>
@@ -461,7 +479,7 @@ export default function RidingScreen({ route, navigation }) {
         </Text>
 
         <Text style={styles.guideText}>
-          {status.guideMessage}
+          {guideMessage}
         </Text>
       </View>
 
