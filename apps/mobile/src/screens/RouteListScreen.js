@@ -14,6 +14,9 @@ import { useTrip } from '../state/TripContext';
 import { stopBeaconScan } from '../ble/bleManager';
 import { canStartJourney } from '../state/transfer-journey';
 import { confirmRouteSelectionScreen } from '../state/trip-transition';
+import * as NativeSpeech from 'expo-speech';
+import { getSafeSpeech } from '../realtime/safe-speech';
+const Speech = getSafeSpeech(NativeSpeech);
 
 // 예모님 확정(2026-08-28): 후보 유효시간 5분. TripContext.js와 동일한 값을 써야 하므로
 // 상수 자체는 여기서도 다시 정의하되, 계산 방식(검색 시각 + 5분)은 TripContext가 갖고 있다.
@@ -126,6 +129,8 @@ export default function RouteListScreen({ navigation }) {
     } catch (error) {
       if (!latestRef.current.tripId && !latestRef.current.journeyRoute) {
         setSelectionError(error instanceof Error ? error.message : '운행을 준비하지 못했습니다. 다시 선택해 주세요.');
+        // 화면 문구만으로는 화면을 볼 수 없는 사용자에게 실패가 전달되지 않는다.
+        Speech.speak('운행을 준비하지 못했습니다. 다시 선택해 주세요.', { language: 'ko' });
       }
     } finally {
       setLoading(false);

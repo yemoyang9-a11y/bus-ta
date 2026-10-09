@@ -4,6 +4,7 @@ import { toTripStatusSnapshot } from './status-snapshot';
 import { logVoiceRouteDiagnostic } from './voice-route-diagnostic';
 import { apiClient } from "../api/client";
 import {
+  buildExpiredEndTripInstructions,
   dispatchRealtimeFunctionCall,
   isRealtimeFunctionCallEvent,
 } from "./function-dispatcher";
@@ -624,7 +625,7 @@ export class HaneumRealtimeSession {
       return;
     }
 
-    const next =
+    let next =
       this.awaitingRetry ??
       this.responseQueue.dequeue();
 
@@ -633,13 +634,17 @@ export class HaneumRealtimeSession {
     }
 
     this.awaitingRetry = null;
-    if (next.selectionGeneration !== undefined &&
-      (this.context.getAppState().tripId || this.context.getAppState().journeyRoute ||
-       (this.context.getAppState().directSelectionGeneration ?? 0) !== next.selectionGeneration ||
-       (Boolean(next.candidateIdsToMark?.length) &&
-        (!this.context.getAppState().routeCandidatesExpiresAt || Date.now() > this.context.getAppState().routeCandidatesExpiresAt!)))) {
-      this.flushPendingResponse();
-      return;
+    if (next.selectionGeneration !== undefined) {
+      const state = this.context.getAppState();
+      // 새 운행·여정·검색이 시작됐으면 이전 취소 안내를 버린다.
+      if (state.tripId || state.journeyRoute || (state.directSelectionGeneration ?? 0) !== next.selectionGeneration) {
+        this.flushPendingResponse();
+        return;
+      }
+      // 후보만 만료됐으면 후보 안내를 빼고 취소 사실은 말한다.
+      if (next.candidateIdsToMark?.length && (!state.routeCandidatesExpiresAt || Date.now() > state.routeCandidatesExpiresAt)) {
+        next = { ...next, candidateIdsToMark: undefined, instructions: buildExpiredEndTripInstructions() };
+      }
     }
     this.dispatchResponseCreate(next);
   }

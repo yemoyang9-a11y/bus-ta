@@ -17,7 +17,7 @@
 | `create_trip` | `POST /api/trips` | 사용자가 선택한 후보로 운행 생성 |
 | `confirm_boarding` | `POST /api/trips/{tripId}/boarding/confirm` | 사용자의 명시적 탑승 발화를 `USER_CONFIRMED`로 저장 |
 | `get_trip_status` | `GET /api/trips/{tripId}/status` | 운행 상태 조회 및 선택 노선 도착정보 재조회 |
-| `end_trip` | `PATCH /api/trips/{tripId}` | 명시적 사용자 취소·종료 처리 |
+| `end_trip` | `PATCH /api/trips/{tripId}` | 명시적 사용자 취소·종료, 직행 대기 중 사용자가 직접 말한 버스 놓침 처리 |
 
 Function은 사용자 의도를 처리하는 경로다. 자동 GPS·하차벨 처리는 아래 REST API를 앱이 직접 호출하고, 변화가 있을 때 Event Dispatcher가 세션에 알린다.
 
@@ -125,7 +125,7 @@ Function은 사용자 의도를 처리하는 경로다. 자동 GPS·하차벨 �
 재조회 결과는 DB에 다시 저장하지 않는다. `trips.predicted_arrival_minutes`에는
 `POST /api/trips`의 최초 도착시간만 남고, 이후 갱신값은 서버 프로세스의 도착정보 캐시와
 앱 상태·Realtime 전달값에만 존재한다. 대기 중 앱은 `nextArrivalRefreshInMs` 주기로 이
-엔드포인트를 반복 호출하며, `refreshArrivals=true`는 명시적인 최신 도착정보 재조회 요청에만 붙인다. 직행 `WAITING_BUS`의 버스 놓침 의도는 앱에서 `end_trip(action=CANCEL, reason=MISSED_BUS)`으로 처리한다. `reason`은 앱 Function 인자이며 서버 PATCH body에는 포함하지 않는다.
+엔드포인트를 반복 호출하며, `refreshArrivals=true`는 명시적인 최신 도착정보 재조회 요청, 어떤 버스가 지나갔다는 모호한 말, 환승 여정 버스 구간의 놓침에만 붙인다. 직행 `WAITING_BUS`에서 사용자가 자신이 타지 못했다고 직접 말하면 앱에서 `end_trip(action=CANCEL, reason=MISSED_BUS)`으로 처리한다. `reason`은 앱 Function 인자이며 서버 PATCH body에는 포함하지 않는다.
 
 `arrivals`, `arrivalStatus`, `nextArrivalRefreshInMs`, `shouldScanBeacon`은 이 GET 응답의
 `WAITING_BUS` 상태에만 있다. 넷 다 같은 조건으로 실리고 빠진다 — 하나만 남겨 두면

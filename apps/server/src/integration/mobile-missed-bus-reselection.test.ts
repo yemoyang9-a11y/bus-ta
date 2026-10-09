@@ -59,12 +59,21 @@ test('missed waiting bus ends successfully, waits for focused RouteList, reannou
   await until(a.waiting); assert.equal(finished, false); assert.equal(a.getState().tripId, null);
   assert.equal(a.getState().selectedRoute, null); assert.equal(a.getState().destination, '목적지');
   a.focus(); const events = await pending;
-  assert.equal(a.navigate[0][0], 'RouteList'); assert.equal(output(events).routes[0].candidateId, 2);
+  assert.equal(a.navigate[0][0], 'RouteList');
+  // The missed route stays selectable so the user can wait for its next vehicle.
+  assert.deepEqual(output(events).routes.map((r: any) => r.candidateId), [DEMO_ROUTE.candidateId, 2]);
+  assert.equal(output(events).missedRouteCandidateId, DEMO_ROUTE.candidateId);
   assert.equal(events.filter(e => e.type === 'response.create').length, 1);
   assert.deepEqual(requests[0]!.body, { action: 'CANCEL' }); // reason is app-only.
   await call(a, 'create_trip', { candidateId: 2 }, 'next');
   assert.equal(a.getState().tripId, 'trip-B'); assert.equal(a.getState().selectedRoute?.routeNo, '504');
   a.focus(); assert.equal(a.navigate.at(-1)[0], 'Riding'); assert.equal(a.navigate.at(-1)[1].tripId, 'trip-B');
+});
+test('explicit cancel without missed reason still omits the cancelled route', async t => {
+  const a = setup(); t.mock.method(globalThis, 'fetch', async () => Response.json(ended));
+  const pending = call(a, 'end_trip', { tripId: 'trip-A', action: 'CANCEL' }, 'explicit'); await until(a.waiting); a.focus();
+  const result = output(await pending);
+  assert.deepEqual(result.routes.map((r: any) => r.candidateId), [2]); assert.equal(result.missedRouteCandidateId, undefined);
 });
 test('end API failure keeps waiting trip, selection and destination; retry is allowed', async t => {
   const a = setup(); let requests = 0;
@@ -117,17 +126,33 @@ for (const condition of ['boarded', 'journey']) test(`missed-bus guard does not 
   t.mock.method(globalThis, 'fetch', async () => { requests++; throw Error('must not call'); });
   assert.equal(output(await call(a)).success, false); assert.equal(requests, 0); assert.equal(a.getState().tripId, 'trip-A');
 });
-test('semantic tool instructions distinguish missed bus from arrival refresh without text matching', () => {
+test('only a first-person missed statement ends immediately; a passing bus is refreshed and confirmed first', () => {
   const update = createRealtimeSessionUpdateEvent();
-  assert.match(update.session.instructions, /특정 문구에 한정하지 않고 end_trip/);
-  assert.match(update.session.instructions, /단순 도착시간 질문은 get_trip_status/);
+  const { instructions } = update.session;
+  assert.ok(instructions.includes(MISSED_BUS_POLICY_VERSION));
+  assert.equal(MISSED_BUS_POLICY_VERSION, 'missed-bus-reselection-v3');
+  const immediate = instructions.split('\n').find(line => line.startsWith('- 즉시 종료 예시'));
+  assert.ok(immediate);
+  for (const phrase of ['못 탔어', '버스 놓쳤어', '버스 못 탔어']) assert.ok(immediate.includes(phrase));
+  assert.ok(!immediate.includes('지나갔어'));
+  const passing = instructions.split('\n').find(line => line.includes('방금 버스 지나갔어'));
+  assert.ok(passing);
+  assert.match(passing, /종료하지 않는다/); assert.match(passing, /refreshArrivals=true/); assert.match(passing, /놓치셨나요/);
+  assert.match(instructions, /단순 도착시간 질문은 get_trip_status/);
+  assert.match(instructions, /환승 여정의 버스 구간[^\n]*refreshArrivals=true/);
   const end = update.session.tools.find(tool => tool.name === 'end_trip'); assert.ok(end);
   assert.ok('reason' in end.parameters.properties);
-  assert.ok(update.session.instructions.includes(MISSED_BUS_POLICY_VERSION));
-  for (const phrase of ['못 탔어', '버스 놓쳤어', '버스 못 탔어', '방금 버스 지나갔어', '버스 언제 와?', '도착시간 다시 알려줘']) {
-    assert.ok(update.session.instructions.includes(phrase));
-  }
-  assert.match(end.description, /종료 요청을 따로 말하지 않아도/);
+  assert.match(end.description, /지나갔다는 말만으로는 호출하지 않/);
+  const status = update.session.tools.find(tool => tool.name === 'get_trip_status'); assert.ok(status);
+  assert.match(JSON.stringify(status.parameters), /지나갔/);
+});
+test('status result instructions forbid chaining a cancel from the status result alone', async t => {
+  const a = setup();
+  t.mock.method(globalThis, 'fetch', async () => Response.json({ success: true, tripId: 'trip-A', tripStatus: 'WAITING_BUS', bellStatus: 'NOT_REQUESTED', remainingStations: null, arrivals: [], arrivalStatus: 'NO_VEHICLE' }));
+  const events = await call(a, 'get_trip_status', { tripId: 'trip-A', refreshArrivals: true });
+  const response = events.find(e => e.type === 'response.create');
+  assert.ok(response && response.type === 'response.create');
+  assert.match(response.response?.instructions ?? '', /이 결과만으로 end_trip을 호출하지 않는다/);
 });
 
 test('actual session sends current semantic policy and distinguishes acknowledged, old and missing policy', async () => {
@@ -150,15 +175,19 @@ test('actual session sends current semantic policy and distinguishes acknowledge
     ['confirmed', 'different', 'unavailable']);
 });
 
-test('missing destination focus expires without generating stale candidate audio', async t => {
+test('missing destination focus still speaks the cancellation, without stale candidates', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const a = setup(); t.mock.method(globalThis, 'fetch', async () => Response.json(ended));
   const pending = call(a); await until(a.waiting); t.mock.timers.tick(5000);
   const events = await pending;
-  assert.equal(a.getState().tripId, null); assert.equal(events.filter(e => e.type === 'response.create').length, 0);
+  assert.equal(a.getState().tripId, null);
+  const responses = events.filter(e => e.type === 'response.create');
+  assert.equal(responses.length, 1); assert.equal((responses[0] as any).candidateIdsToMark, undefined);
+  assert.equal(output(events).success, true); assert.deepEqual(output(events).routes, []);
+  assert.equal(output(events).missedRouteCandidateId, undefined);
 });
 
-for (const change of ['new-trip', 'expired']) test(`real Realtime session drops queued reselection speech: ${change}`, async t => {
+for (const change of ['new-trip', 'expired']) test(`real Realtime session handles queued reselection speech: ${change}`, async t => {
   const a = setup(); const sent: any[] = [];
   // Load the actual session implementation without importing the native WebRTC
   // declarations into the server compiler. Transport is the only IO boundary.
@@ -179,5 +208,10 @@ for (const change of ['new-trip', 'expired']) test(`real Realtime session drops 
   else a.getState().routeCandidatesExpiresAt = Date.now() - 1;
   await session.handleServerEvent({ type: 'response.done', response: { id: 'speaking', status: 'completed' } }, transport);
   await session.handleServerEvent({ type: 'output_audio_buffer.stopped', response_id: 'speaking' }, transport);
-  assert.equal(sent.filter(e => e.type === 'response.create').length, 0);
+  const responses = sent.filter(e => e.type === 'response.create');
+  if (change === 'new-trip') { assert.equal(responses.length, 0); return; }
+  // Expired candidates are not announced, but the cancellation itself is still spoken.
+  assert.equal(responses.length, 1);
+  assert.match(responses[0].response.instructions, /후보 유효시간이 지났/);
+  assert.equal(a.getState().announcedCandidateIds.length, 0);
 });

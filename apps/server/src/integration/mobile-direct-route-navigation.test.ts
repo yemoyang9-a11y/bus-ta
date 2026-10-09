@@ -9,6 +9,7 @@ import { DEMO_ROUTE, type Route, type CreateTripResponse } from '@bus-ta/shared'
 import { initialState, tripReducer } from '../../../mobile/src/state/trip-reducer.js';
 import { getTripNavigationTarget } from '../../../mobile/src/state/trip-transition.js';
 import { dispatchRealtimeFunctionCall } from '../../../mobile/src/realtime/function-dispatcher.js';
+import { getSafeSpeech } from '../../../mobile/src/realtime/safe-speech.js';
 import type { AppAction, AppTripState, RealtimeGuideContext } from '../../../mobile/src/realtime/types.js';
 
 // The mobile package is CommonJS. Match the real dispatcher's require path when
@@ -24,6 +25,7 @@ function app(routes: Route[], create: () => Promise<CreateTripResponse>) {
   const refs: any[] = []; let cursor = 0;
   let effects: (() => void)[] = [];
   const navigation: any[] = [];
+  const spoken: string[] = [];
   const dispatch = (action: AppAction) => { state = tripReducer(state, action); };
   const getState = () => state as unknown as AppTripState;
   const react = { createElement: (type: any, props: any, ...children: any[]) => ({ type, props, children }),
@@ -38,6 +40,8 @@ function app(routes: Route[], create: () => Promise<CreateTripResponse>) {
     '../state/direct-trip-selection': { startDirectTrip },
     '../state/transfer-journey': { canStartJourney: (r: Route) => r.routeMode === 'MULTIMODAL' && r.journeySupported },
     '../ble/bleManager': { stopBeaconScan: async () => {} },
+    'expo-speech': { speak: (text: string) => { spoken.push(text); }, stop: () => {} },
+    '../realtime/safe-speech': { getSafeSpeech },
   };
   const exports: any = {};
   runInNewContext(ts.transpileModule(readFileSync(new URL('../../../mobile/src/screens/RouteListScreen.js', import.meta.url), 'utf8'), {
@@ -52,7 +56,7 @@ function app(routes: Route[], create: () => Promise<CreateTripResponse>) {
   render();
   const context: RealtimeGuideContext = { getAppState: getState, dispatchAppAction: dispatch,
     refreshCurrentLocation: async () => {}, getCurrentLocation: () => undefined };
-  return { getState, dispatch, navigation, render, context, focus: (value: boolean) => { focused = value; },
+  return { getState, dispatch, navigation, spoken, render, context, focus: (value: boolean) => { focused = value; },
     press: (route: Route) => render().props.renderItem({ item: route, index: 0 }).props.onPress(),
     start: (route: Route) => startDirectTrip({ getState, dispatch, route, request: { ...route, destination: "목적지", routeMode: "DIRECT_BUS", tripSupported: true }, create, stopScan: async () => {} }),
   };
@@ -112,6 +116,12 @@ test('failed and invalid API results do not navigate and release lock for retry'
   await a.press(r); a.render(); assert.equal(a.navigation.length, 0);
   await a.press(r); a.render(); assert.equal(attempts, 3); assert.equal(a.navigation.length, 1);
 });
+test('touch selection failure is spoken, not only shown', async () => {
+  const r = route('34'); const a = app([r], async () => { throw Error('network'); });
+  await a.press(r);
+  assert.equal(a.navigation.length, 0);
+  assert.equal(a.spoken.length, 1); assert.match(a.spoken[0] ?? '', /다시 선택/);
+});
 test('cancel and reselect creates a fresh trip; old response after reset cannot commit', async () => {
   const r = route('60'); let attempts = 0; let release!: () => void;
   const a = app([r], async () => { attempts++; if (attempts === 1) await new Promise<void>(done => { release = done; }); return response(`trip-${attempts}`); });
@@ -120,6 +130,20 @@ test('cancel and reselect creates a fresh trip; old response after reset cannot 
   await a.start(r); a.render(); assert.equal(a.getState().tripId, 'trip-2');
   a.dispatch({ type: 'RESET_TRIP_KEEP_SEARCH' }); a.render(); await a.start(r); a.render();
   assert.equal(attempts, 3); assert.equal(a.getState().tripId, 'trip-3');
+});
+test('journey step confirm does not rewind selection generation onto a cancelled trip success', async () => {
+  const r = route('60'); let attempts = 0;
+  const journey: Route = { ...route('mixed', 2), routeMode: 'MULTIMODAL', journeySupported: true, tripSupported: false,
+    segments: [{ mode: 'WALK', startName: 'A', endName: 'B', lineNames: [], routeNumbers: [] },
+      { mode: 'BUS', startName: 'B', endName: 'C', lineNames: [], routeNumbers: ['60'], busLeg: DEMO_ROUTE }] };
+  const a = app([r, journey], async () => { attempts++; return response(`trip-${attempts}`); });
+  await a.start(r); assert.equal(a.getState().tripId, 'trip-1');
+  a.dispatch({ type: 'RESET_TRIP_KEEP_SEARCH' });
+  a.dispatch({ type: 'START_JOURNEY', route: journey });
+  a.dispatch({ type: 'CONFIRM_JOURNEY_STEP', expectedIndex: 0 });
+  a.dispatch({ type: 'RESET_TRIP_KEEP_SEARCH' });
+  const result = await a.start(r);
+  assert.equal(attempts, 2); assert.equal(result.tripId, 'trip-2'); assert.equal(a.getState().tripId, 'trip-2');
 });
 test('actual RouteList transfer selection still dispatches journey and navigates Transfer', async () => {
   const r: Route = { ...route('mixed'), routeMode: 'MULTIMODAL', journeySupported: true, tripSupported: false,
@@ -154,6 +178,24 @@ test('different voice and touch candidates share exclusion without mismatching d
   await a.press(other); release(); await pending; a.render();
   assert.equal(requests, 1); assert.equal(a.navigation.length, 1);
   assert.equal(a.navigation[0][1].selectedRoute, winner);
+});
+
+test('a disconnected cane does not block selection; a connected stop failure still does', async () => {
+  const r = route('300');
+  const run = async (stopError: Error) => {
+    let state = { ...initialState, routeCandidates: [r], routeCandidatesExpiresAt: Date.now() + 60000, beaconScanActive: true } as unknown as AppTripState;
+    let requests = 0;
+    const result = startDirectTrip({ getState: () => state, dispatch: (action: AppAction) => { state = tripReducer(state as any, action) as any; }, route: r,
+      request: { ...r, destination: '목적지', routeMode: 'DIRECT_BUS' as const, tripSupported: true as const },
+      create: async () => { requests++; return response(); }, stopScan: async () => { throw stopError; } });
+    return { result, state: () => state, requests: () => requests };
+  };
+  const offline = await run(Error('BLE_NOT_CONNECTED: 지팡이에 연결되어 있지 않습니다.'));
+  await offline.result;
+  assert.equal(offline.requests(), 1); assert.equal(offline.state().tripId, 'trip-direct'); assert.equal(offline.state().beaconScanActive, false);
+  const failing = await run(Error('COMMAND_FAILED'));
+  await assert.rejects(failing.result, /COMMAND_FAILED/);
+  assert.equal(failing.requests(), 0); assert.equal(failing.state().beaconScanActive, true);
 });
 
 test('successful flight stays shared before React state commit', async () => {

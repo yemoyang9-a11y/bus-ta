@@ -30,7 +30,11 @@ export function startDirectTrip(deps: {
   };
   const promise = Promise.resolve().then(async () => {
     if (state.beaconScanActive) {
-      await deps.stopScan();
+      // 연결이 끊긴 지팡이는 스캔을 계속할 수 없으므로 멈춘 것으로 보고 진행한다.
+      // 연결된 채 중지가 실패하면 진동이 남을 수 있어 선택을 거절한다.
+      await deps.stopScan().catch((error: unknown) => {
+        if (!(error instanceof Error && error.message.startsWith('BLE_NOT_CONNECTED'))) throw error;
+      });
       if (!current()) throw Error('운행 선택 상태가 변경되었습니다.');
       deps.dispatch({ type: 'SET_BEACON_SCAN_ACTIVE', active: false });
     }

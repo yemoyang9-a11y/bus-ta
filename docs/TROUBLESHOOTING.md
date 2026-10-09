@@ -183,8 +183,17 @@ curl -X POST "$URL" -H "Content-Type: application/json" \
 - 개발 빌드에서 새 Realtime 연결을 시작하고 Metro 또는 React Native DevTools 콘솔에서 `[VoiceRoute]`를 확인한다. 로그는 개발 모드에서만 출력하며 발화, 전체 인자, 운행 ID, 좌표, 토큰, 오류 본문은 기록하지 않는다.
 - `policy_sent` 이후 `policy_ack.policy=confirmed`이면 서버가 보고한 지침에 현재 정책 표시가 있다. `different`이면 다른 지침이 보고됐으므로 세션 재연결을 확인한다. `unavailable`은 서버 이벤트에 지침이 없다는 뜻으로, 적용 실패를 증명하지 않는다.
 - 정상 놓침 흐름: `function_received`의 tool=end_trip, phase=WAITING_BUS, missedBus=true, cancelRequested=true → `end_api_result.success=true` → `function_result.success=true` → `reset_requested` → `screen_ready.screen=RouteList`. 후보가 없거나 만료되면 Main으로 복귀한다.
-- 종료 없이 get_trip_status/get_next_route_candidates만 호출됐다면 모델 도구 선택을 확인한다. end_api_result=false이면 종료 API 실패이며 기존 운행은 유지해야 한다. API 성공 후 앱 결과가 실패하면 오래된 운행 응답 또는 상태 검증을 확인한다. screen_timeout이면 화면 포커스/복귀 조건을 확인한다. Function 로그가 없으면 세션 연결 및 도구 이벤트 수신 여부부터 확인한다.
+- 종료 없이 get_trip_status/get_next_route_candidates만 호출됐다면 모델 도구 선택을 확인한다. end_api_result=false이면 종료 API 실패이며 기존 운행은 유지해야 한다. API 성공 후 앱 결과가 실패하면 오래된 운행 응답 또는 상태 검증을 확인한다. screen_timeout이면 화면 포커스/복귀 조건을 확인한다(이때도 취소 사실은 후보 없이 음성으로 안내된다). Function 로그가 없으면 세션 연결 및 도구 이벤트 수신 여부부터 확인한다.
 - 자동 테스트는 실제 세션 설정, 도구 실행, 상태와 화면 포커스, 후보 재안내를 검증한다. 실제 Realtime 모델의 자연어 해석 및 휴대폰 음성·BLE·GPS 동작은 별도 실기기 검증이 필요하다.
+
+## 2026-10-09: PR #60 리뷰 후속 — 놓침 오취소, 무음 취소, 선택 잠금
+
+- 놓침 정책(`missed-bus-reselection-v3`): "방금 버스 지나갔어"가 즉시 취소 예시에 있어, 다른 노선 버스가 지나간 말만으로 운행이 취소될 수 있었다. 즉시 종료는 사용자가 자신이 타지 못했다고 직접 말한 경우로 좁히고, 지나갔다는 말은 `refreshArrivals=true` 조회 후 확인 질문을 거친다. 놓친 노선은 다음 차를 기다릴 수 있도록 재안내 후보에 남긴다.
+- 세대 값 되감김: `CONFIRM_JOURNEY_STEP`이 `...initialState`로 `directSelectionGeneration`을 0으로 돌려, 같은 후보 배열에서 취소된 운행의 성공 결과가 서버 호출 없이 재사용됐다(앱에는 tripId가 없어 GPS·지팡이·하차벨이 동작하지 않음). 환승 단계 확인에서도 값을 이어받게 했다.
+- 무음 취소: 종료 성공 후 후보 화면 확인이 5초 안에 오지 않거나 대기열에서 후보가 만료되면 응답 전체를 버려 취소 사실이 안내되지 않았다. 새 운행·여정·검색으로 상태가 바뀐 경우에만 버리고, 그 밖에는 후보 없이 취소를 안내한다.
+- 선택 잠금: 지팡이 BLE가 끊긴 채 `beaconScanActive`가 남아 있으면 스캔 중지가 `BLE_NOT_CONNECTED`로 실패해 모든 직행 선택이 막혔다. 연결이 없으면 멈춘 것으로 보고 진행한다. 연결된 상태의 중지 실패는 진동이 남을 수 있어 계속 거절한다.
+- 터치 선택 실패는 화면 문구만 바뀌어 화면을 볼 수 없는 사용자에게 전달되지 않았다. 고정 안내문을 음성으로 함께 낸다.
+- 검증: `pnpm --filter @bus-ta/server test`의 `mobile-direct-route-navigation`, `mobile-missed-bus-reselection` 테스트. 실제 모델의 발화 해석과 실기기 BLE 동작은 별도 확인이 필요하다.
 
 ## 2026-10-09: PR #60 CI의 음성·터치 동시 선택 테스트 3개 실패
 

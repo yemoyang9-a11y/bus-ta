@@ -8,6 +8,7 @@ import ts from "typescript";
 import { DEMO_ROUTE, type Route } from "@bus-ta/shared";
 import { dispatchRealtimeFunctionCall } from "../../../mobile/src/realtime/function-dispatcher.js";
 import { createRealtimeSessionUpdateEvent } from "../../../mobile/src/realtime/guide.js";
+import { getSafeSpeech } from "../../../mobile/src/realtime/safe-speech.js";
 import type { AppAction, AppTripState, RealtimeGuideContext } from "../../../mobile/src/realtime/types.js";
 
 const mixed: Route = { ...DEMO_ROUTE, candidateId: 71, routeMode: "MULTIMODAL", tripSupported: false,
@@ -85,6 +86,8 @@ function screen(route: Route) {
     "../state/TripContext": { useTrip: () => ({ state, dispatch }) },
     "../api/client": { ApiError: class extends Error {}, apiClient: { trips: { create: async (request: unknown) => { calls.requests.push(request); return { success: true, tripId: "direct-trip" }; } } } },
     "../ble/bleManager": { stopBeaconScan: async () => { calls.stops++; } },
+    "expo-speech": { speak: () => {}, stop: () => {} },
+    "../realtime/safe-speech": { getSafeSpeech },
     "../state/transfer-journey": { canStartJourney: (candidate: Route) => candidate.routeMode === "MULTIMODAL" && candidate.journeySupported === true && candidate.segments?.every(s => s.mode !== "BUS" || Boolean(s.busLeg)) },
   };
   runInNewContext(ts.transpileModule(readFileSync(new URL("../../../mobile/src/screens/RouteListScreen.js", import.meta.url), "utf8"), {

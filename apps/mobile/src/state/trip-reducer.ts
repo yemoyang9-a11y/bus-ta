@@ -190,11 +190,14 @@ export function tripReducer(state: TripState, action: TripAction): TripState {
       if (segment.mode === "BUS" && state.journeyPhase !== "BUS_ALIGHT_CONFIRM") return state;
       if (segment.mode === "SUBWAY" && state.journeyPhase !== "SUBWAY_ON_BOARD") return state;
       if (segment.mode === "WALK" && state.journeyPhase !== "GUIDING") return state;
+      // directSelectionGeneration 은 되돌리지 않는다. 같은 후보 배열에서 값이 반복되면
+      // startDirectTrip 이 이미 취소된 운행의 성공 결과를 다시 돌려준다.
       if (index + 1 >= segments.length) return { ...initialState, journeyGeneration: state.journeyGeneration,
-        beaconScanActive: state.beaconScanActive };
+        directSelectionGeneration: state.directSelectionGeneration, beaconScanActive: state.beaconScanActive };
       return {
         ...initialState,
         journeyGeneration: state.journeyGeneration,
+        directSelectionGeneration: state.directSelectionGeneration,
         destination: state.destination,
         routeCandidates: state.routeCandidates,
         routeCandidatesExpiresAt: state.routeCandidatesExpiresAt,

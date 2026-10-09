@@ -8,7 +8,7 @@
 
 ## 왜 필요한가
 
-현재 `getArrivalInfo`는 `POST /api/trips`에서 최초 호출되고, 사용자가 버스를 놓쳤다고 말해
+현재 `getArrivalInfo`는 `POST /api/trips`에서 최초 호출되고, 사용자가 재조회를 요청하거나 버스가 지나갔다고 말해
 `GET /api/trips/{tripId}/status`가 호출되면 선택 노선 기준으로 다시 호출된다.
 `PATCH /api/trips/{tripId}/status`에는 GBIS 호출이 없어서 일반 GPS 업데이트마다 외부 API를
 호출하지 않는다.
