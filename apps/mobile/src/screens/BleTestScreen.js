@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, ScrollView } from 'react-native';
 import {
   connectAll,
+  getBellDeviceName,
   setTargetBeacon,
   startBeaconScan,
   stopBeaconScan,
@@ -9,6 +10,9 @@ import {
   subscribeBellResult,
   disconnect,
 } from '../ble/bleManager';
+
+// 실물 테스트 화면에서 지팡이에 지정하는 시연 대상. 실운행 fallback으로 사용하지 않는다.
+const TEST_TARGET_BEACON_ID = 'BUS_35_001';
 
 // BLE 기능만 단독으로 테스트하기 위한 임시 화면 (정민님 하차벨/지팡이 실물 테스트용)
 // 정식 서비스 흐름과 무관하며, 테스트 끝나면 App.tsx의 initialRouteName을 되돌리면 됨
@@ -22,19 +26,20 @@ export default function BleTestScreen() {
   };
 
   const handleConnectAll = async () => {
+    const bellDeviceName = getBellDeviceName();
     addLog('지팡이·하차벨 연결 시도 중...');
     try {
       const connected = await connectAll();
-      addLog(`연결 결과: 지팡이=${connected.has('White_cane')}, 하차벨=${connected.has('BUS_35_001')}`);
+      addLog(`연결 결과: 지팡이=${connected.has('White_cane')}, 하차벨=${connected.has(bellDeviceName)}`);
     } catch (error) {
       addLog(`연결 실패: ${error.message}`);
     }
   };
 
   const handleSetTargetBeacon = async () => {
-    addLog('타겟 비콘 설정 시도 중 (BUS_35_001)...');
+    addLog(`타겟 비콘 설정 시도 중 (${TEST_TARGET_BEACON_ID})...`);
     try {
-      await setTargetBeacon('BUS_35_001');
+      await setTargetBeacon(TEST_TARGET_BEACON_ID);
       addLog('타겟 비콘 설정 성공');
     } catch (error) {
       addLog(`타겟 비콘 설정 실패: ${error.message}`);
@@ -85,6 +90,7 @@ export default function BleTestScreen() {
   };
 
   const handleDisconnectAll = async () => {
+    const bellDeviceName = getBellDeviceName();
     addLog('연결 해제 중...');
     if (unsubscribe) {
       unsubscribe();
@@ -92,7 +98,7 @@ export default function BleTestScreen() {
     }
     try {
       await disconnect('White_cane');
-      await disconnect('BUS_35_001');
+      await disconnect(bellDeviceName);
       addLog('연결 해제 완료');
     } catch (error) {
       addLog(`연결 해제 실패: ${error.message}`);
@@ -108,7 +114,7 @@ export default function BleTestScreen() {
       </TouchableOpacity>
 
       <TouchableOpacity style={styles.button} onPress={handleSetTargetBeacon}>
-        <Text style={styles.buttonText}>타겟 비콘 설정 (BUS_35_001)</Text>
+        <Text style={styles.buttonText}>타겟 비콘 설정 ({TEST_TARGET_BEACON_ID})</Text>
       </TouchableOpacity>
 
       <TouchableOpacity style={styles.button} onPress={handleStartScan}>

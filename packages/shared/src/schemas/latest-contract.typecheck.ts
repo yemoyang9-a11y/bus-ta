@@ -179,6 +179,16 @@ const tripStatusResponse: TripStatusResponse = {
   timestamp: "2026-07-01T14:35:00+09:00",
 };
 
+// 레코드는 왔는데 predictTime 이 전부 비어 있는 경우. "차가 없다"(NO_VEHICLE)와
+// 구분해야 하므로 공개 계약에도 이 상태가 있어야 한다(docs/ARRIVAL_POLLING.md).
+const noPredictionTripStatusResponse: TripStatusResponse = {
+  ...tripStatusResponse,
+  arrivals: [],
+  arrivalStatus: "NO_PREDICTION",
+  nextArrivalRefreshInMs: 20_000,
+  shouldScanBeacon: true,
+};
+
 const bellResultInput: BellResultInput = {
   bellRequestId: "bell-request-001",
   command: "STOP_REQUEST",
@@ -216,6 +226,7 @@ void autoDetectedBoardingRequest;
 void boardingConfirmationResponse;
 void API_PATHS.trips.boarding.confirm("trip-001");
 void tripStatusResponse;
+void noPredictionTripStatusResponse;
 void bellResultInput;
 void beaconsListResponse;
 void realtimeSessionResponse;

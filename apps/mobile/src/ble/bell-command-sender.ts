@@ -11,8 +11,8 @@
  * 진동이나 순간적인 간섭으로 한 번 실패할 수 있는데, 실패해도 10초 타임아웃을
  * 그대로 기다렸다가 실패로 확정했다. 연결 시점을 고쳐도 이 구간에서 벨이 안 울린다.
  *
- * 재시도는 딱 한 번이다. 사용자는 곧 내려야 하고, 하차벨 결과 대기 시간(10초)
- * 안에 결론이 나야 한다.
+ * 재시도는 딱 한 번이다. 연결 확인부터 write까지 전체 5초 예산을 적용하고,
+ * 전송 성공 이후의 하차벨 결과 대기 시간(10초)은 별도로 관리한다.
  */
 export type BellCommandDeps = {
   /** 실제 장치에 물어본 연결 여부. Map 조회가 아니어야 한다. */
@@ -24,7 +24,7 @@ export type BellCommandDeps = {
    * 재전송 전에는 반드시 이전 구독을 해제하고 다시 구독한다. 연결이 새로 맺어지면
    * 이전 구독은 죽은 연결에 붙어 있어 결과가 오지 않는다.
    */
-  subscribeResult: () => () => void;
+  subscribeResult: (isCurrent?: () => boolean) => () => void;
   /** STOP_REQUEST 를 보낸다. 실패하면 reject 한다. */
   sendStopRequest: () => Promise<void>;
 };
@@ -72,7 +72,7 @@ async function ensureConnected(deps: BellCommandDeps): Promise<boolean> {
   return connected;
 }
 
-export async function sendStopRequestWithReconnect(
+async function sendWithReconnect(
   deps: BellCommandDeps,
 ): Promise<BellCommandOutcome> {
   console.log('[BLE] STOP_REQUEST 처리 시작');
@@ -145,5 +145,87 @@ export async function sendStopRequestWithReconnect(
       sent: false,
       unsubscribe: noop,
     };
+  }
+}
+
+// Notify 결과 대기 시간과 별개인 연결 확인/복구/write 전체 예산.
+export const BELL_SEND_DEADLINE_MS = 5000;
+
+export async function sendStopRequestWithReconnect(
+  deps: BellCommandDeps,
+  options: { signal?: AbortSignal; canSend?: () => boolean } = {},
+): Promise<BellCommandOutcome> {
+  let active = true;
+  let sentSuccessfully = false;
+  let writeStarted = false;
+  let subscription: () => void = noop;
+  const expiresAt = Date.now() + BELL_SEND_DEADLINE_MS;
+  const cleanup = () => {
+    const remove = subscription;
+    subscription = noop;
+    remove();
+  };
+  const check = () => {
+    if (!active || options.signal?.aborted || Date.now() >= expiresAt) {
+      throw new Error('BELL_SEND_CANCELLED_OR_TIMED_OUT');
+    }
+  };
+  let stop: () => void = noop;
+  const stopped = new Promise<BellCommandOutcome>((resolve) => {
+    stop = () => {
+      active = false;
+      cleanup();
+      resolve({ sent: false, unsubscribe: noop });
+    };
+  });
+  const timer = setTimeout(stop, BELL_SEND_DEADLINE_MS);
+  options.signal?.addEventListener('abort', stop);
+  const checkCanSend = () => {
+    check();
+    if (options.canSend?.() === false) throw new Error('BELL_SEND_NO_LONGER_ALLOWED');
+  };
+  const guarded = async <T>(operation: () => Promise<T>): Promise<T> => {
+    checkCanSend();
+    const value = await operation();
+    checkCanSend();
+    return value;
+  };
+  try {
+    if (options.signal?.aborted) stop();
+    const work = sendWithReconnect({
+      isConnected: () => guarded(deps.isConnected),
+      connect: () => guarded(deps.connect),
+      sendStopRequest: async () => {
+        checkCanSend();
+        writeStarted = true;
+        // 이미 시작한 GATT write는 되돌릴 수 없다. 완료 뒤에도 이 write의 결과는 받는다.
+        await deps.sendStopRequest();
+        check();
+      },
+      subscribeResult: () => {
+        checkCanSend();
+        // 각 구독은 바로 뒤에 오는 해당 attempt의 write가 시작된 뒤에만 유효하다.
+        // 구독 등록 중 동기 Notify가 들어와도 이전/잔여 결과를 현재 요청 성공으로 보지 않는다.
+        writeStarted = false;
+        let subscribed = true;
+        const remove = deps.subscribeResult(() => subscribed && writeStarted &&
+          !options.signal?.aborted &&
+          (sentSuccessfully || (active && Date.now() < expiresAt)));
+        subscription = () => {
+          subscribed = false;
+          remove();
+        };
+        if (!active || options.signal?.aborted) cleanup();
+        return cleanup;
+      },
+    }).catch(() => ({ sent: false, unsubscribe: noop }));
+    const outcome = await Promise.race([work, stopped]);
+    sentSuccessfully = outcome.sent;
+    if (!outcome.sent) cleanup();
+    return outcome;
+  } finally {
+    active = false;
+    clearTimeout(timer);
+    options.signal?.removeEventListener('abort', stop);
   }
 }

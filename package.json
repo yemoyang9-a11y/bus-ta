@@ -5,19 +5,25 @@
   "packageManager": "pnpm@11.7.0",
   "description": "AI·BLE 기반 시각장애인 대중교통 탑승·하차 보조 시스템 모노레포",
   "engines": {
-    "node": ">=20.0.0",
-    "pnpm": ">=9.0.0"
+    "node": ">=22.13.0",
+    "pnpm": ">=11.7.0"
   },
   "scripts": {
-    "typecheck": "pnpm -r typecheck",
+    "typecheck": "pnpm -r typecheck && pnpm typecheck:scripts",
+    "typecheck:scripts": "tsc --noEmit -p tsconfig.scripts.json",
     "build": "pnpm -r --filter=!./apps/mobile run build",
-    "lint": "pnpm -r run lint",
+    "lint": "eslint apps packages scripts eslint.config.mjs",
+    "test:scripts": "pnpm --filter @bus-ta/server exec tsx --test \"../../scripts/*.test.mjs\" \"../../scripts/*.test.ts\"",
+    "test:cane": "node scripts/test-cane-feedback.mjs",
     "test:render-config": "node --test scripts/verify-render-config.test.mjs",
     "test:supabase-security": "node --test scripts/verify-supabase-security.test.mjs",
     "verify:supabase-security": "node scripts/verify-supabase-security.mjs"
   },
   "devDependencies": {
+    "eslint": "10.11.0",
+    "globals": "17.12.0",
     "supabase": "2.108.0",
-    "typescript": "^5.4.5"
+    "typescript": "^5.4.5",
+    "typescript-eslint": "8.70.1"
   }
 }

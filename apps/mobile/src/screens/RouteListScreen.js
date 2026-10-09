@@ -1,8 +1,17 @@
-import React, { useState } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, FlatList, ActivityIndicator } from 'react-native';
+import React, { useEffect, useState } from 'react';
+import { useIsFocused } from '@react-navigation/native';
+import {
+  View,
+  Text,
+  TouchableOpacity,
+  StyleSheet,
+  FlatList,
+  ActivityIndicator,
+} from 'react-native';
 import { apiClient, ApiError } from '../api/client';
 import { useTrip } from '../state/TripContext';
 import { stopBeaconScan } from '../ble/bleManager';
+import { canStartJourney } from '../state/transfer-journey';
 
 // 예모님 확정(2026-08-28): 후보 유효시간 5분. TripContext.js와 동일한 값을 써야 하므로
 // 상수 자체는 여기서도 다시 정의하되, 계산 방식(검색 시각 + 5분)은 TripContext가 갖고 있다.
@@ -13,11 +22,20 @@ function isRouteCandidatesExpired(expiresAt) {
   return Date.now() > expiresAt;
 }
 
+function isGuidanceOnly(route) {
+  return !canStartJourney(route) && (route.tripSupported === false || route.routeMode === 'MULTIMODAL' || route.busTransitCount > 1);
+}
+
 export default function RouteListScreen({ navigation }) {
   // 예모님 확인(2026-08-15): ConfirmScreen 삭제에 따라 route.params 대신 TripContext에서 값을 가져온다.
   // destination, routeCandidates는 function-dispatcher.ts의 search_routes 처리 결과로 채워진다.
   const { state, dispatch } = useTrip();
+  const isFocused = useIsFocused();
   const { destination, routeCandidates, routeCandidatesExpiresAt } = state;
+
+  useEffect(() => {
+    if (isFocused && state.journeyRoute) navigation.navigate('Transfer');
+  }, [state.journeyRoute, navigation, isFocused]);
 
   const [loading, setLoading] = useState(false);
 
@@ -29,16 +47,26 @@ export default function RouteListScreen({ navigation }) {
   // "다른 버스 없어요?" 시 다음 후보를 보여주는 정식 기능(유나님 파트)이 완성되기 전까지,
   // 시연을 위해 임시로 상위 2개만 화면에 보여준다. 정식 기능 완성 후 이 slice는 제거하고
   // announcedCandidateIds 기반으로 다시 설계해야 한다.
-  const visibleRouteCandidates = routeCandidates ? routeCandidates.slice(0, 2) : routeCandidates;
+  const visibleRouteCandidates = routeCandidates
+    ? routeCandidates.slice(0, 2)
+    : routeCandidates;
 
   // 노선 선택 시 POST /api/trips 호출 후 탑승 중 화면으로 이동
   const selectRoute = async (selectedRoute) => {
+    if (state.journeyRoute) return;
+    // Disabled 카드 외의 호출 경로에서도 API·BLE·선택 상태를 바꾸지 않는다.
+    if (isGuidanceOnly(selectedRoute)) return;
     // 예모님 지적(2026-08-28, P1): 화면에서 기존 후보를 선택할 때도 TTL을 확인하지 않고
     // POST /api/trips를 호출하고 있었다. 검색 후 5분이 지난 후보는 사용하지 않고,
     // 대신 다시 검색해야 한다는 안내와 함께 노선 목록 화면에 머무른다(재검색 자체는
     // 사용자가 음성으로 다시 목적지를 말하거나, Realtime 쪽에서 재검색을 유도한다).
     if (isRouteCandidatesExpired(routeCandidatesExpiresAt)) {
       navigation.navigate('Main');
+      return;
+    }
+
+    if (canStartJourney(selectedRoute)) {
+      dispatch({ type: 'START_JOURNEY', route: selectedRoute });
       return;
     }
 
@@ -50,15 +78,22 @@ export default function RouteListScreen({ navigation }) {
       // 동시에 호출돼도 stopBeaconScan() single-flight가 같은 Promise를 공유한다.
       if (state.beaconScanActive) {
         await stopBeaconScan();
-        dispatch({ type: 'SET_BEACON_SCAN_ACTIVE', active: false });
+        dispatch({
+          type: 'SET_BEACON_SCAN_ACTIVE',
+          active: false,
+        });
       }
 
-      dispatch({ type: 'SELECT_ROUTE', route: selectedRoute });
+      dispatch({
+        type: 'SELECT_ROUTE',
+        route: selectedRoute,
+      });
 
       // 공통 API 명세서 5.2 기준 필드만 전달 (guideMessage·recommendationReason 등
       // 스펙에 없는 필드는 보내지 않는다 — 백엔드 스키마 검증 대상이 아님)
       const tripRequest = {
-        destination: destination || selectedRoute.destinationStation?.stationName,
+        destination:
+          destination || selectedRoute.destinationStation?.stationName,
         candidateId: selectedRoute.candidateId,
         routeNo: selectedRoute.routeNo,
         localBusId: selectedRoute.localBusId,
@@ -77,14 +112,24 @@ export default function RouteListScreen({ navigation }) {
 
       const data = await apiClient.trips.create(tripRequest);
 
-      dispatch({ type: 'START_TRIP', tripId: data.tripId });
+      dispatch({
+        type: 'START_TRIP',
+        tripId: data.tripId,
+      });
 
-      navigation.navigate('Riding', { tripId: data.tripId, selectedRoute });
+      navigation.navigate('Riding', {
+        tripId: data.tripId,
+        selectedRoute,
+      });
     } catch (error) {
       // errorCode별 분기 (13.2)
-      if (error instanceof ApiError && error.errorCode === 'INVALID_STATION_LIST') {
+      if (
+        error instanceof ApiError &&
+        error.errorCode === 'INVALID_STATION_LIST'
+      ) {
         // 선택한 후보 자체가 규칙을 어긴 경우. 임의로 보정하지 않고 오류 화면으로.
       }
+
       navigation.navigate('Error');
     } finally {
       setLoading(false);
@@ -104,8 +149,14 @@ export default function RouteListScreen({ navigation }) {
   if (!visibleRouteCandidates || visibleRouteCandidates.length === 0) {
     return (
       <View style={styles.emptyContainer}>
-        <Text style={styles.emptyText}>이용 가능한 노선이 없습니다.</Text>
-        <TouchableOpacity style={styles.backButton} onPress={() => navigation.navigate('Main')}>
+        <Text style={styles.emptyText}>
+          이용 가능한 노선이 없습니다.
+        </Text>
+
+        <TouchableOpacity
+          style={styles.backButton}
+          onPress={() => navigation.navigate('Main')}
+        >
           <Text style={styles.backButtonText}>처음으로</Text>
         </TouchableOpacity>
       </View>
@@ -120,20 +171,47 @@ export default function RouteListScreen({ navigation }) {
         renderItem={({ item, index }) => {
           // 카드마다 강조색을 번갈아 사용 — 텍스트/기능은 그대로, 시각적 구분만 추가
           const accentColor = index % 2 === 0 ? '#FFD400' : '#2F8FFF';
+          const guidanceOnly = isGuidanceOnly(item);
+          const transferJourney = canStartJourney(item);
 
           return (
             <TouchableOpacity
               style={[styles.routeCard, { borderColor: accentColor }]}
               onPress={() => selectRoute(item)}
+              disabled={guidanceOnly}
+              accessibilityRole="button"
+              accessibilityState={{ disabled: guidanceOnly }}
             >
               <View style={[styles.routeAccentBar, { backgroundColor: accentColor }]} />
               <View style={styles.routeCardContent}>
-                <Text style={styles.routeNo}>{item.routeNo}번</Text>
-                <Text style={styles.routeInfo}>탑승 정류장: {item.boardingStation.stationName}</Text>
-                <Text style={styles.routeInfo}>하차 정류장: {item.destinationStation.stationName}</Text>
-                {item.totalTime && (
-                  <Text style={styles.routeInfo}>예상 소요 시간: {item.totalTime}분</Text>
+                <Text style={styles.routeNo}>
+                  {transferJourney ? '환승 경로' : guidanceOnly ? '환승 경로 (안내 전용)' : `${item.routeNo}번`}
+                </Text>
+
+                {guidanceOnly || transferJourney ? (
+                  <View>
+                    {(item.segments || []).map((segment, segmentIndex) => (
+                      <Text key={segmentIndex} style={styles.routeInfo}>
+                        {segmentIndex + 1}. {segment.mode === 'WALK' ? '도보' : segment.mode === 'SUBWAY'
+                          ? `${segment.lineNames.join(' 또는 ')} 지하철`
+                          : `${segment.routeNumbers.join(' 또는 ')}번 버스`}: {segment.startName} → {segment.endName}
+                      </Text>
+                    ))}
+                    <Text style={styles.routeInfo}>{transferJourney ? '버스 구간별 운행과 하차벨을 안내합니다. 도보와 지하철의 이동 완료는 직접 확인해 주세요.' : '운행 시작과 하차벨은 지원하지 않습니다.'}</Text>
+                  </View>
+                ) : (
+                  <View>
+                    <Text style={styles.routeInfo}>탑승 정류장: {item.boardingStation.stationName}</Text>
+                    <Text style={styles.routeInfo}>하차 정류장: {item.destinationStation.stationName}</Text>
+                  </View>
                 )}
+
+                {item.totalTime && (
+                  <Text style={styles.routeInfo}>
+                    예상 소요 시간: {item.totalTime}분
+                  </Text>
+                )}
+
                 {item.recommendationReason && (
                   <Text style={[styles.routeReason, { color: accentColor }]}>
                     {item.recommendationReason}

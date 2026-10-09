@@ -3,7 +3,20 @@ import * as Location from 'expo-location';
 import * as Speech from 'expo-speech';
 import { useTrip } from '../state/TripContext';
 import { apiClient, ApiError } from '../api/client';
-import { connectCane, setTargetBeacon } from '../ble/bleManager';
+import {
+  connectCane,
+  disconnectBellsForTrip,
+  setTargetBeacon,
+  startBeaconScan,
+  stopBeaconScan,
+  disconnectCane,
+  subscribeCaneState,
+} from '../ble/bleManager';
+import { createTripTracking } from './trip-tracking';
+import { toTripStatusSnapshot } from './status-snapshot';
+import { speakCompletionFallback } from './completion-speech';
+import { createAutomaticBoarding } from './automatic-boarding';
+import { releaseCane } from '../ble/cane-release-controller';
 import { HaneumRealtimeSession } from './session';
 import { createRealtimeGuideContext } from './context';
 import { connectWithBestEffortLocation, runSingleFlight } from './connect-best-effort';
@@ -11,7 +24,7 @@ import { createLocationRefreshCoordinator } from './location-refresh';
 import { createAssistDevicePreparation } from './assist-device-preparation';
 import { getAssistDeviceFallbackMessage } from './assist-device-status';
 import type { RealtimeWebRTCTransport } from './webrtc-transport';
-import type { AppAction, AppTripState } from './types';
+import type { AppAction, AppTripState, AssistDeviceStatusChangedEvent } from './types';
 
 export type RealtimeConnectionStatus = 'idle' | 'connecting' | 'connected' | 'error';
 
@@ -22,7 +35,10 @@ type RealtimeContextValue = {
   isConnected: boolean;
   connectionStatus: RealtimeConnectionStatus;
   connectionError: string | null;
+  trackingError: string | null;
   connect: () => Promise<void>;
+  notifyFailure: (event: AssistDeviceStatusChangedEvent) => void;
+  getActiveTripId: () => string | null;
 };
 
 const RealtimeContext = createContext<RealtimeContextValue | null>(null);
@@ -38,6 +54,7 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
     dispatch: (action: AppAction) => void;
   };
 
+  const [trackingError, setTrackingError] = useState<string | null>(null);
   const [transport, setTransport] = useState<RealtimeWebRTCTransport | null>(null);
   const [isConnected, setIsConnected] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<RealtimeConnectionStatus>('idle');
@@ -99,21 +116,39 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
   }
 
   const assistPreparationRef = useRef<ReturnType<typeof createAssistDevicePreparation> | null>(null);
+  const notifyFailure = (event: AssistDeviceStatusChangedEvent) => {
+    const deliveredToRealtime =
+      sessionRef.current?.notifyAssistDeviceStatusChange(event) ?? false;
+    if (!deliveredToRealtime) {
+      Speech.speak(getAssistDeviceFallbackMessage(event), { language: 'ko' });
+    }
+  };
+  const getActiveTripId = () => ['CANCELLED', 'TRIP_DONE'].includes(stateRef.current.tripStatus ?? '') ? null : stateRef.current.tripId;
+
+  // Provider는 Riding → Alight 이동에도 유지된다. 실제 운행 변경에만 GATT를 정리한다.
+  const activeBellTripId = getActiveTripId();
+  useEffect(() => {
+    const ownerTripId = activeBellTripId;
+    return () => {
+      if (ownerTripId) void disconnectBellsForTrip(ownerTripId);
+    };
+  }, [activeBellTripId]);
+
   if (!assistPreparationRef.current) {
     assistPreparationRef.current = createAssistDevicePreparation({
-      getActiveTripId: () => stateRef.current.tripId,
+      getActiveTripId,
+      isWaitingForBus: () => stateRef.current.tripStatus === 'WAITING_BUS' && !stateRef.current.boardingConfirmedAt,
+      releaseCane: () => releaseCane({
+        stop: stopBeaconScan, disconnect: disconnectCane,
+        onStopped: () => dispatchRef.current({ type: 'SET_BEACON_SCAN_ACTIVE', active: false }),
+      }),
       listBeacons: (routeNo) => apiClient.beacons.list(routeNo),
       getBeaconLookupErrorCode: (error) =>
         error instanceof ApiError ? error.errorCode : undefined,
       connectCane,
       setTargetBeacon,
-      notifyFailure: (event) => {
-        const deliveredToRealtime =
-          sessionRef.current?.notifyAssistDeviceStatusChange(event) ?? false;
-        if (!deliveredToRealtime) {
-          Speech.speak(getAssistDeviceFallbackMessage(event), { language: 'ko' });
-        }
-      },
+      startBeaconScan,
+      notifyFailure,
       dispatch: (action) => dispatchRef.current(action),
     });
   }
@@ -127,7 +162,81 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
       tripId,
       routeNo,
     });
+    return () => { void assistPreparationRef.current?.release(tripId); };
   }, [state.tripId, state.selectedRoute?.routeNo]);
+
+  useEffect(() => {
+    if (state.tripId && (state.boardingConfirmedAt || state.tripStatus === 'CANCELLED')) {
+      void assistPreparationRef.current?.release(state.tripId);
+    }
+  }, [state.tripId, state.boardingConfirmedAt, state.tripStatus]);
+
+  useEffect(() => {
+    if (!state.tripId || state.tripStatus !== 'WAITING_BUS' || !state.caneReady || !state.beaconScanActive || !state.targetBeaconId) return;
+    const tripId = state.tripId;
+    const automatic = createAutomaticBoarding({
+      tripId, targetBeaconId: state.targetBeaconId,
+      getState: () => stateRef.current,
+      subscribe: subscribeCaneState,
+      confirm: (id, body) => apiClient.trips.confirmBoarding(id, body),
+      apply: (result) => {
+        dispatchRef.current({ type: 'CONFIRM_BOARDING', tripId, tripStatus: result.tripStatus, boardingMethod: result.boardingMethod, boardingConfirmedAt: result.boardingConfirmedAt });
+        sessionRef.current?.notifyStatusChange(toTripStatusSnapshot({ ...stateRef.current, ...result }));
+      },
+      onFailure: () => {
+        if (stateRef.current.tripId === tripId && stateRef.current.tripStatus === 'WAITING_BUS') {
+          Speech.speak('자동 탑승 확인을 마치지 못했습니다. 버스에 타셨다면 음성으로 탑승했다고 말씀해 주세요.', { language: 'ko' });
+        }
+      },
+    });
+    automatic.start();
+    return () => automatic.stop();
+  }, [state.tripId, state.tripStatus, state.targetBeaconId, state.caneReady, state.beaconScanActive]);
+
+  const trackingRef = useRef<ReturnType<typeof createTripTracking> | null>(null);
+  useEffect(() => {
+    const tripId = state.tripId;
+    if (!tripId) return;
+    setTrackingError(null);
+    const completionAbort = new AbortController();
+    const controller = createTripTracking({
+      tripId, getState: () => stateRef.current,
+      requestPermission: async () => (await Location.requestForegroundPermissionsAsync()).status,
+      watchPosition: callback => Location.watchPositionAsync({ accuracy: Location.Accuracy.High, timeInterval: 2000, distanceInterval: 0 }, callback),
+      updateStatus: (id, body) => apiClient.trips.updateStatus(id, body),
+      getStatus: id => apiClient.trips.getStatus(id),
+      applyStatus: status => {
+        dispatchRef.current({ type: 'UPDATE_TRIP_STATUS', status });
+        if (status.tripStatus === 'CANCELLED') dispatchRef.current({ type: 'RESET_TRIP_KEEP_SEARCH' });
+        else if (!(status.tripStatus === 'TRIP_DONE' && stateRef.current.journeyRoute)) sessionRef.current?.notifyStatusChange(toTripStatusSnapshot(status));
+      },
+      announceCompletion: async () => {
+        if (stateRef.current.journeyRoute) {
+          if (stateRef.current.tripId === tripId) Speech.speak('이번 버스 구간의 하차 정류장에 도착했습니다. 안전하게 내린 뒤 내렸다고 말씀하거나 화면의 하차 확인 버튼을 눌러 주세요.', { language: 'ko' });
+          return;
+        }
+        const played = await sessionRef.current?.announceTripCompletion(tripId);
+        if (!played && stateRef.current.tripId === tripId) await speakCompletionFallback(Speech, 15000, completionAbort.signal);
+      },
+      finish: () => {
+        if (stateRef.current.tripId === tripId) dispatchRef.current(stateRef.current.journeyRoute
+          ? { type: 'MARK_JOURNEY_BUS_ARRIVED', tripId }
+          : { type: 'RESET_TRIP' });
+      },
+      onError: code => {
+        // Transient network refresh failures keep tracking; never print raw location/error objects.
+        if (code === 'LOCATION_PERMISSION_DENIED' || code === 'LOCATION_WATCH_FAILED' || code === 'TRIP_NOT_FOUND') {
+          controller.stop();
+          if (code === 'TRIP_NOT_FOUND') dispatchRef.current({ type: 'RESET_TRIP' });
+          setTrackingError(code);
+        }
+      },
+    });
+    trackingRef.current = controller;
+    controller.start();
+    return () => { controller.stop(); completionAbort.abort(); sessionRef.current?.cancelTripCompletion(tripId); if (trackingRef.current === controller) trackingRef.current = null; };
+  }, [state.tripId]);
+  useEffect(() => { trackingRef.current?.sync(); }, [state.tripId, state.tripStatus, state.boardingConfirmedAt]);
 
   const connect = () => {
     if (!sessionRef.current) return Promise.resolve();
@@ -163,7 +272,10 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
         isConnected,
         connectionStatus,
         connectionError,
+        trackingError,
         connect,
+        notifyFailure,
+        getActiveTripId,
       }}
     >
       {children}

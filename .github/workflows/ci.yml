@@ -10,7 +10,7 @@ on:
 
 jobs:
   typecheck:
-    name: Type Check
+    name: Lint, types, build and regressions
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -30,8 +30,14 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Typecheck (shared + server + mobile)
-        run: pnpm -r typecheck
+      - name: Typecheck (shared + server + mobile + scripts)
+        run: pnpm typecheck
+
+      - name: Lint (JS, JSX and TypeScript)
+        run: pnpm lint
+
+      - name: Build server
+        run: pnpm build
 
       # 타입 체크만 돌던 동안 서버 테스트는 CI 에서 한 번도 실행되지 않았다.
       - name: Test (server)
@@ -40,9 +46,21 @@ jobs:
       - name: Boarding confirmation regressions
         run: pnpm --filter @bus-ta/server test:boarding
 
+      - name: Script and mobile regressions
+        run: pnpm test:scripts
+
+      - name: Cane C++ host replay
+        run: pnpm test:cane
+
   supabase-boarding-sql:
-    name: Supabase Boarding SQL
+    name: Supabase Boarding and Bell SQL
     runs-on: ubuntu-latest
+    env:
+      PGHOST: 127.0.0.1
+      PGPORT: 5432
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      PGDATABASE: postgres
     services:
       postgres:
         image: postgres:15
@@ -57,10 +75,10 @@ jobs:
           --health-retries 10
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.17.0
       - name: Run boarding migration and race regressions
-        env:
-          PGHOST: 127.0.0.1
-          PGPORT: 5432
-          PGUSER: postgres
-          PGPASSWORD: postgres
         run: bash scripts/test-supabase-boarding.sh
+      - name: Bell result SQL, rollback and concurrent sessions
+        run: node scripts/test-bell-result-sql.mjs

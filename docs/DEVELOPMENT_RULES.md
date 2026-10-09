@@ -55,8 +55,16 @@
 - 위 기본 권한은 객체 소유자별 설정이다. Dashboard 등 다른 소유자 역할이 객체를 만들었다면 `pg_default_acl`, Data API 설정과 객체별 grant를 별도로 확인한다.
 - migration 변경 후 `pnpm test:supabase-security`와 `pnpm verify:supabase-security`를 실행한다. 원격 적용 후에는 RPC의 `prosecdef`·`proconfig`·ACL, 테이블 RLS·grant와 Supabase Security Advisor를 다시 확인한다.
 
+## fixture와 운영 데이터의 경계
+
+- 비콘 조회는 Supabase 설정이 없을 때만 명시된 `DEMO_BEACONS` fixture를 사용한다. DB 설정이 있는 상태에서 조회가 실패했다고 fixture 성공으로 바꾸지 않는다. 이 예외를 모든 GET 요청에 확대하지 않는다.
+- 운행 생성·위치·탑승확정·취소·벨 결과 등 상태 변경 API는 DB 설정이나 저장에 실패하면 오류로 응답한다. 메모리 성공으로 가장하지 않는다.
+- fixture의 비콘은 데모용 사용 가능 목록이며 DB의 ACTIVE/INACTIVE 운영 상태를 복제한 것이 아니다. 운영 `findByRouteNo`는 ACTIVE 행만 선택한다.
+- 기존 seed의 충돌 무시는 실제 설치 비콘 값을 보존하기 위한 정책으로 유지한다. 운영값 교정은 적용 대상을 특정한 새 migration으로 작성·검증하며, 옛 seed를 변경해 기존 행을 무조건 덮어쓰지 않는다.
+- 2026-09-22 후속 정리에서는 원시 RSSI·진동 로그 공개 API, 선택적 `system_logs`, 사용자 인증/소유권과 차량별 매칭을 임의로 추가하지 않는다. 새 계약이 확정되면 독립된 변경으로 검토한다.
+
 ## 충돌 처리와 완료 보고
 
-현재 구현 사실은 `claude/nice-archimedes-iv7iu0` 코드·shared 타입·현재 테스트·실제 Supabase 상태로, 합의된 목표는 최신 Notion 공통 계약으로 판단한다. 충돌 시 파일·브랜치·DB 상태, 실제 동작, 목표 계약, 영향과 수정·검증 계획을 남긴다.
+현재 구현 사실은 조사 대상 브랜치의 코드·shared 타입·현재 테스트·실제 확인한 DB 상태로 판단한다. 합의된 목표는 사용자의 현재 확정 규칙을 우선하고, 그다음 Notion 공통 계약을 따른다. 2026-09-23 사용자는 오래 갱신하지 않은 Notion의 직행 전용 서술보다 최근 제시한 방향과 최신 코드를 이번 작업의 기준으로 확정했다. 2026-09-22 후속 구현은 실행 계획에 명시한 `57e50ea` 기반 전용 작업 폴더에서 진행한다. 충돌 시 파일·브랜치·DB 상태, 실제 동작, 목표 계약, 영향과 수정·검증 계획을 남긴다.
 
 완료 보고에는 변경 파일, 변경 목적, API·DB·shared 영향, 검증 명령·결과, migration 상태, Notion 동기화, 남은 위험을 포함한다.

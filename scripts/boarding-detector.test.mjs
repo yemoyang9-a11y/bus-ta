@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
-import { createBoardingDetector } from "../apps/mobile/src/ble/boardingDetector.js";
+import * as boardingDetectorModule from "../apps/mobile/src/ble/boardingDetector.js";
+
+// tsx/Node 22 may expose a typeless mobile .js file through its CommonJS default.
+const createBoardingDetector =
+  boardingDetectorModule.createBoardingDetector ?? boardingDetectorModule.default?.createBoardingDetector;
+assert.equal(typeof createBoardingDetector, "function", "탑승 판정 모듈을 불러와야 한다");
 
 const BASE_CONFIG = {
   rssiThreshold: -60,

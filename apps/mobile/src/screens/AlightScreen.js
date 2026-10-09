@@ -1,15 +1,13 @@
-import React, { useRef, useState } from 'react';
+import React, { useRef, useState, useEffect } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator } from 'react-native';
 import * as Speech from 'expo-speech';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect, useIsFocused } from '@react-navigation/native';
 import { apiClient, ApiError } from '../api/client';
 import { useTrip } from '../state/TripContext';
 import { useRealtime } from '../realtime/RealtimeProvider';
-import { connectBell, getBellDeviceName, isBellConnected, sendStopRequest, subscribeBellResult, disconnect } from '../ble/bleManager';
-import { sendStopRequestWithReconnect } from '../ble/bell-command-sender';
-
-// 정민님 확인(2026-08-12): 하차벨 응답을 못 받을 경우를 대비한 대기 시간
-const BELL_RESULT_TIMEOUT_MS = 10000;
+import { connectBell, getBellDeviceName, isBellConnected, sendStopRequest, subscribeBellResult } from '../ble/bleManager';
+import { TRIP_COMPLETION_MESSAGE } from '../realtime/trip-tracking';
+import { createBellStopSession } from '../ble/bell-stop-session';
 
 // 예모님 코멘트 5번(2026-08-13): 성공·실패·타임아웃을 화면·음성에서 구분해 안내한다.
 const BELL_OUTCOME_TEXT = {
@@ -28,118 +26,84 @@ export default function AlightScreen({ route, navigation }) {
   const { tripId, bellRequestId, command, guideMessage } = route.params;
   const resultSentRef = useRef(false); // 중복 전송 방지
   const { state, dispatch } = useTrip();
-  const { session, isConnected } = useRealtime();
+  const isFocused = useIsFocused();
+  const { session, isConnected, trackingError } = useRealtime();
+  const [homeError, setHomeError] = useState(null);
+  const endingRef = useRef(false);
+  const resultRetryTimerRef = useRef(null);
   const [bellOutcome, setBellOutcome] = useState('waiting'); // 'waiting' | 'success' | 'fail'
 
-  const unsubscribeRef = useRef(() => {});
-  const timeoutIdRef = useRef(null);
-  const isMountedRef = useRef(true);
+  const isMountedRef = useRef(false);
+  const generationRef = useRef(0);
+  const stopSessionRef = useRef(null);
+  const latestRef = useRef(null);
+  latestRef.current = { state, session, isConnected };
+
+  useEffect(() => {
+    if (!isFocused) return;
+    if (state.journeyPhase === 'BUS_ALIGHT_CONFIRM' || (state.journeyRoute && !state.tripId)) navigation.navigate('Transfer');
+    else if (!state.tripId) navigation.navigate('Main');
+    if (trackingError) navigation.navigate('Error');
+  }, [state.tripId, state.journeyRoute, state.journeyPhase, trackingError, isFocused]);
+
+  useEffect(() => {
+    if (state.tripStatus === 'TRIP_DONE') stopSessionRef.current?.flow.stopSending();
+  }, [state.tripStatus]);
 
   useFocusEffect(
     React.useCallback(() => {
+      if (latestRef.current.state.tripStatus === 'TRIP_DONE' || latestRef.current.state.tripStatus === 'CANCELLED') return;
+      const generation = ++generationRef.current;
+      const isCurrent = () => generationRef.current === generation && isMountedRef.current && latestRef.current.state.tripId === tripId && latestRef.current.state.tripStatus !== 'CANCELLED';
       isMountedRef.current = true;
-
-      // 유나님 확인(2026-08-17): Realtime 연결 중에는 로컬 TTS를 생략하고 바로 BLE 처리로 넘어간다.
-      // Realtime 미연결일 때만 기존 고정 TTS로 대체 안내한다.
-      if (isConnected) {
-        requestActualBellStop().catch((error) => {
-          console.log('하차벨 처리 실패:', error);
-        });
-        return () => {
-          isMountedRef.current = false;
-          if (timeoutIdRef.current) {
-            clearTimeout(timeoutIdRef.current);
-            timeoutIdRef.current = null;
-          }
-          unsubscribeRef.current();
+      const key = JSON.stringify([tripId, bellRequestId]);
+      if (stopSessionRef.current?.key !== key) {
+        stopSessionRef.current?.flow.cancel();
+        const { targetBeaconId, bleIsMock } = latestRef.current.state;
+        stopSessionRef.current = {
+          key,
+          isMock: bleIsMock ?? true,
+          flow: createBellStopSession({
+            canSend: () => latestRef.current.state.tripId === tripId && !['TRIP_DONE', 'CANCELLED'].includes(latestRef.current.state.tripStatus),
+            isConnected: () => targetBeaconId ? isBellConnected() : Promise.resolve(false),
+            connect: () => targetBeaconId ? connectBell(targetBeaconId, tripId) : Promise.resolve(null),
+            subscribeResult: (onResult) => subscribeBellResult((result) => {
+              console.log('[BLE] 하차벨 결과 Notify 수신:', result.result);
+              onResult(result);
+            }),
+            sendStopRequest,
+          }),
         };
+        resultSentRef.current = false;
+        setBellOutcome('waiting');
       }
-
-      const timer = setTimeout(() => {
-        const ttsMessage = '하차벨을 요청했습니다. 안전하게 하차하세요.';
-        Speech.speak(ttsMessage, {
-          language: 'ko',
-          onDone: () => {
-            requestActualBellStop().catch((error) => {
-              console.log('하차벨 처리 실패:', error);
-            });
-          },
-        });
-      }, 500);
-
+      const current = stopSessionRef.current;
+      // 음성 완료를 기다리지 않고 전송 예산을 즉시 시작한다.
+      if (!latestRef.current.isConnected && latestRef.current.state.tripStatus !== 'TRIP_DONE') {
+        Speech.speak('하차벨을 요청했습니다. 안전하게 하차하세요.', { language: 'ko' });
+      }
+      current.flow.start().then(({ outcome, sendFailed, cancelled }) => {
+        if (!isCurrent() || cancelled) return;
+        void sendBellResult(outcome === 'success' ? 'SUCCESS' : 'FAIL', sendFailed ? true : current.isMock, isCurrent);
+      });
       return () => {
-        clearTimeout(timer);
-        Speech.stop();
+        ++generationRef.current;
         isMountedRef.current = false;
-        if (timeoutIdRef.current) {
-          clearTimeout(timeoutIdRef.current);
-          timeoutIdRef.current = null;
-        }
-        unsubscribeRef.current();
+        current.flow.cancel();
+        if (latestRef.current.state.tripStatus !== 'TRIP_DONE') Speech.stop();
+        if (resultRetryTimerRef.current) { clearTimeout(resultRetryTimerRef.current.timer); resultRetryTimerRef.current.resolve(); resultRetryTimerRef.current = null; }
       };
-    }, [isConnected])
+    }, [tripId, bellRequestId])
   );
-
-  // 결과를 확정하고, 화면·음성 안내를 결과에 맞게 갱신한 뒤 서버에 전송한다.
-  const finalizeBellOutcome = (outcome, isMock) => {
-    if (!isMountedRef.current) return;
-    setBellOutcome(outcome);
-    sendBellResult(outcome === 'success' ? 'SUCCESS' : 'FAIL', isMock);
-  };
-
-  const requestActualBellStop = async () => {
-    const isMock = state.bleIsMock ?? true;
-
-    const handleBellResult = (result) => {
-      console.log('[BLE] 하차벨 결과 Notify 수신:', result);
-
-      if (timeoutIdRef.current) {
-        clearTimeout(timeoutIdRef.current);
-        timeoutIdRef.current = null;
-      }
-      unsubscribeRef.current();
-      finalizeBellOutcome(result.result === 'SUCCESS' ? 'success' : 'fail', isMock);
-    };
-
-    // 하차벨은 탑승 확정 직후 RidingScreen 이 이미 연결해 둔다. 다만 버스 안에서
-    // 흔들리다 끊겼을 수 있으므로, 실제 장치에 연결 여부를 물어보고 끊겼으면 다시
-    // 붙인 뒤에 보낸다. 전송이 실패하면 한 번 더 붙여 다시 보낸다. 곧 내려야 하므로
-    // 여기서 반복하지는 않는다.
-    const { sent, unsubscribe } = await sendStopRequestWithReconnect({
-      isConnected: isBellConnected,
-      connect: () => connectBell(state.targetBeaconId ?? undefined),
-      subscribeResult: () => subscribeBellResult(handleBellResult),
-      sendStopRequest,
-    });
-
-    if (!isMountedRef.current) {
-      unsubscribe();
-      return;
-    }
-
-    unsubscribeRef.current = unsubscribe;
-
-    if (!sent) {
-      // 명령이 나가지 못했다. 결과가 올 리 없으므로 10초를 기다리지 않고 확정한다.
-      // 실제 하차벨이 동작하지 않았으므로 mock 으로 기록한다.
-      console.log('하차벨 STOP_REQUEST 전송 실패 - 결과를 기다리지 않고 실패 처리');
-      finalizeBellOutcome('fail', true);
-      return;
-    }
-
-    timeoutIdRef.current = setTimeout(() => {
-      unsubscribeRef.current();
-      finalizeBellOutcome('fail', isMock);
-    }, BELL_RESULT_TIMEOUT_MS);
-  };
 
   // 하차벨 결과 저장
   // 유나님 확인(2026-08-17): bell/result 저장 성공을 확인한 뒤에만 최신 상태를 조회해서
   // TripContext에 반영하고, Realtime 연결 중일 때만 notifyStatusChange를 호출한다.
   // 저장 실패 상태에서 AI가 성공을 안내하는 일이 없도록, 순서를 절대 바꾸지 않는다.
-  const sendBellResult = async (result, isMock) => {
+  const sendBellResult = async (result, isMock, isCurrent) => {
     if (resultSentRef.current) return; // 중복 전송 방지
     resultSentRef.current = true;
+    const timestamp = new Date().toISOString();
 
     const resultMessage =
       result === 'SUCCESS'
@@ -148,24 +112,45 @@ export default function AlightScreen({ route, navigation }) {
 
     try {
       // 1. bell/result 저장
-      await apiClient.trips.bell.result(tripId, {
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        if (!isCurrent()) return;
+        try {
+          await apiClient.trips.bell.result(tripId, {
         bellRequestId,
         command,
         result,
         resultMessage,
         isMock,
-        timestamp: new Date().toISOString(),
-      });
+        timestamp,
+          });
+          break;
+        } catch (error) {
+          if (!isCurrent()) return;
+          if (attempt === 3 || (error instanceof ApiError && ['BELL_REQUEST_NOT_FOUND', 'INVALID_BELL_STATE'].includes(error.errorCode))) throw error;
+          await new Promise(resolve => { resultRetryTimerRef.current = { resolve, timer: setTimeout(() => { resultRetryTimerRef.current = null; resolve(); }, attempt * 1000) }; });
+        }
+      }
+
+      if (!isCurrent() || latestRef.current.state.tripStatus === 'TRIP_DONE') return;
 
       // 2. 저장 성공 확인 후에만 최신 상태 조회
       const latestStatus = await apiClient.trips.getStatus(tripId);
 
+      if (!isCurrent() || latestRef.current.state.tripStatus === 'TRIP_DONE') return;
+
       // 3. TripContext에 최신 상태 반영
       dispatch({ type: 'UPDATE_TRIP_STATUS', status: latestStatus });
 
-      if (isConnected) {
+      if (['TRIP_DONE', 'CANCELLED'].includes(latestStatus.tripStatus)) return;
+      // 재시도/충돌에서는 서버가 처음 저장한 결과가 물리 결과와 다를 수 있다.
+      // 최신 조회로 확인한 최종 결과만 화면과 음성에 함께 사용한다.
+      const confirmedOutcome = latestStatus.bellStatus === 'SUCCESS' ? 'success'
+        : latestStatus.bellStatus === 'FAIL' ? 'fail' : null;
+      if (!confirmedOutcome) return;
+      setBellOutcome(confirmedOutcome);
+      if (latestRef.current.isConnected) {
         // 4. Realtime 연결 중이면 세션에 알림 (성공/실패 여부와 무관하게, 확정된 결과만 전달)
-        session?.notifyStatusChange({
+        latestRef.current.session?.notifyStatusChange({
           tripStatus: latestStatus.tripStatus,
           remainingStations: latestStatus.remainingStations,
           currentStation: latestStatus.currentStation,
@@ -175,7 +160,7 @@ export default function AlightScreen({ route, navigation }) {
       } else {
         // 5. Realtime 미연결일 때만 로컬 TTS로 확정된 결과 안내
         if (isMountedRef.current) {
-          Speech.speak(BELL_OUTCOME_TTS[result === 'SUCCESS' ? 'success' : 'fail'], { language: 'ko' });
+          Speech.speak(BELL_OUTCOME_TTS[confirmedOutcome], { language: 'ko' });
         }
       }
     } catch (error) {
@@ -191,22 +176,28 @@ export default function AlightScreen({ route, navigation }) {
       }
       // bell/result 저장 실패 — 성공으로 간주하지 않고 재시도 가능하도록 플래그만 되돌린다.
       // 이 경로에서는 notifyStatusChange, 성공 TTS 둘 다 호출하지 않는다.
-      console.log('bell/result 전송 실패:', error);
-      resultSentRef.current = false;
+      console.log('bell/result 저장 실패');
+      if (isCurrent()) setHomeError('하차벨 결과 저장을 확인하지 못했습니다.');
+      if (isCurrent()) resultSentRef.current = false;
     }
   };
 
   // 처음으로 돌아가기 — 다음 운행을 위해 공유 상태 초기화, BLE 연결 해제
-  const handleGoHome = () => {
-    if (timeoutIdRef.current) {
-      clearTimeout(timeoutIdRef.current);
-      timeoutIdRef.current = null;
-    }
-    unsubscribeRef.current();
-    disconnect('White_cane').catch(() => {});
-    disconnect(getBellDeviceName()).catch(() => {});
-    dispatch({ type: 'RESET_TRIP' });
-    navigation.navigate('Main');
+  const handleGoHome = async () => {
+    if (endingRef.current || latestRef.current.state.tripStatus === 'TRIP_DONE') return;
+    endingRef.current = true;
+    setHomeError(null);
+    try {
+      const result = await apiClient.trips.end(tripId, { action: 'CANCEL' });
+      if (!result.success || latestRef.current.state.tripId !== tripId || latestRef.current.state.tripStatus === 'TRIP_DONE') return;
+      ++generationRef.current;
+      isMountedRef.current = false;
+      stopSessionRef.current?.flow.cancel();
+      dispatch({ type: 'RESET_TRIP' });
+      navigation.navigate('Main');
+    } catch {
+      if (latestRef.current.state.tripId === tripId) setHomeError('운행 종료를 확인하지 못했습니다. 다시 시도해 주세요.');
+    } finally { endingRef.current = false; }
   };
 
   return (
@@ -217,7 +208,7 @@ export default function AlightScreen({ route, navigation }) {
         <View style={styles.messageBox}>
           <Text style={styles.messageIcon}>⚠️</Text>
           <Text style={styles.message}>
-            하차벨을 요청했습니다. 안전하게 하차하세요.
+            {state.tripStatus === 'TRIP_DONE' ? state.journeyRoute ? '이번 버스 구간에 도착했습니다. 실제로 내린 뒤 하차를 확인해 주세요.' : TRIP_COMPLETION_MESSAGE : '하차벨을 요청했습니다. 안전하게 하차하세요.'}
           </Text>
         </View>
 
@@ -237,9 +228,11 @@ export default function AlightScreen({ route, navigation }) {
 
       {/* 처음으로 돌아가기 — 위 박스들과 간격을 두고 화면 아래쪽에 고정 */}
       <View style={styles.bottomSection}>
+        {homeError && <Text accessibilityRole="alert" style={styles.infoText}>{homeError}</Text>}
         <TouchableOpacity
           style={styles.button}
           onPress={handleGoHome}
+          disabled={state.tripStatus === 'TRIP_DONE'}
         >
           <Text style={styles.buttonIcon}>🏠</Text>
           <Text style={styles.buttonText}>처음으로 돌아가기</Text>

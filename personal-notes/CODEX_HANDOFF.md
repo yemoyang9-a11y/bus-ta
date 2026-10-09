@@ -1,5 +1,7 @@
 # 백엔드 인수인계 — Codex/Claude Code — 2026-08-20 (Task 24 PR #33 오픈, 리뷰 반영 완료·재검토 대기)
 
+> **2026-09-22 갱신:** 이 문서는 과거 세션별 인수인계 원문이다. 아래의 “지금”, PR 대기, 쿼터 장애, 미착수는 해당 기록 시점의 상태이며 현재 상태로 읽지 않는다. 최신 기준 `57e50ea` 기반 작업은 [리허설 후속 계획](../docs/superpowers/plans/2026-09-22-rehearsal-backlog.md)과 [결과](../docs/superpowers/plans/2026-09-22-rehearsal-results.md)를 따른다. 원본 로컬 환승 변경과 미커밋 파일은 보존했다.
+>
 > **통합 브랜치 head는 PR #21 병합 시점(`5f13b27`) 이후 로컬에서 더 진행됐다.** 이 세션(효린 로컬, 2026-08-20)
 > 시작 시점 HEAD는 `9ff7e61`(PR #32 병합 후)이었다 — **PR #21 이후 원격에 반영된 추가 병합이 있었다는 뜻이다.**
 > Task 24는 브랜치 `hyorin/fix-gbis-duplicate-routeid`(커밋 `bcf6dac`)로 push·**PR #33**(base

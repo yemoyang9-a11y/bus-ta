@@ -1,4 +1,5 @@
 // constants
+export * from "./constants/realtime.js";
 export * from "./constants/api-paths.js";
 export * from "./constants/trip-status.js";
 export * from "./constants/bell-status.js";
@@ -23,6 +24,9 @@ export * from "./schemas/bell.schema.js";
 export * from "./schemas/beacon.schema.js";
 export * from "./schemas/realtime.schema.js";
 export * from "./schemas/health.schema.js";
+
+// utils
+export * from "./utils/route-number-speech.js";
 
 // fixtures
 export * from "./fixtures/demo-route.js";

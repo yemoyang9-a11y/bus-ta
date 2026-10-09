@@ -1,4 +1,6 @@
 import { resetTripKeepingSearch } from "./trip-transition";
+import type { Route } from "@bus-ta/shared";
+import { canStartJourney } from "./transfer-journey";
 
 // 예모님 확정(2026-08-28): 후보 유효시간 5분
 export const ROUTE_CANDIDATES_TTL_MS = 5 * 60 * 1000;
@@ -12,6 +14,10 @@ export const initialState = {
   routeCandidatesExpiresAt: null as number | null,
   announcedCandidateIds: [] as unknown[],
   selectedRoute: null as unknown,
+  journeyRoute: null as Route | null,
+  journeyGeneration: 0,
+  journeySegmentIndex: null as number | null,
+  journeyPhase: null as "GUIDING" | "SUBWAY_ON_BOARD" | "BUS_ALIGHT_CONFIRM" | null,
   tripId: null as string | null,
   tripStatus: null as string | null,
   boardingMethod: null as string | null,
@@ -23,16 +29,32 @@ export const initialState = {
   bellStatus: "NOT_REQUESTED" as string,
   bellRequestId: null as string | null,
   command: null as string | null,
+  shouldTriggerBell: false,
   lastFunctionResult: null as unknown,
   lastInjectedStatus: null as unknown,
+  // 승차 정류장에 오는 차량 정보. 대기 중 GET /status 응답에만 실려 오고, 3초 주기
+  // PATCH /status 응답에는 없다. AI 가 "몇 분 남았어?"에 답할 때 쓰는 최신 근거이므로
+  // 화면 state 가 아니라 공통 상태에 둔다.
+  arrivals: null as unknown[] | null,
+  arrivalStatus: null as string | null,          // AVAILABLE | NO_VEHICLE | NO_PREDICTION | UPSTREAM_ERROR
+  nextArrivalRefreshInMs: null as number | null, // 다음 도착정보 조회까지 기다릴 시간(서버가 정한다)
+  shouldScanBeacon: false,                       // 서버가 판단한 비콘 스캔 시작 신호
   bleIsMock: null as boolean | null,
   beaconScanActive: false,
+
   // 지팡이 연결과 대상 비콘 지정이 끝났는지. 서버의 스캔 시작 신호가 준비보다 먼저
   // 도착할 수 있어서, 준비 완료를 별도 값으로 들고 있어야 그때 스캔을 시작할 수 있다.
   caneReady: false,
+
   // 이번 노선의 하차벨(버스 비콘 겸용) 보드 이름. 서버가 노선별로 내려준다.
   // 탑승이 확정된 뒤 이 이름으로 하차벨을 연결한다.
   targetBeaconId: null as string | null,
+
+  // 비콘 조회/준비 작업 자체가 완료됐는지.
+  // false인 동안에는 targetBeaconId가 아직 늦게 들어올 수 있으므로
+  // targetBeaconId가 null이어도 하차벨 연결 실패로 확정하면 안 된다.
+  beaconPreparationCompleted: false,
+
   // 하차벨 연결 시도의 결과. null 이면 아직 시도하지 않았다는 뜻이다.
   bellConnected: null as boolean | null,
 };
@@ -56,6 +78,60 @@ type TripAction = { type: string; [key: string]: unknown };
  * TripContext.js 는 JSX 를 갖고 있어 테스트에서 불러올 수 없었다. 그래서 reducer 를
  * 여기로 옮겨 실제 dispatch 경로를 테스트로 고정한다.
  */
+// 탑승한 뒤에는 승차 정류장의 도착정보가 의미를 잃는다. 남겨 두면 AI 가 운행 중에도
+// "버스가 3분 뒤 도착합니다"라고 말할 근거를 계속 갖게 된다.
+const CLEARED_ARRIVAL_FIELDS = {
+  arrivals: null,
+  arrivalStatus: null,
+  nextArrivalRefreshInMs: null,
+  shouldScanBeacon: false,
+} satisfies Pick<
+  TripState,
+  "arrivals" | "arrivalStatus" | "nextArrivalRefreshInMs" | "shouldScanBeacon"
+>;
+
+/**
+ * 서버 응답에서 도착정보 네 필드를 어떻게 반영할지 정한다.
+ *
+ * 이 네 필드는 대기 중 GET /status 응답에만 있고 3초 주기 PATCH /status 응답에는 없다.
+ * 없는 값을 그대로 덮어쓰면 GET 이 방금 받아 온 최신 도착시간이 곧바로 지워져, 화면과
+ * AI 가 다시 근거 없는 상태가 된다. 그래서 세 경우로 나눈다.
+ *
+ * 1. 응답에 도착정보가 있으면 그대로 최신 값으로 바꾼다.
+ * 2. 없고 대기 상태도 벗어났으면(탑승 확정·종료) 명시적으로 정리한다.
+ * 3. 없지만 아직 대기 중이면(PATCH 응답) 직전 GET 의 최신 값을 유지한다.
+ *
+ * realtime/event-dispatcher.ts 도 같은 규칙을 쓴다 — 그쪽이 임박 안내의 판정 기준이라
+ * 여기서만 유지하면 안내가 두 번 나간다.
+ */
+function resolveArrivalFields(
+  state: TripState,
+  status: Record<string, unknown>,
+): Pick<
+  TripState,
+  "arrivals" | "arrivalStatus" | "nextArrivalRefreshInMs" | "shouldScanBeacon"
+> {
+  if (status.arrivals !== undefined || status.arrivalStatus !== undefined) {
+    return {
+      arrivals: (status.arrivals as unknown[] | null) ?? null,
+      arrivalStatus: (status.arrivalStatus as string | null) ?? null,
+      nextArrivalRefreshInMs: (status.nextArrivalRefreshInMs as number | null) ?? null,
+      shouldScanBeacon: status.shouldScanBeacon === true,
+    };
+  }
+
+  if (status.tripStatus !== "WAITING_BUS") {
+    return CLEARED_ARRIVAL_FIELDS;
+  }
+
+  return {
+    arrivals: state.arrivals,
+    arrivalStatus: state.arrivalStatus,
+    nextArrivalRefreshInMs: state.nextArrivalRefreshInMs,
+    shouldScanBeacon: state.shouldScanBeacon,
+  };
+}
+
 export function tripReducer(state: TripState, action: TripAction): TripState {
   switch (action.type) {
     case "SET_DESTINATION_AND_ROUTES":
@@ -85,18 +161,79 @@ export function tripReducer(state: TripState, action: TripAction): TripState {
         selectedRoute: action.route,
       };
 
+    case "START_JOURNEY": {
+      const route = action.route as Route;
+      if (state.tripId || state.journeyRoute || !canStartJourney(route)) return state;
+      return { ...state, journeyRoute: route, journeyGeneration: state.journeyGeneration + 1,
+        journeySegmentIndex: 0, journeyPhase: "GUIDING", selectedRoute: null };
+    }
+
+    case "MARK_JOURNEY_BUS_ARRIVED": {
+      const segment = state.journeyRoute?.segments?.[state.journeySegmentIndex ?? -1];
+      if (segment?.mode !== "BUS" || state.tripId !== action.tripId ||
+        state.tripStatus !== "TRIP_DONE" || state.journeyPhase !== "GUIDING") return state;
+      return { ...state, journeyPhase: "BUS_ALIGHT_CONFIRM" };
+    }
+
+    case "CONFIRM_JOURNEY_STEP": {
+      const index = state.journeySegmentIndex;
+      const segments = state.journeyRoute?.segments;
+      if (index === null || !segments || action.expectedIndex !== index ||
+        (action.expectedPhase !== undefined && action.expectedPhase !== state.journeyPhase)) return state;
+      const segment = segments[index];
+      if (!segment) return state;
+      if (segment.mode === "SUBWAY" && state.journeyPhase === "GUIDING") {
+        return { ...state, journeyPhase: "SUBWAY_ON_BOARD" };
+      }
+      if (segment.mode === "BUS" && state.journeyPhase !== "BUS_ALIGHT_CONFIRM") return state;
+      if (segment.mode === "SUBWAY" && state.journeyPhase !== "SUBWAY_ON_BOARD") return state;
+      if (segment.mode === "WALK" && state.journeyPhase !== "GUIDING") return state;
+      if (index + 1 >= segments.length) return { ...initialState, journeyGeneration: state.journeyGeneration,
+        beaconScanActive: state.beaconScanActive };
+      return {
+        ...initialState,
+        journeyGeneration: state.journeyGeneration,
+        destination: state.destination,
+        routeCandidates: state.routeCandidates,
+        routeCandidatesExpiresAt: state.routeCandidatesExpiresAt,
+        announcedCandidateIds: state.announcedCandidateIds,
+        journeyRoute: state.journeyRoute,
+        journeySegmentIndex: index + 1,
+        journeyPhase: "GUIDING",
+        beaconScanActive: state.beaconScanActive,
+      };
+    }
+
     case "START_TRIP":
+      if (state.tripId === action.tripId) return state;
       return {
         ...state,
+        ...CLEARED_ARRIVAL_FIELDS,
+        currentStation: null,
+        nextStation: null,
+        remainingStations: null,
+        guideMessage: null,
+        bellStatus: 'NOT_REQUESTED',
+        bellRequestId: null,
+        command: null,
+        shouldTriggerBell: false,
+        lastInjectedStatus: null,
         tripId: action.tripId as string | null,
         tripStatus: "WAITING_BUS",
+        caneReady: false,
+        beaconScanActive: false,
         boardingMethod: null,
         boardingConfirmedAt: null,
+        targetBeaconId: null,
+        beaconPreparationCompleted: false,
+        bellConnected: null,
       };
 
     case "CONFIRM_BOARDING":
+      if ((action.tripId && action.tripId !== state.tripId) || state.tripStatus === 'TRIP_DONE' || state.tripStatus === 'CANCELLED') return state;
       return {
         ...state,
+        ...CLEARED_ARRIVAL_FIELDS,
         tripStatus: action.tripStatus as string | null,
         boardingMethod: action.boardingMethod as string | null,
         boardingConfirmedAt: action.boardingConfirmedAt as string | null,
@@ -104,8 +241,13 @@ export function tripReducer(state: TripState, action: TripAction): TripState {
 
     case "UPDATE_TRIP_STATUS": {
       const s = (action.status ?? {}) as Record<string, unknown>;
+      if ((s.tripId && s.tripId !== state.tripId) ||
+        (state.tripStatus === 'TRIP_DONE' && s.tripStatus !== 'TRIP_DONE') ||
+        (state.tripStatus === 'CANCELLED' && s.tripStatus !== 'CANCELLED') ||
+        (state.boardingConfirmedAt && s.tripStatus === 'WAITING_BUS')) return state;
       return {
         ...state,
+        ...resolveArrivalFields(state, s),
         tripStatus: s.tripStatus as string | null,
         boardingMethod: s.boardingMethod as string | null,
         boardingConfirmedAt: s.boardingConfirmedAt as string | null,
@@ -116,6 +258,7 @@ export function tripReducer(state: TripState, action: TripAction): TripState {
         bellStatus: s.bellStatus as string,
         bellRequestId: s.bellRequestId as string | null,
         command: s.command as string | null,
+        shouldTriggerBell: s.shouldTriggerBell === true,
       };
     }
 
@@ -150,6 +293,12 @@ export function tripReducer(state: TripState, action: TripAction): TripState {
         targetBeaconId: action.targetBeaconId as string | null,
       };
 
+    case "SET_BEACON_PREPARATION_COMPLETED":
+      return {
+        ...state,
+        beaconPreparationCompleted: action.completed as boolean,
+      };
+
     case "SET_BELL_CONNECTED":
       return {
         ...state,
@@ -158,12 +307,13 @@ export function tripReducer(state: TripState, action: TripAction): TripState {
 
     // 운행만 종료하고, 유효한 기존 목적지·후보 노선(및 TTL, 안내 기록)은 유지한다.
     case "RESET_TRIP_KEEP_SEARCH":
-      return resetTripKeepingSearch(initialState, state);
+      return { ...resetTripKeepingSearch(initialState, state), journeyGeneration: state.journeyGeneration };
 
     // TRIP_DONE, TRIP_NOT_FOUND 발생 시 호출 — 다음 운행을 위해 전체 초기화
     case "RESET_TRIP":
       return {
         ...initialState,
+        journeyGeneration: state.journeyGeneration,
         beaconScanActive: state.beaconScanActive,
       };
 

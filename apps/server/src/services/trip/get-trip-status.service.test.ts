@@ -471,3 +471,61 @@ test("탑승 뒤 응답도 공유 스키마를 통과한다 — 네 필드는 �
     assert.equal(field in result.body, false, `${field} 는 대기 중에만 실려야 한다`);
   }
 });
+
+test("NO_PREDICTION 응답도 공유 스키마를 통과한다", async () => {
+  // 서버와 docs/ARRIVAL_POLLING.md 는 NO_PREDICTION 을 쓰는데 공유 ArrivalStatusSchema 에는
+  // 없었다. 계약이 거짓이면 앱이 "레코드는 있는데 시간만 없음"을 읽을 근거가 사라진다.
+  const result = await getTripStatus("trip-1", {
+    findTripProgressData: async () => waitingBusProgress(),
+    getArrivals: async () => ({
+      arrivals: [],
+      arrivalStatus: "NO_PREDICTION" as const,
+      nextRefreshInMs: 20_000,
+    }),
+    now: () => "2026-09-01T00:00:00.000+09:00",
+  });
+
+  const parsed = TripStatusResponseSchema.safeParse(result.body);
+  assert.equal(
+    parsed.success,
+    true,
+    parsed.success ? "" : JSON.stringify(parsed.error.issues),
+  );
+  if (!parsed.success) return;
+  assert.equal(parsed.data.arrivalStatus, "NO_PREDICTION");
+});
+
+// ── 진단 로그 ─────────────────────────────────────────────────────────
+// 서버가 실제로 무엇을 응답했는지 남겨 두어야, "앱은 5분인데 서버는?"을 나중에
+// 로그만으로 가를 수 있다. 좌표·키·외부 URL 은 남기지 않는다.
+test("상태 조회 요청과 응답을 안전한 필드만으로 남긴다", async (t) => {
+  const lines: string[] = [];
+  t.mock.method(console, "log", (...args: unknown[]) => {
+    lines.push(args.map(String).join(" "));
+  });
+
+  await getTripStatus("trip-1", {
+    findTripProgressData: async () => waitingBusProgress(),
+    getArrivals: async () => ({
+      arrivals: [arrivalAfter(3), arrivalAfter(12)],
+      arrivalStatus: "AVAILABLE" as const,
+      nextRefreshInMs: 30_000,
+    }),
+    refreshArrivals: true,
+    now: () => "2026-09-01T00:00:00.000+09:00",
+  });
+
+  const request = lines.find((line) => line.includes("[server/trip-status] request"));
+  const response = lines.find((line) => line.includes("[server/trip-status] response"));
+
+  assert.ok(request, `요청 로그가 없다: ${JSON.stringify(lines)}`);
+  assert.match(request, /tripId=trip-1/);
+  assert.match(request, /refreshArrivals=true/);
+
+  assert.ok(response, `응답 로그가 없다: ${JSON.stringify(lines)}`);
+  assert.match(response, /tripStatus=WAITING_BUS/);
+  assert.match(response, /arrivalStatus=AVAILABLE/);
+  assert.match(response, /predictedArrivalMinutes=\[3,12\]/);
+  assert.match(response, /nextArrivalRefreshInMs=30000/);
+  assert.doesNotMatch(response, /serviceKey|https?:/i);
+});

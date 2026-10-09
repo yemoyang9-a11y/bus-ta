@@ -1,4 +1,5 @@
 import React, { useEffect } from 'react';
+import { useIsFocused } from '@react-navigation/native';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { useRealtime } from '../realtime/RealtimeProvider';
 import { useTrip } from '../state/TripContext';
@@ -9,7 +10,8 @@ import { getTripNavigationTarget } from '../state/trip-transition';
 export default function MainScreen({ navigation }) {
   const { connect, connectionStatus, connectionError } = useRealtime();
   const { state } = useTrip();
-  const { destination, routeCandidates, selectedRoute, tripId } = state;
+  const isFocused = useIsFocused();
+  const { destination, routeCandidates, selectedRoute, tripId, journeyRoute, journeyPhase } = state;
 
   useEffect(() => {
     connect().catch(() => {
@@ -19,6 +21,12 @@ export default function MainScreen({ navigation }) {
 
   // Function 결과는 TripContext에 저장된다. 이 화면은 그 단일 상태를 보고 이동한다.
   useEffect(() => {
+    if (!isFocused) return;
+    if (journeyRoute) {
+      navigation.navigate(journeyPhase === 'BUS_ALIGHT_CONFIRM' || !tripId ? 'Transfer' : 'Riding',
+        journeyPhase === 'BUS_ALIGHT_CONFIRM' || !tripId ? undefined : { tripId, selectedRoute });
+      return;
+    }
     const target = getTripNavigationTarget({ tripId, routeCandidates });
 
     if (target === 'Riding') {
@@ -29,7 +37,7 @@ export default function MainScreen({ navigation }) {
     if (target === 'RouteList') {
       navigation.navigate('RouteList');
     }
-  }, [tripId, routeCandidates, navigation, selectedRoute]);
+  }, [tripId, routeCandidates, navigation, selectedRoute, journeyRoute, journeyPhase, isFocused]);
 
   const handleRetry = () => {
     connect().catch(() => {});
@@ -39,6 +47,7 @@ export default function MainScreen({ navigation }) {
     if (connectionStatus === 'connecting') return '음성 연결 중...';
     if (connectionStatus === 'error') return `연결 실패: ${connectionError ?? '알 수 없는 오류'}`;
     if (connectionStatus !== 'connected') return '연결 대기 중';
+    if (journeyRoute) return '환승 안내 중';
     if (tripId) return '운행 안내 중';
     if (selectedRoute) return '노선을 확인하는 중...';
     if (routeCandidates && routeCandidates.length > 0) return '노선을 선택해주세요';

@@ -1,4 +1,6 @@
 import type {
+  ArrivalInfo,
+  ArrivalStatus,
   BoardingMethod,
   CreateTripRequest,
   RealtimeSessionResponse,
@@ -9,6 +11,10 @@ export type RealtimeFunctionName =
   | "search_routes"
   | "get_next_route_candidates"
   | "create_trip"
+  | "start_journey"
+  | "confirm_journey_step"
+  | "start_journey_bus"
+  | "cancel_journey"
   | "confirm_boarding"
   | "get_trip_status"
   | "end_trip";
@@ -33,6 +39,16 @@ export type TripStatusSnapshot = {
   currentStation: { stationName: string } | null;
   bellStatus: string;
   guideMessage: string | null;
+  /**
+   * 승차 정류장에 오는 차량 정보. 대기 중 GET /status 응답에만 실려 온다.
+   *
+   * 3초 주기 PATCH /status 응답에는 이 세 필드가 아예 없어서 `undefined` 로 온다.
+   * 그때 직전 값을 지우면 임박 판정 기준이 사라지므로, event-dispatcher 가
+   * 마지막으로 확인된 값을 이어 받는다.
+   */
+  arrivalStatus?: ArrivalStatus | null;
+  arrivals?: ArrivalInfo[] | null;
+  nextArrivalRefreshInMs?: number | null;
 };
 
 // 서버 상태 변화를 세션에 알리는 시스템 이벤트
@@ -45,6 +61,12 @@ export type TripStatusChangedEvent = {
   currentStationName: string | null;
   bellStatus: string;
   guideMessage: string | null;
+  /**
+   * 이 이벤트를 만든 시점의 도착정보. 안내 판단은 배열이 비었는지가 아니라
+   * arrivalStatus 를 기준으로 한다 — 조회 실패도 빈 배열로 오기 때문이다.
+   */
+  arrivalStatus: ArrivalStatus | null;
+  predictedArrivalMinutes: number[];
 };
 
 export type AssistDevice = "CANE" | "BELL" | "BOTH";
@@ -64,10 +86,14 @@ export type AssistDeviceStatusChangedEvent = {
   reason: AssistDeviceFailureReason;
   attempted: boolean;
   retryable: boolean;
+  attempts?: number;
 };
 
 // TripContext(state/TripContext.js)의 state 구조와 대응한다.
 export type AppTripState = {
+  caneReady?: boolean;
+  beaconScanActive?: boolean;
+  targetBeaconId?: string | null;
   destination: string | null;
   routeCandidates: Route[] | null;
 
@@ -80,6 +106,10 @@ export type AppTripState = {
   announcedCandidateIds: number[];
 
   selectedRoute: Route | null;
+  journeyRoute?: Route | null;
+  journeyGeneration?: number;
+  journeySegmentIndex?: number | null;
+  journeyPhase?: "GUIDING" | "SUBWAY_ON_BOARD" | "BUS_ALIGHT_CONFIRM" | null;
   tripId: string | null;
   tripStatus: string | null;
   boardingMethod: BoardingMethod | null;
@@ -93,6 +123,12 @@ export type AppTripState = {
   command: string | null;
   lastFunctionResult: unknown;
   lastInjectedStatus: TripStatusSnapshot | null;
+  // 대기 중 GET /status 가 갱신하는 최신 도착정보. PATCH 응답에는 없으므로
+  // reducer(state/trip-reducer.js)가 직전 값을 유지한다.
+  arrivals?: ArrivalInfo[] | null;
+  arrivalStatus?: ArrivalStatus | null;
+  nextArrivalRefreshInMs?: number | null;
+  shouldScanBeacon?: boolean;
 };
 
 export type AppAction =
@@ -108,9 +144,13 @@ export type AppAction =
       candidateIds: number[];
     }
   | { type: "SELECT_ROUTE"; route: Route }
+  | { type: "START_JOURNEY"; route: Route }
+  | { type: "MARK_JOURNEY_BUS_ARRIVED"; tripId: string }
+  | { type: "CONFIRM_JOURNEY_STEP"; expectedIndex: number; expectedPhase?: "GUIDING" | "SUBWAY_ON_BOARD" | "BUS_ALIGHT_CONFIRM" }
   | { type: "START_TRIP"; tripId: string }
   | {
       type: "CONFIRM_BOARDING";
+      tripId?: string;
       tripStatus: "ON_BUS" | "NEAR_DESTINATION";
       boardingMethod: BoardingMethod;
       boardingConfirmedAt: string;
@@ -122,6 +162,7 @@ export type AppAction =
   | { type: "SET_CANE_READY"; ready: boolean }
   | { type: "SET_BEACON_SCAN_ACTIVE"; active: boolean }
   | { type: "SET_TARGET_BEACON_ID"; targetBeaconId: string | null }
+  | { type: "SET_BEACON_PREPARATION_COMPLETED"; completed: boolean }
   | { type: "SET_BELL_CONNECTED"; connected: boolean | null }
   | {
       // 예모님 지적(2026-08-28): 음성 end_trip(사용자 취소) 성공 시,

@@ -1,4 +1,6 @@
 import { readSupabaseConfig, type SupabaseConfig } from "../../config/supabase.js";
+import { TRIP_STATUS } from "@bus-ta/shared";
+import { z } from "zod";
 import type {
   CreateTripWithStatusInput,
   TripCreationRepository,
@@ -17,9 +19,9 @@ import {
   UpdateTripStatusRepository,
 } from "../../services/trip/update-trip-status.service.js";
 import type {
-  BellRequestLookup,
   BellResultRepository,
   SaveBellResultInput,
+  SaveBellResultResult,
 } from "../../services/trip/bell-result.service.js";
 import type {
   EndTripRepository,
@@ -34,6 +36,18 @@ import type {
 
 type Env = Partial<Record<string, string | undefined>>;
 type FetchLike = (input: string | URL, init?: RequestInit) => Promise<Response>;
+
+const savedBellResultSchema = z.union([
+  z.object({ outcome: z.literal("BELL_REQUEST_NOT_FOUND") }),
+  z.object({ outcome: z.literal("INVALID_BELL_STATE") }),
+  z.object({
+    outcome: z.enum(["SAVED", "ALREADY_RECORDED"]),
+    tripId: z.string(),
+    bellRequestId: z.string(),
+    bellStatus: z.enum(["SUCCESS", "FAIL"]),
+    tripStatus: z.nativeEnum(TRIP_STATUS),
+  }),
+]);
 
 export function createSupabaseTripRepositoryFromEnv(
   env: Env = process.env,
@@ -223,57 +237,30 @@ export class SupabaseTripRepository
     throw new Error("Supabase boarding transaction returned an invalid result");
   }
 
-  async findBellRequest(tripId: string, bellRequestId: string): Promise<BellRequestLookup | null> {
-    const bellRows = await this.selectRows(
-      "bell_logs",
-      `trip_id=eq.${encodeURIComponent(tripId)}&bell_request_id=eq.${encodeURIComponent(bellRequestId)}`,
-    );
-    const bell = bellRows[0];
-    if (!bell) {
-      return null;
-    }
-
-    const statusRows = await this.selectRows("trip_status", `trip_id=eq.${encodeURIComponent(tripId)}`);
-    const status = statusRows[0];
-    if (!status) {
-      return null;
-    }
-
-    return {
-      tripId: readString(bell, "trip_id"),
-      bellRequestId: readString(bell, "bell_request_id"),
-      result: readBellResult(bell, "result"),
-      bellStatus: readString(status, "bell_status"),
-      tripStatus: readString(status, "trip_status"),
-    };
-  }
-
-  async saveBellResult(data: SaveBellResultInput): Promise<void> {
-    await this.patch(
-      "bell_logs",
-      `trip_id=eq.${encodeURIComponent(data.tripId)}&bell_request_id=eq.${encodeURIComponent(data.bellRequestId)}`,
-      {
-        result: data.result,
-        message: data.resultMessage,
-        is_mock: data.isMock,
-        completed_at: data.completedAt,
-      },
-    );
-    await this.patch("trip_status", `trip_id=eq.${encodeURIComponent(data.tripId)}`, {
-      bell_status: data.bellStatus,
-      updated_at: data.completedAt,
+  async saveBellResult(data: SaveBellResultInput): Promise<SaveBellResultResult> {
+    const response = await this.fetchImpl(`${this.config.url}/rest/v1/rpc/record_bell_result`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify({
+        p_trip_id: data.tripId,
+        p_bell_request_id: data.bellRequestId,
+        p_result: data.result,
+        p_message: data.resultMessage,
+        p_is_mock: data.isMock,
+        p_completed_at: data.completedAt,
+      }),
     });
-  }
-
-  async reconcileBellStatus(
-    tripId: string,
-    bellStatus: "SUCCESS" | "FAIL",
-    completedAt: string,
-  ): Promise<void> {
-    await this.patch("trip_status", `trip_id=eq.${encodeURIComponent(tripId)}`, {
-      bell_status: bellStatus,
-      updated_at: completedAt,
-    });
+    if (!response.ok) {
+      throw new Error(`Supabase bell result transaction failed: ${response.status}`);
+    }
+    const body: unknown = await response.json();
+    const parsed = savedBellResultSchema.safeParse(body);
+    if (!parsed.success) throw new Error("Supabase bell result transaction returned an invalid result");
+    const saved = parsed.data;
+    if ("tripId" in saved && (saved.tripId !== data.tripId || saved.bellRequestId !== data.bellRequestId)) {
+      throw new Error("Supabase bell result transaction returned mismatched identifiers");
+    }
+    return saved;
   }
 
   async saveTripStatus(data: SaveEndTripStatusInput): Promise<SaveEndTripStatusResult> {
@@ -315,21 +302,6 @@ export class SupabaseTripRepository
 
     if (!response.ok) {
       throw new Error(`Supabase insert failed for ${table}: ${response.status}`);
-    }
-  }
-
-  private async patch(table: string, query: string, row: Record<string, unknown>) {
-    const response = await this.fetchImpl(`${this.config.url}/rest/v1/${table}?${query}`, {
-      method: "PATCH",
-      headers: {
-        ...this.headers(),
-        Prefer: "return=minimal",
-      },
-      body: JSON.stringify(row),
-    });
-
-    if (!response.ok) {
-      throw new Error(`Supabase update failed for ${table}: ${response.status}`);
     }
   }
 
@@ -482,13 +454,6 @@ function readNullableBoardingMethod(row: Record<string, unknown>, key: string) {
   if (value === null || value === undefined) return null;
   if (value === "USER_CONFIRMED" || value === "AUTO_DETECTED") return value;
   throw new Error(`Expected ${key} to be a boarding method or null`);
-}
-
-function readBellResult(row: Record<string, unknown>, key: string) {
-  const value = row[key];
-  if (value === null || value === undefined) return null;
-  if (value === "SUCCESS" || value === "FAIL") return value;
-  throw new Error(`Expected ${key} to be SUCCESS, FAIL, or null`);
 }
 
 function readNumber(row: Record<string, unknown>, key: string) {

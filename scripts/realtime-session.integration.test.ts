@@ -20,6 +20,7 @@ function createSessionHarness() {
   const state: AppTripState = {
     destination: "수원대학교",
     routeCandidates: null,
+    routeCandidatesExpiresAt: null,
     announcedCandidateIds: [],
     selectedRoute: null,
     tripId: null,

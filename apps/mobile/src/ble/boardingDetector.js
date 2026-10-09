@@ -40,6 +40,7 @@ const BOARDING_DETECTION_CONFIG = {
  * @returns {{
  *   ingest: (sample: { rssi: number, beaconId?: string, timestamp?: number }) => void,
  *   reset: () => void,
+ *   onConfirmed: (callback: (sample: {rssi: number, beaconId?: string, detectedAt: string}) => void) => void,
  * }}
  */
 export function createBoardingDetector(config = {}) {
