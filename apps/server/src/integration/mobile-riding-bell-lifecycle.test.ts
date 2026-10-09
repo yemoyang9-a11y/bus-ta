@@ -11,6 +11,10 @@ import ts from 'typescript';
 import * as assistStatus from '../../../mobile/src/realtime/assist-device-status.js';
 import * as bellController from '../../../mobile/src/ble/bell-connect-controller.js';
 import * as statusSnapshot from '../../../mobile/src/realtime/status-snapshot.js';
+import * as oneStopGuide from '../../../mobile/src/realtime/one-stop-alight-guide.js';
+import * as safeSpeech from '../../../mobile/src/realtime/safe-speech.js';
+import * as voiceRecovery from '../../../mobile/src/realtime/voice-recovery.js';
+import * as connectBestEffort from '../../../mobile/src/realtime/connect-best-effort.js';
 
 const flush = async () => { for (let i = 0; i < 50; i++) await Promise.resolve(); };
 
@@ -64,22 +68,33 @@ function load(path: string, modules: Record<string, unknown>) {
   return exports;
 }
 
-function setup(options: { gps?: boolean; auto?: boolean; offlineCompletion?: boolean } = {}) {
+function setup(options: { gps?: boolean; auto?: boolean; offlineCompletion?: boolean; holdGuide?: boolean; localGuide?: boolean; localGuideError?: boolean; journey?: boolean } = {}) {
   const providerHooks = hooks();
   const screenHooks = hooks();
   let state: any = { tripId: 'A', tripStatus: 'ON_BUS', boardingConfirmedAt: 'now', bellConnected: null,
     targetBeaconId: 'BUS_A', beaconPreparationCompleted: true, beaconScanActive: false };
   if(options.auto) state={...state,tripStatus:'WAITING_BUS',boardingConfirmedAt:null,caneReady:true,beaconScanActive:true};
+  if(options.journey) state={...state,journeyRoute:{segments:[{mode:'BUS'}]},journeySegmentIndex:0,journeyPhase:'GUIDING'};
+  let focused = true;
+  let guideDone: (() => void) | undefined;
+  let resolveGuide: (value: boolean) => void = () => {};
   let locationCallback:any, caneCallback:any, resolveCompletion:()=>void=()=>{}, speechOptions:any;
   let nextStatus:any={tripId:'A',tripStatus:'NEAR_DESTINATION',boardingConfirmedAt:'now',bellStatus:'PENDING',shouldTriggerBell:true,remainingStations:1,bellRequestId:'bell-A',command:'STOP_REQUEST'};
   let confirmation:any=null;
   let clock=Date.now();
   let delivered = true;
+  let voiceFailure = false;
+  let pendingVoice: Promise<void> | undefined;
   let realtime: any;
   let ridingFocusCleanup = () => {};
-  const calls = { events: [] as any[], speech: [] as string[], speechStops: 0, releases: [] as string[], connects: 0, actions: [] as any[], patches: [] as any[], gpsRemoved: 0, autoRemoved: 0, autoRequests: [] as any[], completions: 0, navigations: [] as any[] };
+  const calls = { voiceConnects:0,voiceCloses:0,voiceSyncs:0,readyFlags:[] as boolean[],guides: 0, events: [] as any[], speech: [] as string[], speechStops: 0, releases: [] as string[], connects: 0, actions: [] as any[], patches: [] as any[], gpsRemoved: 0, autoRemoved: 0, autoRequests: [] as any[], completions: 0, navigations: [] as any[] };
   const shared = {
-    'expo-speech': { speak: (message: string, options:any) => {calls.speech.push(message);speechOptions=options;if(message!==tracking.TRIP_COMPLETION_MESSAGE)options?.onDone?.();}, stop() { calls.speechStops++; } },
+    'expo-speech': { speak: (message: string, speech:any) => {
+      calls.speech.push(message);speechOptions=speech;
+      if(message===oneStopGuide.ONE_STOP_GUIDE_MESSAGE && options.localGuideError) speech.onError();
+      else if(message===oneStopGuide.ONE_STOP_GUIDE_MESSAGE && options.holdGuide) guideDone=speech.onDone;
+      else if(message!==tracking.TRIP_COMPLETION_MESSAGE) speech?.onDone?.();
+    }, stop() { calls.speechStops++; } },
     'expo-location': {
       Accuracy:{High:1},requestForegroundPermissionsAsync: () => options.gps ? Promise.resolve({status:'granted'}) : new Promise(() => {}),
       watchPositionAsync: async (_options:any,callback:any) => {locationCallback=callback;return {remove(){calls.gpsRemoved++;}};},
@@ -98,12 +113,26 @@ function setup(options: { gps?: boolean; auto?: boolean; offlineCompletion?: boo
   const Provider = load('../../../mobile/src/realtime/RealtimeProvider.tsx', {
     ...shared, react: providerHooks.React,
     './session': { HaneumRealtimeSession: class {
+      private active: {close:()=>void}|null=null;
+      constructor(_context:any,private onClose:()=>void) {}
+      recoverOutput() { return true; }
+      hasOutputCleanupFailure() { return false; }
+      restoreActiveContext() {calls.voiceSyncs++;}
+      handleTransportClose() {this.active?.close();this.active=null;this.onClose();}
+      async connectWebRTC(_secret:any,_timeout:any,_signal:any,ready=true) {
+        calls.voiceConnects++;calls.readyFlags.push(ready);
+        if(pendingVoice)await pendingVoice;
+        if(voiceFailure)throw Error('voice network');
+        this.active={close(){calls.voiceCloses++;}};return this.active;
+      }
       notifyStatusChange() {}
       cancelTripCompletion() {}
+      cancelOneStopGuide() { resolveGuide(false); }
+      announceOneStopGuide() { calls.guides++; return options.holdGuide ? new Promise<boolean>(resolve => { resolveGuide=resolve; }) : Promise.resolve(true); }
       announceTripCompletion() {calls.completions++;return options.offlineCompletion ? Promise.resolve(false) : new Promise<boolean>(resolve=>{resolveCompletion=()=>resolve(true);});}
       notifyAssistDeviceStatusChange(event: any) { calls.events.push(event); return delivered; } } },
     './context': { createRealtimeGuideContext: () => ({}) },
-    './connect-best-effort': {},
+    './connect-best-effort': connectBestEffort,
     './location-refresh': { createLocationRefreshCoordinator: () => async () => {} },
     './assist-device-preparation': { createAssistDevicePreparation: () => ({ prepare() {}, release() {} }) },
     './assist-device-status': assistStatus,
@@ -111,13 +140,15 @@ function setup(options: { gps?: boolean; auto?: boolean; offlineCompletion?: boo
     './status-snapshot': statusSnapshot,
     './automatic-boarding': {createAutomaticBoarding:(deps:any)=>automaticBoarding.createAutomaticBoarding({...deps,now:()=>clock})},
     './completion-speech': completionSpeech,
+    './safe-speech': safeSpeech,
+    './voice-recovery': voiceRecovery,
     '../ble/cane-release-controller': caneRelease,
   }).RealtimeProvider;
   const Screen = load('../../../mobile/src/screens/RidingScreen.js', {
     ...shared,
     react: screenHooks.React,
     'react-native': { StyleSheet: { create: (value: unknown) => value } },
-    '@react-navigation/native': { useFocusEffect(callback: () => void | (() => void)) { ridingFocusCleanup = callback() ?? (() => {}); }, useIsFocused: () => true },
+    '@react-navigation/native': { useFocusEffect(callback: () => void | (() => void)) { ridingFocusCleanup = callback() ?? (() => {}); }, useIsFocused: () => focused },
     '../state/trip-transition': {
       isScreenTripActive: (active: string, screen: string) => active === screen,
     },
@@ -125,12 +156,25 @@ function setup(options: { gps?: boolean; auto?: boolean; offlineCompletion?: boo
     '../realtime/assist-device-status': assistStatus,
     '../realtime/status-snapshot': statusSnapshot,
     '../realtime/trip-tracking': tracking,
+    '../realtime/one-stop-alight-guide': oneStopGuide,
+    '../realtime/safe-speech': safeSpeech,
+    '../realtime/VoiceRecoveryControl': {default:()=>null},
     '../ble/beacon-scan-gate': { canStartBeaconScan: () => false },
     '../ble/beacon-scan-controller': {},
     '../ble/bell-connect-controller': bellController,
   }).default;
   return {
     calls,
+    connectVoice:()=>realtime.connect(),
+    recoverVoice:(signal?:AbortSignal)=>realtime.recoverVoice(signal),
+    disconnectVoice:()=>realtime.session.handleTransportClose(),
+    failVoice:()=>{voiceFailure=true;},
+    holdVoice:(promise:Promise<void>)=>{pendingVoice=promise;},
+    guideDone: () => resolveGuide(true),
+    captureGuideDone: () => { const resolve = resolveGuide; return () => resolve(true); },
+    guideFailed: () => resolveGuide(false),
+    localGuideDone: () => guideDone?.(),
+    blur: () => { focused=false; },
     setStatus: (value:any)=>{nextStatus=value;},
     sampleLocation:()=>locationCallback({timestamp:Date.now(),coords:{latitude:37,longitude:127}}),
     sampleCane:()=>{clock+=1000;caneCallback({rssi:-50,beaconId:state.targetBeaconId,timestamp:clock});},
@@ -141,7 +185,7 @@ function setup(options: { gps?: boolean; auto?: boolean; offlineCompletion?: boo
       realtime = providerHooks.render(() => Provider({ children: null })).props.value;
     },
     screen(tripId = state.tripId) {
-      if(options.gps && !options.offlineCompletion) realtime.isConnected=true;
+      if(options.gps && !options.offlineCompletion && !options.localGuide) realtime.isConnected=true;
       screenHooks.render(() => Screen({ route: { params: { tripId } }, navigation: {navigate:(...args:any[])=>calls.navigations.push(args)} }));
     },
     offline() { delivered = false; },
@@ -149,6 +193,109 @@ function setup(options: { gps?: boolean; auto?: boolean; offlineCompletion?: boo
     dispose() { ridingFocusCleanup(); screenHooks.unmount(); providerHooks.unmount(); },
     get state() { return state; },
   };
+}
+
+test('real Provider reconnects explicitly after disconnect without duplicate startup speech',async()=>{
+  const app=setup();app.provider();await app.connectVoice();assert.equal(app.calls.voiceConnects,1);
+  app.disconnectVoice();await flush();assert.equal(app.calls.voiceConnects,1);
+  const first=app.recoverVoice();assert.equal(app.recoverVoice(),first);assert.equal(await first,true);
+  assert.equal(app.calls.voiceConnects,2);assert.deepEqual(app.calls.readyFlags,[true,false]);
+  assert.equal(app.calls.voiceSyncs,1);assert.equal(await app.recoverVoice(),true);assert.equal(app.calls.voiceConnects,2);
+  app.dispose();
+});
+test('real Provider recovery failure does not block one-stop screen transition',async()=>{
+  const app=setup({gps:true,holdGuide:true});app.provider();app.screen();await flush();
+  await app.sampleLocation();app.provider();app.screen();await flush();app.guideFailed();await flush();
+  app.localGuideDone();await flush();assert.equal(app.calls.navigations.length,1);
+  app.failVoice();assert.equal(await app.recoverVoice(),false);assert.equal(app.calls.voiceConnects,1);
+  assert.equal(app.calls.navigations.length,1);app.dispose();
+});
+test('real Provider cancels late recovery after trip replacement',async()=>{
+  const app=setup();app.provider();let release!:()=>void;
+  app.holdVoice(new Promise<void>(resolve=>{release=resolve;}));
+  const pending=app.recoverVoice();await flush();app.provider({...app.state,tripId:'B'});
+  release();assert.equal(await pending,false);assert.equal(app.calls.voiceCloses,1);assert.equal(app.calls.voiceSyncs,0);app.dispose();
+});
+
+for (const journey of [false, true]) {
+  test(`one-stop speech holds Riding until playback finishes (journey=${journey})`, async () => {
+    const app=setup({gps:true,holdGuide:true,journey});app.provider();app.screen();await flush();
+    await app.sampleLocation();app.provider();app.screen();await flush();
+    assert.equal(app.calls.guides,1);assert.equal(app.calls.navigations.length,0);
+    app.setStatus({...app.state,shouldTriggerBell:false});
+    await app.sampleLocation();app.provider();app.screen();await flush();
+    assert.equal(app.calls.guides,1);assert.equal(app.calls.navigations.length,0);
+    app.guideDone();await flush();
+    assert.equal(app.calls.navigations.length,1);assert.equal(app.calls.navigations[0][0],'Alight');
+    assert.equal(app.calls.navigations[0][1].bellRequestId,'bell-A');
+    assert.equal(app.calls.navigations[0][1].command,'STOP_REQUEST');
+    app.screen();await flush();assert.equal(app.calls.navigations.length,1);app.dispose();
+  });
+}
+
+test('offline one-stop guide waits for the actual local TTS onDone', async () => {
+  const app=setup({gps:true,holdGuide:true,localGuide:true});app.provider();app.screen();await flush();
+  await app.sampleLocation();app.provider();app.screen();await flush();
+  assert.equal(app.calls.guides,0);assert.equal(app.calls.navigations.length,0);
+  assert.equal(app.calls.speech.at(-1),oneStopGuide.ONE_STOP_GUIDE_MESSAGE);
+  app.localGuideDone();await flush();assert.equal(app.calls.navigations.length,1);app.dispose();
+});
+
+test('Realtime playback failure holds Riding during local fallback and then navigates once',async()=>{
+  const app=setup({gps:true,holdGuide:true});app.provider();app.screen();await flush();
+  await app.sampleLocation();app.provider();app.screen();await flush();app.guideFailed();await flush();
+  assert.equal(app.calls.navigations.length,0);assert.equal(app.calls.speech.at(-1),oneStopGuide.ONE_STOP_GUIDE_MESSAGE);
+  app.localGuideDone();await flush();assert.equal(app.calls.navigations.length,1);app.dispose();
+});
+
+test('failed Realtime request and late completion cannot navigate Riding twice',async()=>{
+  const app=setup({gps:true,holdGuide:true});app.provider();app.screen();await flush();
+  await app.sampleLocation();app.provider();app.screen();await flush();
+  const lateDone=app.captureGuideDone();app.guideFailed();await flush();
+  lateDone();assert.equal(app.calls.navigations.length,0);
+  app.localGuideDone();app.localGuideDone();await flush();lateDone();await flush();
+  assert.equal(app.calls.navigations.length,1);app.dispose();
+});
+
+test('local playback failure proceeds with explicit unavailable result and original bell request',async()=>{
+  const app=setup({gps:true,localGuide:true,localGuideError:true});app.provider();app.screen();await flush();
+  await app.sampleLocation();app.provider();app.screen();await flush();
+  assert.equal(app.calls.navigations.length,1);assert.equal(app.calls.navigations[0][1].guidePlayback,'unavailable');
+  assert.equal(app.calls.navigations[0][1].bellRequestId,'bell-A');app.dispose();
+});
+
+for(const invalid of [
+  {remainingStations:2}, {boardingConfirmedAt:null}, {bellRequestId:null}, {command:null}, {bellStatus:'SUCCESS'},
+]) {
+  test(`one-stop detection rejects incomplete state ${JSON.stringify(invalid)}`,async()=>{
+    const app=setup({gps:true,holdGuide:true});app.provider();app.screen();await flush();
+    app.setStatus({tripId:'A',tripStatus:'NEAR_DESTINATION',boardingConfirmedAt:'now',bellStatus:'PENDING',remainingStations:1,bellRequestId:'bell-A',command:'STOP_REQUEST',...invalid});
+    await app.sampleLocation();app.provider();app.screen();await flush();
+    assert.equal(app.calls.guides,0);assert.equal(app.calls.navigations.length,0);app.dispose();
+  });
+}
+
+for(const boundary of ['blur','replacement','done','cancelled'] as const) {
+  test(`old one-stop callback cannot navigate after ${boundary}`,async()=>{
+    const app=setup({gps:true,holdGuide:true});app.provider();app.screen();await flush();
+    await app.sampleLocation();app.provider();app.screen();await flush();
+    if(boundary==='blur') app.blur();
+    else app.provider({...app.state,...(boundary==='replacement'?{tripId:'B'}:{tripStatus:boundary==='done'?'TRIP_DONE':'CANCELLED'})});
+    app.screen('A');app.guideDone();await flush();
+    assert.equal(app.calls.navigations.some(args=>args[0]==='Alight'),false);app.dispose();
+  });
+}
+
+for(const boundary of ['segment','generation','phase'] as const) {
+  test(`pending one-stop callback is invalid after journey ${boundary} changes`,async()=>{
+    const app=setup({gps:true,holdGuide:true,journey:true});app.provider();app.screen();await flush();
+    await app.sampleLocation();app.provider();app.screen();await flush();
+    const oldDone=app.captureGuideDone();
+    app.provider({...app.state,...(boundary==='segment'?{journeySegmentIndex:1}:
+      boundary==='generation'?{journeyGeneration:2}:{journeyPhase:'BUS_ALIGHT_CONFIRM'})});
+    app.screen('A');oldDone();await flush();
+    assert.equal(app.calls.navigations.some(args=>args[0]==='Alight'),false);app.dispose();
+  });
 }
 
 for (const offline of [false, true]) {

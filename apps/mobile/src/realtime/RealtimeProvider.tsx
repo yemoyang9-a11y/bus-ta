@@ -1,6 +1,8 @@
 import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
 import * as Location from 'expo-location';
-import * as Speech from 'expo-speech';
+import * as NativeSpeech from 'expo-speech';
+import { getSafeSpeech } from './safe-speech';
+import { createVoiceRecovery } from './voice-recovery';
 import { useTrip } from '../state/TripContext';
 import { apiClient, ApiError } from '../api/client';
 import {
@@ -19,7 +21,7 @@ import { createAutomaticBoarding } from './automatic-boarding';
 import { releaseCane } from '../ble/cane-release-controller';
 import { HaneumRealtimeSession } from './session';
 import { createRealtimeGuideContext } from './context';
-import { connectWithBestEffortLocation, runSingleFlight } from './connect-best-effort';
+import { connectWithBestEffortLocation } from './connect-best-effort';
 import { createLocationRefreshCoordinator } from './location-refresh';
 import { createAssistDevicePreparation } from './assist-device-preparation';
 import { getAssistDeviceFallbackMessage } from './assist-device-status';
@@ -27,6 +29,7 @@ import type { RealtimeWebRTCTransport } from './webrtc-transport';
 import type { AppAction, AppTripState, AssistDeviceStatusChangedEvent } from './types';
 
 export type RealtimeConnectionStatus = 'idle' | 'connecting' | 'connected' | 'error';
+const Speech = getSafeSpeech(NativeSpeech);
 
 // RealtimeProvider가 화면에 제공하는 것
 type RealtimeContextValue = {
@@ -37,6 +40,9 @@ type RealtimeContextValue = {
   connectionError: string | null;
   trackingError: string | null;
   connect: () => Promise<void>;
+  recoverVoice: (signal?: AbortSignal) => Promise<boolean>;
+  speechBlocked: boolean;
+  voiceRecoveryVersion: number;
   notifyFailure: (event: AssistDeviceStatusChangedEvent) => void;
   getActiveTripId: () => string | null;
 };
@@ -59,7 +65,11 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
   const [isConnected, setIsConnected] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<RealtimeConnectionStatus>('idle');
   const [connectionError, setConnectionError] = useState<string | null>(null);
-  const connectPromiseRef = useRef<Promise<void> | null>(null);
+  const [speechBlocked, setSpeechBlocked] = useState(!Speech.canSpeak());
+  const [voiceRecoveryVersion, setVoiceRecoveryVersion] = useState(0);
+  const connectedRef = useRef<RealtimeWebRTCTransport | null>(null);
+  const aliveRef = useRef(true);
+  const recoveryRef = useRef<ReturnType<typeof createVoiceRecovery<RealtimeWebRTCTransport>> | null>(null);
 
   // Function Dispatcher가 항상 최신 state/dispatch를 참조하도록 ref로 보관
   // (클로저에 갇힌 오래된 state를 참조하지 않기 위함)
@@ -112,8 +122,66 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
       refreshCurrentLocation,
       dispatchAppAction: (action: AppAction) => dispatchRef.current(action),
     });
-    sessionRef.current = new HaneumRealtimeSession(guideContext);
+    sessionRef.current = new HaneumRealtimeSession(guideContext, () => {
+      connectedRef.current = null;
+      setTransport(null);
+      setIsConnected(false);
+      if (!recoveryRef.current?.isRunning()) {
+        setConnectionStatus('error');
+        setConnectionError('음성 연결이 끊어졌습니다. 음성 복구를 눌러 주세요.');
+      }
+    });
   }
+
+  const voiceContext = () => JSON.stringify([stateRef.current.tripId,
+    ['TRIP_DONE', 'CANCELLED'].includes(stateRef.current.tripStatus ?? ''),
+    stateRef.current.journeyGeneration, stateRef.current.journeySegmentIndex, stateRef.current.journeyPhase]);
+  if (!recoveryRef.current) {
+    const owner = sessionRef.current;
+    recoveryRef.current = createVoiceRecovery({
+      speech: Speech,
+      getContext: () => `${aliveRef.current}:${sessionRef.current === owner}:${voiceContext()}`,
+      repairOutput: () => owner.recoverOutput() && Speech.repairExternalOutput(),
+      connect: (signal, recovery) => connectWithBestEffortLocation({ refreshCurrentLocation,
+        connectWebRTC: () => owner.connectWebRTC(undefined, undefined, signal, !recovery) }).catch(error => {
+          if (owner.hasOutputCleanupFailure()) Speech.blockExternal(() => owner.recoverOutput());
+          throw error;
+        }),
+      publish: (connected, recovery) => {
+        if (recovery) owner.restoreActiveContext();
+        connectedRef.current = connected; setTransport(connected); setIsConnected(true);
+      },
+      discard: () => {
+        owner.handleTransportClose();
+        if (owner.hasOutputCleanupFailure()) Speech.blockExternal(() => owner.recoverOutput());
+      },
+      onStatus: (status, error) => {
+        if (!aliveRef.current) return;
+        setConnectionStatus(status); setConnectionError(error ?? null);
+      },
+      onAudioRecovered: () => { if (aliveRef.current) setVoiceRecoveryVersion(value => value + 1); },
+    });
+  }
+  useEffect(() => {
+    const sync = () => {
+      setSpeechBlocked(!Speech.canSpeak());
+      if (Speech.isUnsafe()) {
+        const owner = sessionRef.current;
+        owner?.handleTransportClose();
+        if (owner?.hasOutputCleanupFailure()) Speech.blockExternal(() => owner.recoverOutput());
+      }
+    };
+    sync();
+    return Speech.subscribe(sync);
+  }, []);
+  useEffect(() => {
+    recoveryRef.current?.cancel();
+  }, [state.tripId, state.journeyGeneration, state.journeySegmentIndex, state.journeyPhase,
+    state.tripStatus === 'TRIP_DONE' || state.tripStatus === 'CANCELLED']);
+  useEffect(() => {
+    aliveRef.current = true;
+    return () => { aliveRef.current = false; recoveryRef.current?.cancel(); };
+  }, []);
 
   const assistPreparationRef = useRef<ReturnType<typeof createAssistDevicePreparation> | null>(null);
   const notifyFailure = (event: AssistDeviceStatusChangedEvent) => {
@@ -239,30 +307,13 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => { trackingRef.current?.sync(); }, [state.tripId, state.tripStatus, state.boardingConfirmedAt]);
 
   const connect = () => {
-    if (!sessionRef.current) return Promise.resolve();
-    if (isConnected || transport) return Promise.resolve();
-
-    setConnectionStatus('connecting');
-    setConnectionError(null);
-
-    return runSingleFlight(connectPromiseRef, async () => {
-      try {
-        const connectedTransport = await connectWithBestEffortLocation({
-          refreshCurrentLocation,
-          connectWebRTC: () => sessionRef.current!.connectWebRTC(),
-        });
-        setTransport(connectedTransport);
-        setIsConnected(true);
-        setConnectionStatus('connected');
-      } catch (error) {
-        setConnectionStatus('error');
-        setConnectionError(
-          error instanceof Error ? error.message : '음성 연결에 실패했습니다.',
-        );
-        throw error;
-      }
+    if (connectedRef.current && Speech.canSpeak()) return Promise.resolve();
+    return recoveryRef.current!.run(undefined, !Speech.canSpeak()).then(ok => {
+      if (!ok) throw new Error('음성 연결을 완료하지 못했습니다.');
     });
   };
+  const recoverVoice = (signal?: AbortSignal) => connectedRef.current && Speech.canSpeak()
+    ? Promise.resolve(true) : recoveryRef.current!.run(signal);
 
   return (
     <RealtimeContext.Provider
@@ -274,6 +325,9 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
         connectionError,
         trackingError,
         connect,
+        recoverVoice,
+        speechBlocked,
+        voiceRecoveryVersion,
         notifyFailure,
         getActiveTripId,
       }}

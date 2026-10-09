@@ -28,6 +28,8 @@ export type RealtimeFunctionCallEvent = {
 
 export type RealtimeTransport = {
   send(event: unknown): void;
+  /** Native output teardown; required for safe one-stop speech fallback. */
+  close?(): void;
 };
 
 // 상태 변화 감지의 대상이 되는 필드만 담은 축소본 (event-dispatcher.ts에서 사용)

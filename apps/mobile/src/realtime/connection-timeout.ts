@@ -14,8 +14,15 @@ export class RealtimeConnectionTimeoutError extends Error {
 export async function runWithRealtimeConnectionTimeout<T>(
   operation: (signal: AbortSignal) => Promise<T>,
   timeoutMs = DEFAULT_REALTIME_CONNECTION_TIMEOUT_MS,
+  externalSignal?: AbortSignal,
 ): Promise<T> {
   const controller = new AbortController();
+  let abort!: () => void;
+  const aborted = new Promise<never>((_, reject) => {
+    abort = () => { controller.abort(); reject(new Error('VOICE_RECOVERY_CANCELLED')); };
+    externalSignal?.addEventListener('abort', abort, { once: true });
+    if (externalSignal?.aborted) abort();
+  });
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
 
   const operationPromise = Promise.resolve().then(() => operation(controller.signal));
@@ -27,8 +34,9 @@ export async function runWithRealtimeConnectionTimeout<T>(
   });
 
   try {
-    return await Promise.race([operationPromise, timeoutPromise]);
+    return await Promise.race([operationPromise, timeoutPromise, aborted]);
   } finally {
     if (timeoutId !== undefined) clearTimeout(timeoutId);
+    externalSignal?.removeEventListener('abort', abort);
   }
 }

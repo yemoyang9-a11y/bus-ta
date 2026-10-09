@@ -1,13 +1,19 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useIsFocused } from '@react-navigation/native';
 import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator } from 'react-native';
-import * as Speech from 'expo-speech';
+import * as NativeSpeech from 'expo-speech';
+import { getSafeSpeech } from '../realtime/safe-speech';
+import VoiceRecoveryControl from '../realtime/VoiceRecoveryControl';
+import { useRealtime } from '../realtime/RealtimeProvider';
 import { apiClient } from '../api/client';
 import { useTrip } from '../state/TripContext';
 import { startJourneyBus, toBusLegRoute } from '../state/transfer-journey';
+const Speech = getSafeSpeech(NativeSpeech);
 
 export default function TransferScreen({ navigation }) {
   const { state, dispatch } = useTrip();
+  const { speechBlocked, voiceRecoveryVersion = 0 } = useRealtime();
+  const spokenRecoveryRef = useRef(voiceRecoveryVersion);
   const isFocused = useIsFocused();
   const { journeyRoute, journeyGeneration, journeySegmentIndex: index, journeyPhase, tripId } = state;
   const segment = index === null ? null : journeyRoute?.segments?.[index];
@@ -26,16 +32,21 @@ export default function TransferScreen({ navigation }) {
   }, [journeyRoute, index, journeyPhase, tripId, state.selectedRoute, navigation, isFocused]);
 
   useEffect(() => {
-    if (!isFocused || !segment || journeyPhase === 'BUS_ALIGHT_CONFIRM' || (segment.mode === 'BUS' && tripId)) return;
-    const text = segment.mode === 'WALK'
+    if (!isFocused || !segment || speechBlocked) return;
+    const recovered = spokenRecoveryRef.current !== voiceRecoveryVersion;
+    if ((journeyPhase === 'BUS_ALIGHT_CONFIRM' && !recovered) ||
+      (segment.mode === 'BUS' && tripId && journeyPhase !== 'BUS_ALIGHT_CONFIRM')) return;
+    const text = journeyPhase === 'BUS_ALIGHT_CONFIRM'
+      ? `${segment.endName}에서 실제로 내린 뒤 하차를 확인해 주세요.`
+      : segment.mode === 'WALK'
       ? `${segment.endName}까지 도보로 이동한 뒤 도착을 확인해 주세요.`
       : segment.mode === 'SUBWAY'
         ? journeyPhase === 'SUBWAY_ON_BOARD'
           ? `${segment.endName}에서 내린 뒤 하차를 확인해 주세요.`
           : `${segment.lineNames.join(' 또는 ')} 지하철을 타고 탑승을 확인해 주세요.`
         : `${segment.startName}에서 ${segment.busLeg?.routeNo ?? ''}번 버스 안내를 시작해 주세요.`;
-    Speech.speak(text, { language: 'ko' });
-  }, [journeyRoute, index, journeyPhase, tripId, isFocused]);
+    if (Speech.speak(text, { language: 'ko' })) spokenRecoveryRef.current = voiceRecoveryVersion;
+  }, [journeyRoute, index, journeyPhase, tripId, isFocused, speechBlocked, voiceRecoveryVersion]);
 
   if (!journeyRoute || !segment || index === null) return null;
 
@@ -109,6 +120,7 @@ export default function TransferScreen({ navigation }) {
       <Text style={styles.title}>{title}</Text>
       <Text style={styles.path}>{segment.startName} → {segment.endName}</Text>
       <Text style={styles.instruction}>{instruction}</Text>
+      <VoiceRecoveryControl />
       {error && <Text accessibilityRole="alert" style={styles.error}>{error}</Text>}
       {busy ? <ActivityIndicator size="large" color="#FFD400" /> : (
         <TouchableOpacity style={styles.button} accessibilityRole="button"

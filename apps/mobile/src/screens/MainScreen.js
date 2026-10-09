@@ -82,7 +82,7 @@ export default function MainScreen({ navigation }) {
         />
       </View>
 
-      {connectionStatus === 'error' && (
+      {(connectionStatus === 'error' || connectionStatus === 'idle') && (
         <TouchableOpacity style={styles.retryButton} onPress={handleRetry}>
           <Text style={styles.retryButtonText}>다시 연결하기</Text>
         </TouchableOpacity>

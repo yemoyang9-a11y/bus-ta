@@ -1,6 +1,8 @@
 import React, { useRef, useState, useEffect } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator } from 'react-native';
-import * as Speech from 'expo-speech';
+import * as NativeSpeech from 'expo-speech';
+import { getSafeSpeech } from '../realtime/safe-speech';
+import VoiceRecoveryControl from '../realtime/VoiceRecoveryControl';
 import { useFocusEffect, useIsFocused } from '@react-navigation/native';
 import { apiClient, ApiError } from '../api/client';
 import { useTrip } from '../state/TripContext';
@@ -8,6 +10,7 @@ import { useRealtime } from '../realtime/RealtimeProvider';
 import { connectBell, getBellDeviceName, isBellConnected, sendStopRequest, subscribeBellResult } from '../ble/bleManager';
 import { TRIP_COMPLETION_MESSAGE } from '../realtime/trip-tracking';
 import { createBellStopSession } from '../ble/bell-stop-session';
+const Speech = getSafeSpeech(NativeSpeech);
 
 // 예모님 코멘트 5번(2026-08-13): 성공·실패·타임아웃을 화면·음성에서 구분해 안내한다.
 const BELL_OUTCOME_TEXT = {
@@ -27,7 +30,8 @@ export default function AlightScreen({ route, navigation }) {
   const resultSentRef = useRef(false); // 중복 전송 방지
   const { state, dispatch } = useTrip();
   const isFocused = useIsFocused();
-  const { session, isConnected, trackingError } = useRealtime();
+  const { session, isConnected, trackingError, speechBlocked, voiceRecoveryVersion } = useRealtime();
+  const pendingBellSpeechRef = useRef(null);
   const [homeError, setHomeError] = useState(null);
   const endingRef = useRef(false);
   const resultRetryTimerRef = useRef(null);
@@ -38,6 +42,14 @@ export default function AlightScreen({ route, navigation }) {
   const stopSessionRef = useRef(null);
   const latestRef = useRef(null);
   latestRef.current = { state, session, isConnected };
+
+  useEffect(() => {
+    const pending = pendingBellSpeechRef.current;
+    if (!pending || !isFocused || !isMountedRef.current || !Speech.canSpeak() ||
+      pending.tripId !== state.tripId || pending.bellRequestId !== bellRequestId ||
+      ['TRIP_DONE', 'CANCELLED'].includes(state.tripStatus)) return;
+    if (Speech.speak(BELL_OUTCOME_TTS[pending.outcome], { language: 'ko' })) pendingBellSpeechRef.current = null;
+  }, [speechBlocked, voiceRecoveryVersion, isConnected, state.tripId, state.tripStatus, bellRequestId, isFocused]);
 
   useEffect(() => {
     if (!isFocused) return;
@@ -72,12 +84,13 @@ export default function AlightScreen({ route, navigation }) {
           }),
         };
         resultSentRef.current = false;
+        pendingBellSpeechRef.current = null;
         setBellOutcome('waiting');
       }
       const current = stopSessionRef.current;
       // 음성 완료를 기다리지 않고 전송 예산을 즉시 시작한다.
       if (!latestRef.current.isConnected && latestRef.current.state.tripStatus !== 'TRIP_DONE') {
-        Speech.speak('하차벨을 요청했습니다. 안전하게 하차하세요.', { language: 'ko' });
+        Speech.speak('하차벨 연결과 전송을 시도합니다. 안전하게 하차 준비를 해주세요.', { language: 'ko' });
       }
       current.flow.start().then(({ outcome, sendFailed, cancelled }) => {
         if (!isCurrent() || cancelled) return;
@@ -145,7 +158,8 @@ export default function AlightScreen({ route, navigation }) {
         : latestStatus.bellStatus === 'FAIL' ? 'fail' : null;
       if (!confirmedOutcome) return;
       setBellOutcome(confirmedOutcome);
-      if (latestRef.current.isConnected) {
+      pendingBellSpeechRef.current = { tripId, bellRequestId, outcome: confirmedOutcome };
+      if (latestRef.current.isConnected && latestRef.current.session?.hasActiveConnection?.() !== false && Speech.canSpeak()) {
         // 4. Realtime 연결 중이면 세션에 알림 (성공/실패 여부와 무관하게, 확정된 결과만 전달)
         latestRef.current.session?.notifyStatusChange({
           tripStatus: latestStatus.tripStatus,
@@ -154,10 +168,11 @@ export default function AlightScreen({ route, navigation }) {
           bellStatus: latestStatus.bellStatus,
           guideMessage: latestStatus.guideMessage,
         });
+        pendingBellSpeechRef.current = null;
       } else {
         // 5. Realtime 미연결일 때만 로컬 TTS로 확정된 결과 안내
         if (isMountedRef.current) {
-          Speech.speak(BELL_OUTCOME_TTS[confirmedOutcome], { language: 'ko' });
+          if (Speech.speak(BELL_OUTCOME_TTS[confirmedOutcome], { language: 'ko' })) pendingBellSpeechRef.current = null;
         }
       }
     } catch (error) {
@@ -205,7 +220,7 @@ export default function AlightScreen({ route, navigation }) {
         <View style={styles.messageBox}>
           <Text style={styles.messageIcon}>⚠️</Text>
           <Text style={styles.message}>
-            {state.tripStatus === 'TRIP_DONE' ? state.journeyRoute ? '이번 버스 구간에 도착했습니다. 실제로 내린 뒤 하차를 확인해 주세요.' : TRIP_COMPLETION_MESSAGE : '하차벨을 요청했습니다. 안전하게 하차하세요.'}
+            {state.tripStatus === 'TRIP_DONE' ? state.journeyRoute ? '이번 버스 구간에 도착했습니다. 실제로 내린 뒤 하차를 확인해 주세요.' : TRIP_COMPLETION_MESSAGE : '안전하게 하차 준비를 해주세요. 하차벨 처리 결과를 아래에서 확인할 수 있습니다.'}
           </Text>
         </View>
 
@@ -225,6 +240,8 @@ export default function AlightScreen({ route, navigation }) {
 
       {/* 처음으로 돌아가기 — 위 박스들과 간격을 두고 화면 아래쪽에 고정 */}
       <View style={styles.bottomSection}>
+        <VoiceRecoveryControl />
+        {route.params.guidePlayback === 'unavailable' && <Text accessibilityRole="alert" style={styles.infoText}>음성 안내를 완료하지 못했습니다. 하차 정류장까지 한 정거장 남았습니다.</Text>}
         {homeError && <Text accessibilityRole="alert" style={styles.infoText}>{homeError}</Text>}
         <TouchableOpacity
           style={styles.button}
