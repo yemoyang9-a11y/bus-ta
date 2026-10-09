@@ -185,3 +185,10 @@ curl -X POST "$URL" -H "Content-Type: application/json" \
 - 정상 놓침 흐름: `function_received`의 tool=end_trip, phase=WAITING_BUS, missedBus=true, cancelRequested=true → `end_api_result.success=true` → `function_result.success=true` → `reset_requested` → `screen_ready.screen=RouteList`. 후보가 없거나 만료되면 Main으로 복귀한다.
 - 종료 없이 get_trip_status/get_next_route_candidates만 호출됐다면 모델 도구 선택을 확인한다. end_api_result=false이면 종료 API 실패이며 기존 운행은 유지해야 한다. API 성공 후 앱 결과가 실패하면 오래된 운행 응답 또는 상태 검증을 확인한다. screen_timeout이면 화면 포커스/복귀 조건을 확인한다. Function 로그가 없으면 세션 연결 및 도구 이벤트 수신 여부부터 확인한다.
 - 자동 테스트는 실제 세션 설정, 도구 실행, 상태와 화면 포커스, 후보 재안내를 검증한다. 실제 Realtime 모델의 자연어 해석 및 휴대폰 음성·BLE·GPS 동작은 별도 실기기 검증이 필요하다.
+
+## 2026-10-09: PR #60 CI의 음성·터치 동시 선택 테스트 3개 실패
+
+- 실행 37914355790의 서버 테스트에서 세 동시 선택 테스트가 요청 횟수 `2 !== 1`로 실패했다. CI는 Ubuntu 24.04/Node 22.17.0, 로컬은 Windows/Node 24.17.0이었다. 로컬에서 Node 22.17.0을 사용하자 동일한 세 실패가 재현됐다.
+- 원인: CommonJS 모바일 패키지의 선택 함수를 테스트가 ESM으로 가져와 VM 화면에 주입했지만 실제 Dispatcher는 CommonJS로 가져왔다. Node 22/tsx에서 두 함수의 동일성 비교는 false, Node 24에서는 true였다. Node 22에서는 각 모듈의 WeakMap 잠금이 분리됐다. 실행 속도나 테스트 간 상태 초기화 문제가 아닌 테스트 모듈 경계 문제다.
+- 해결: VM 화면에 주입하는 선택 함수를 Dispatcher 위치의 `createRequire`로 가져와 실제 음성 경로와 동일 인스턴스를 사용한다. 세 동시 선택 테스트는 API 진입 신호를 기다린 후 경쟁 요청을 실행하고 응답을 해제해, 정해진 microtask 횟수에 의존하지 않는다. 앱의 운행 생성·navigation·음성·하드웨어 코드는 변경하지 않았다. 실패한 테스트를 삭제하거나 skip하지 않았다.
+- 재현/검증: apps/server에서 `pnpm --package=node@22.17.0 dlx node --import tsx --test src/integration/mobile-direct-route-navigation.test.ts`. 집중 반복은 `--test-name-pattern='voice/touch share pending|different voice and touch'`를 추가한다. Linux 자체는 로컬에서 재현하지 않았으며 동일 Node 버전으로 원인을 재현하고 전체 테스트를 확인했다. Linux 검증은 PR의 새 CI 결과로 확인한다.

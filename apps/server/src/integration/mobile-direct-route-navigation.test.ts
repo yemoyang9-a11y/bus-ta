@@ -3,13 +3,20 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
+import { createRequire } from 'node:module';
 import ts from 'typescript';
 import { DEMO_ROUTE, type Route, type CreateTripResponse } from '@bus-ta/shared';
-import { startDirectTrip } from '../../../mobile/src/state/direct-trip-selection.js';
 import { initialState, tripReducer } from '../../../mobile/src/state/trip-reducer.js';
 import { getTripNavigationTarget } from '../../../mobile/src/state/trip-transition.js';
 import { dispatchRealtimeFunctionCall } from '../../../mobile/src/realtime/function-dispatcher.js';
 import type { AppAction, AppTripState, RealtimeGuideContext } from '../../../mobile/src/realtime/types.js';
+
+// The mobile package is CommonJS. Match the real dispatcher's require path when
+// injecting its dependency into the VM screen. Node 22/tsx can otherwise load
+// separate ESM and CJS instances, each with its own single-flight WeakMap.
+const { startDirectTrip } = createRequire(new URL('../../../mobile/src/realtime/function-dispatcher.ts', import.meta.url))(
+  '../state/direct-trip-selection',
+) as typeof import('../../../mobile/src/state/direct-trip-selection.js');
 
 function app(routes: Route[], create: () => Promise<CreateTripResponse>) {
   let state = tripReducer(initialState, { type: 'SET_DESTINATION_AND_ROUTES', destination: '목적지', routes });
@@ -76,11 +83,14 @@ test('actual touch creates once and navigation uses committed winning route', as
 });
 for (const voiceFirst of [true, false]) test(`voice/touch share pending request, voiceFirst=${voiceFirst}`, async t => {
   const r = route('504'); let requests = 0; let release!: () => void;
+  let markStarted!: () => void;
+  const started = new Promise<void>(done => { markStarted = done; });
   const deferred = new Promise<void>(done => { release = done; });
-  const create = async () => { requests++; await deferred; return response(); };
+  const create = async () => { requests++; markStarted(); await deferred; return response(); };
   const a = app([r], create);
   t.mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify(await create()), { status: 200 }));
   const first = voiceFirst ? voice(a, r) : a.press(r);
+  await started;
   const second = voiceFirst ? a.press(r) : voice(a, r);
   await Promise.resolve(); release(); await Promise.all([first, second]); a.render();
   assert.equal(requests, 1); assert.equal(a.navigation.length, 1);
@@ -135,10 +145,12 @@ test('actual unfocused Main and RouteList do not intervene; focused RouteList re
 test('different voice and touch candidates share exclusion without mismatching display', async t => {
   const winner = route('29'), other = route('704', 2);
   let requests = 0; let release!: () => void;
+  let markStarted!: () => void;
+  const started = new Promise<void>(done => { markStarted = done; });
   const a = app([winner, other], async () => { requests++; return response('unexpected'); });
   t.mock.method(globalThis, 'fetch', async () => { requests++;
-    await new Promise<void>(done => { release = done; }); return Response.json(response()); });
-  const pending = voice(a, winner); await Promise.resolve(); await Promise.resolve();
+    await new Promise<void>(done => { release = done; markStarted(); }); return Response.json(response()); });
+  const pending = voice(a, winner); await started;
   await a.press(other); release(); await pending; a.render();
   assert.equal(requests, 1); assert.equal(a.navigation.length, 1);
   assert.equal(a.navigation[0][1].selectedRoute, winner);
