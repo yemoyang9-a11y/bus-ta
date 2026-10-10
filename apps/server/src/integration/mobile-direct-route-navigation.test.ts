@@ -70,6 +70,202 @@ const voice = (a: ReturnType<typeof app>, r: Route) => dispatchRealtimeFunctionC
   arguments: JSON.stringify({ candidateId: r.candidateId }),
 }, a.context);
 
+test('existing WAITING_BUS allows next candidate audio and synchronized cards', async () => {
+  const routes = [1, 2, 3, 4].map(id => route(`${id}`, id));
+  const a = app(routes, async () => response()); await a.start(routes[0]!);
+  a.dispatch({ type: 'MARK_CANDIDATES_ANNOUNCED', candidateIds: [1, 2] });
+  const s = sessionFor(a); await s.call('get_next_route_candidates');
+  assert.equal(s.sent.filter(e => e.type === 'response.create').length, 1);
+  assert.deepEqual(a.getState().visibleRouteCandidates, routes.slice(2));
+  assert.equal(a.getState().tripId, 'trip-direct');
+});
+
+test('existing WAITING_BUS allows new destination search audio without ending its trip', async t => {
+  const a = app([route('15')], async () => response()); await a.start(a.getState().routeCandidates![0]!);
+  const s = sessionFor(a); a.context.getCurrentLocation = () => ({ latitude: 0, longitude: 0 });
+  t.mock.method(globalThis, 'fetch', async () => Response.json({ success: true, destination: '새 목적지', routes: [route('34')] }));
+  await s.call('search_routes', { destination: '새 목적지' });
+  assert.equal(s.sent.filter(e => e.type === 'response.create').length, 1);
+  assert.equal(a.getState().visibleRouteCandidates?.[0]?.routeNo, '34');
+  assert.equal(a.getState().tripId, 'trip-direct');
+});
+
+test('duplicate journey candidate ID returns function output instead of throwing', async () => {
+  const journey: Route = { ...route('mixed'), routeMode: 'MULTIMODAL', journeySupported: true, tripSupported: false,
+    segments: [{ mode: 'WALK', startName: 'A', endName: 'B', lineNames: [], routeNumbers: [] },
+      { mode: 'BUS', startName: 'B', endName: 'C', lineNames: [], routeNumbers: ['60'], busLeg: DEMO_ROUTE }] };
+  const a = app([journey, { ...journey }], async () => response());
+  const events = await dispatchRealtimeFunctionCall({ type: 'response.function_call_arguments.done', call_id: 'duplicate-journey',
+    name: 'start_journey', arguments: '{"candidateId":1}' }, a.context);
+  assert.equal(functionOutput(events).success, false);
+  assert.equal(a.getState().journeyRoute, null);
+  assert.equal(events.filter(e => e.type === 'response.create').length, 1);
+});
+
+test('latest search survives earlier search state committing after latest request begins', async t => {
+  const a = app([], async () => response()); a.context.getCurrentLocation = () => ({ latitude: 0, longitude: 0 });
+  const deferred: AppAction[] = []; const dispatch = a.context.dispatchAppAction;
+  a.context.dispatchAppAction = action => { if (action.type === 'SET_DESTINATION_AND_ROUTES') deferred.push(action); else dispatch(action); };
+  let entered!: () => void; let release!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const waiting = new Promise<void>(resolve => { release = resolve; });
+  t.mock.method(globalThis, 'fetch', async (_url: unknown, options?: RequestInit) => {
+    const destination = JSON.parse(options!.body as string).destination;
+    if (destination === 'B') { entered(); await waiting; }
+    return Response.json({ success: true, destination, routes: [route(destination === 'A' ? '15' : '34')] });
+  });
+  await dispatchRealtimeFunctionCall({ type: 'response.function_call_arguments.done', call_id: 'A', name: 'search_routes', arguments: '{"destination":"A"}' }, a.context);
+  const latest = dispatchRealtimeFunctionCall({ type: 'response.function_call_arguments.done', call_id: 'B', name: 'search_routes', arguments: '{"destination":"B"}' }, a.context);
+  await started; dispatch(deferred.shift()!); release();
+  const events = await latest;
+  for (const action of deferred) dispatch(action);
+  assert.equal(functionOutput(events).success, true);
+  assert.equal(a.getState().destination, 'B');
+  sessionFor(a).send(events);
+  assert.equal(a.render().props.data[0].routeNo, '34');
+});
+
+test('nonvoice cancellation preserves the current valid displayed batch and order', async () => {
+  const routes = [1, 2, 3, 4].map(id => route(`${id}`, id));
+  const a = app(routes, async () => response());
+  a.dispatch({ type: 'SET_VISIBLE_ROUTE_CANDIDATES', routes: [routes[3]!, routes[2]!], searchRoutes: routes,
+    generation: a.getState().directSelectionGeneration! });
+  await a.start(routes[3]!);
+  a.dispatch({ type: 'RESET_TRIP_KEEP_SEARCH' });
+  assert.deepEqual(a.render().props.data, [routes[3], routes[2]]);
+});
+
+test('server CANCELLED function path keeps the valid cards after resetting trip', async t => {
+  const routes = [route('15'), route('34', 2)];
+  const a = app(routes, async () => response()); await a.start(routes[0]!);
+  t.mock.method(globalThis, 'fetch', async () => Response.json({ success: true, tripId: 'trip-direct', tripStatus: 'CANCELLED' }));
+  const events = await dispatchRealtimeFunctionCall({ type: 'response.function_call_arguments.done', call_id: 'server-cancelled',
+    name: 'get_trip_status', arguments: '{"tripId":"trip-direct"}' }, a.context);
+  assert.equal(functionOutput(events).success, true);
+  assert.equal(a.getState().tripId, null);
+  assert.deepEqual(a.render().props.data, routes);
+});
+
+test('cancel_journey keeps the same candidate cards without introducing another announcement', async () => {
+  const journey: Route = { ...route('mixed'), routeMode: 'MULTIMODAL', journeySupported: true, tripSupported: false,
+    segments: [{ mode: 'WALK', startName: 'A', endName: 'B', lineNames: [], routeNumbers: [] },
+      { mode: 'BUS', startName: 'B', endName: 'C', lineNames: [], routeNumbers: ['60'], busLeg: DEMO_ROUTE }] };
+  const a = app([journey], async () => response()); a.dispatch({ type: 'START_JOURNEY', route: journey });
+  const events = await dispatchRealtimeFunctionCall({ type: 'response.function_call_arguments.done', call_id: 'journey-cancel',
+    name: 'cancel_journey', arguments: '{}' }, a.context);
+  assert.equal(functionOutput(events).success, true);
+  assert.equal(a.getState().journeyRoute, null);
+  assert.deepEqual(a.render().props.data, [journey]);
+  assert.equal(events.filter(e => e.type === 'response.create').length, 1);
+});
+
+test('cancel reset never revives expired, exhausted or foreign candidate cards', () => {
+  const routes = [route('15'), route('34', 2)]; const a = app(routes, async () => response());
+  a.getState().visibleRouteCandidates = null;
+  a.dispatch({ type: 'RESET_TRIP_KEEP_SEARCH' }); assert.deepEqual(a.render().props.data, routes);
+  a.getState().visibleRouteCandidates = [route('99', 5), routes[1]!];
+  a.dispatch({ type: 'RESET_TRIP_KEEP_SEARCH' }); assert.deepEqual(a.render().props.data, [routes[1]]);
+  a.getState().visibleRouteCandidates = [];
+  a.dispatch({ type: 'RESET_TRIP_KEEP_SEARCH' }); assert.equal(a.render(), undefined);
+  a.getState().visibleRouteCandidates = routes; a.getState().routeCandidatesExpiresAt = Date.now() - 1;
+  a.dispatch({ type: 'RESET_TRIP_KEEP_SEARCH' }); assert.equal(a.render(), undefined);
+});
+
+test('queued candidate audio is discarded only after a new trip starts', async () => {
+  const routes = [1, 2, 3, 4, 5].map(id => route(`${id}`, id));
+  const a = app(routes, async () => response()); const s = sessionFor(a);
+  a.dispatch({ type: 'MARK_CANDIDATES_ANNOUNCED', candidateIds: [1, 2] });
+  await s.call('get_next_route_candidates', {}, 'first'); await s.call('get_next_route_candidates', {}, 'queued');
+  await a.start(routes[0]!); await s.done();
+  assert.equal(s.sent.filter(e => e.type === 'response.create').length, 1);
+  assert.deepEqual(a.getState().announcedCandidateIds, [1, 2]);
+});
+
+test('running trip search waits for React candidate commit before requesting audio', async t => {
+  const routes = [route('15')]; const a = app(routes, async () => response()); await a.start(routes[0]!);
+  const s = sessionFor(a); a.context.getCurrentLocation = () => ({ latitude: 0, longitude: 0 });
+  const actions: AppAction[] = []; const dispatch = a.context.dispatchAppAction;
+  a.context.dispatchAppAction = action => { if (action.type === 'SET_DESTINATION_AND_ROUTES') actions.push(action); else dispatch(action); };
+  let entered!: () => void;
+  const enteredWait = new Promise<void>(resolve => { entered = resolve; });
+  a.context.waitForSearchState = (candidates, requestId) => { entered(); return tripTransition.waitForSearchState(candidates, requestId); };
+  t.mock.method(globalThis, 'fetch', async () => Response.json({ success: true, destination: '새 목적지', routes: [route('34')] }));
+  const pending = s.call('search_routes', { destination: '새 목적지' }); await enteredWait;
+  assert.equal(s.sent.length, 0);
+  dispatch(actions[0]!); tripTransition.confirmSearchState(a.getState()); await pending;
+  assert.equal(s.sent.filter(e => e.type === 'response.create').length, 1);
+  assert.equal(a.getState().visibleRouteCandidates?.[0]?.routeNo, '34');
+});
+
+test('new search invalidates pending state confirmation and its older audio', async t => {
+  const a = app([], async () => response()); const s = sessionFor(a);
+  a.context.getCurrentLocation = () => ({ latitude: 0, longitude: 0 });
+  const actions: AppAction[] = []; const dispatch = a.context.dispatchAppAction;
+  a.context.dispatchAppAction = action => { if (action.type === 'SET_DESTINATION_AND_ROUTES') actions.push(action); else dispatch(action); };
+  const waiters: (() => void)[] = [];
+  a.context.waitForSearchState = async () => { await new Promise<void>(resolve => { waiters.push(resolve); }); return true; };
+  t.mock.method(globalThis, 'fetch', async (_url: unknown, options?: RequestInit) => {
+    const destination = JSON.parse(options!.body as string).destination;
+    return Response.json({ success: true, destination, routes: [route(destination === 'A' ? '15' : '34')] });
+  });
+  const first = s.call('search_routes', { destination: 'A' }, 'A');
+  while (!waiters[0]) await new Promise(resolve => setImmediate(resolve));
+  const second = s.call('search_routes', { destination: 'B' }, 'B');
+  while (!waiters[1]) await new Promise(resolve => setImmediate(resolve));
+  dispatch(actions[0]!); assert.equal(a.getState().destination, '목적지'); // stale A action is rejected at commit
+  dispatch(actions[1]!); waiters[1]!(); await second; waiters[0]!(); await first;
+  assert.equal(a.getState().destination, 'B');
+  assert.equal(s.sent.filter(e => e.type === 'response.create').length, 1);
+  assert.equal(a.render().props.data[0].routeNo, '34');
+});
+
+test('batched React commits of both searches use the latest actual selection generation', async t => {
+  const a = app([], async () => response()); const s = sessionFor(a);
+  a.context.getCurrentLocation = () => ({ latitude: 0, longitude: 0 });
+  const actions: AppAction[] = []; const dispatch = a.context.dispatchAppAction;
+  a.context.dispatchAppAction = action => { actions.push(action); };
+  let waits = 0;
+  a.context.waitForSearchState = (candidates, requestId) => { waits++; return tripTransition.waitForSearchState(candidates, requestId); };
+  t.mock.method(globalThis, 'fetch', async (_url: unknown, options?: RequestInit) => {
+    const destination = JSON.parse(options!.body as string).destination;
+    return Response.json({ success: true, destination, routes: [route(destination === 'A' ? '15' : '34')] });
+  });
+  const first = s.call('search_routes', { destination: 'A' }, 'A');
+  while (waits < 1) await new Promise(resolve => setImmediate(resolve));
+  const second = s.call('search_routes', { destination: 'B' }, 'B');
+  while (waits < 2) await new Promise(resolve => setImmediate(resolve));
+  actions.splice(0).forEach(dispatch); tripTransition.confirmSearchState(a.getState());
+  a.context.dispatchAppAction = dispatch;
+  await Promise.all([first, second]);
+  assert.equal(a.getState().destination, 'B');
+  assert.equal(s.sent.filter(e => e.type === 'response.create').length, 1);
+  assert.equal(a.render().props.data[0].routeNo, '34');
+});
+
+test('candidate instructions keep ordered route summaries without duplicated station lists or coordinates', async () => {
+  const routes = [route('15'), route('34', 2)]; const a = app(routes, async () => response());
+  const s = sessionFor(a); await s.call('get_next_route_candidates');
+  const instructions = s.sent.find(e => e.type === 'response.create').response.instructions;
+  assert.ok(instructions.indexOf('"candidateId":1') < instructions.indexOf('"candidateId":2'));
+  assert.ok(instructions.includes(routes[0]!.boardingStation.stationName));
+  assert.ok(!instructions.includes('"stationList"'));
+  assert.ok(!instructions.includes('"latitude"'));
+});
+
+test('missed route with duplicate ID uses matching stations in speech and cards', async t => {
+  const other = route('15', 1);
+  const missed = { ...other, boardingStation: { ...other.boardingStation, stationName: '다른 승차 정류장' } };
+  const a = app([missed], async () => response()); await a.start(missed);
+  const routes = [other, missed, route('34', 2)];
+  a.dispatch({ type: 'SET_DESTINATION_AND_ROUTES', destination: '목적지', routes });
+  t.mock.method(globalThis, 'fetch', async () => Response.json({ success: true, tripId: 'trip-direct', tripStatus: 'CANCELLED' }));
+  const events = await dispatchRealtimeFunctionCall({ type: 'response.function_call_arguments.done', call_id: 'duplicate-missed',
+    name: 'end_trip', arguments: JSON.stringify({ tripId: 'trip-direct', action: 'CANCEL', reason: 'MISSED_BUS' }) }, a.context);
+  sessionFor(a).send(events);
+  assert.deepEqual(a.render().props.data.map((r: Route) => r.boardingStation), functionOutput(events).routes.map((r: Route) => r.boardingStation));
+  assert.equal(a.render().props.data[0], missed);
+});
+
 function functionOutput(events: Awaited<ReturnType<typeof dispatchRealtimeFunctionCall>>) {
   const output = events.find(e => e.type === 'conversation.item.create');
   assert.ok(output?.type === 'conversation.item.create');

@@ -24,6 +24,7 @@ import type {
 import type { RealtimeWebRTCTransport } from "./webrtc-transport";
 import {
   RealtimeResponseQueue,
+  isCurrentCandidateBatch,
   type PendingResponse,
 } from "./response-queue";
 import { getRealtimeErrorDetails } from "./server-event";
@@ -228,14 +229,14 @@ export class HaneumRealtimeSession {
     this.context = context;
     context.getPendingCandidateIds = () => {
       const state = context.getAppState();
-      const batchIds = (item: PendingResponse | null) => item?.candidateBatch?.searchRoutes === state.routeCandidates &&
-        item.candidateBatch.generation === (state.directSelectionGeneration ?? 0) ? item.candidateBatch.routes.map(route => route.candidateId) : [];
+      const batchIds = (item: PendingResponse | null) => isCurrentCandidateBatch(item?.candidateBatch, state)
+        ? item.candidateBatch.routes.map(route => route.candidateId) : [];
       return [...batchIds(this.activeResponse), ...batchIds(this.awaitingRetry),
-        ...(this.announcedReservations?.batch.searchRoutes === state.routeCandidates && this.announcedReservations.batch.generation === (state.directSelectionGeneration ?? 0)
+        ...(isCurrentCandidateBatch(this.announcedReservations?.batch, state)
           ? this.announcedReservations.ids : []),
-        ...(this.candidateAnnouncementBatch?.searchRoutes === state.routeCandidates && this.candidateAnnouncementBatch.generation === (state.directSelectionGeneration ?? 0)
+        ...(isCurrentCandidateBatch(this.candidateAnnouncementBatch, state)
           ? this.candidateAnnouncementBatch.routes.map(route => route.candidateId) : []),
-        ...this.responseQueue.pendingCandidateIds(state.routeCandidates, state.directSelectionGeneration ?? 0)];
+        ...this.responseQueue.pendingCandidateIds(state)];
     };
   }
 
@@ -668,7 +669,7 @@ export class HaneumRealtimeSession {
     this.awaitingRetry = null;
     if (next.candidateBatch) {
       const state = this.context.getAppState();
-      if (next.candidateBatch.searchRoutes !== state.routeCandidates || next.candidateBatch.generation !== (state.directSelectionGeneration ?? 0) || state.tripId || state.journeyRoute) {
+      if (!isCurrentCandidateBatch(next.candidateBatch, state)) {
         this.flushPendingResponse(); return;
       }
       if (!state.routeCandidatesExpiresAt || Date.now() > state.routeCandidatesExpiresAt) {
@@ -751,10 +752,10 @@ export class HaneumRealtimeSession {
     }
     const batch = this.candidateAnnouncementBatch;
     const state = this.context.getAppState();
-    if (batch && (batch.searchRoutes !== state.routeCandidates || batch.generation !== (state.directSelectionGeneration ?? 0))) return;
+    if (batch && !isCurrentCandidateBatch(batch, state)) return;
     if (batch) {
       const previous = this.announcedReservations;
-      this.announcedReservations = { batch, ids: [...new Set([...(previous?.batch.searchRoutes === batch.searchRoutes && previous.batch.generation === batch.generation ? previous.ids : []), ...candidateIds])] };
+      this.announcedReservations = { batch, ids: [...new Set([...(isCurrentCandidateBatch(previous?.batch, state) ? previous.ids : []), ...candidateIds])] };
     }
 
     this.context.dispatchAppAction({

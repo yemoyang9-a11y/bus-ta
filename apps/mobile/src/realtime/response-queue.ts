@@ -1,4 +1,21 @@
-import type { TripStatusChangedEvent } from "./types";
+import type { AppTripState, TripStatusChangedEvent } from "./types";
+import type { Route } from '@bus-ta/shared';
+
+export type CandidateBatch = {
+  searchRoutes: Route[];
+  generation: number;
+  routes: Route[];
+  tripId: string | null;
+  journeyGeneration: number;
+  searchRequestId: number | null;
+};
+
+export function isCurrentCandidateBatch(batch: CandidateBatch | undefined, state: Pick<AppTripState,
+  'routeCandidates' | 'directSelectionGeneration' | 'tripId' | 'journeyGeneration' | 'routeSearchRequestId'>): batch is CandidateBatch {
+  return Boolean(batch && batch.searchRoutes === state.routeCandidates &&
+    batch.generation === (state.directSelectionGeneration ?? 0) && batch.tripId === state.tripId &&
+    batch.journeyGeneration === (state.journeyGeneration ?? 0) && batch.searchRequestId === (state.routeSearchRequestId ?? null));
+}
 
 export type PendingResponse = {
   eventId: string;
@@ -12,7 +29,7 @@ export type PendingResponse = {
   candidateIdsToMark?: number[];
   completionTripId?: string;
   selectionGeneration?: number;
-  candidateBatch?: { searchRoutes: import('@bus-ta/shared').Route[]; generation: number; routes: import('@bus-ta/shared').Route[] };
+  candidateBatch?: CandidateBatch;
 };
 
 type DurablePendingResponse = PendingResponse & {
@@ -59,9 +76,9 @@ export class RealtimeResponseQueue {
     this.durableResponses.push(response);
   }
 
-  pendingCandidateIds(searchRoutes: unknown, generation: number): number[] {
-    return this.durableResponses.flatMap(item => item.candidateBatch && item.candidateBatch.searchRoutes === searchRoutes &&
-      item.candidateBatch.generation === generation ? item.candidateBatch.routes.map(route => route.candidateId) : []);
+  pendingCandidateIds(state: AppTripState): number[] {
+    return this.durableResponses.flatMap(item => isCurrentCandidateBatch(item.candidateBatch, state)
+      ? item.candidateBatch.routes.map(route => route.candidateId) : []);
   }
 
   enqueueStatus(

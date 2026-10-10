@@ -18,10 +18,6 @@ import * as NativeSpeech from 'expo-speech';
 import { getSafeSpeech } from '../realtime/safe-speech';
 const Speech = getSafeSpeech(NativeSpeech);
 
-// 예모님 확정(2026-08-28): 후보 유효시간 5분. TripContext.js와 동일한 값을 써야 하므로
-// 상수 자체는 여기서도 다시 정의하되, 계산 방식(검색 시각 + 5분)은 TripContext가 갖고 있다.
-const ROUTE_CANDIDATES_TTL_MS = 5 * 60 * 1000;
-
 function isRouteCandidatesExpired(expiresAt) {
   if (!expiresAt) return true;
   return Date.now() > expiresAt;
@@ -36,7 +32,7 @@ export default function RouteListScreen({ navigation }) {
   // destination, routeCandidates는 function-dispatcher.ts의 search_routes 처리 결과로 채워진다.
   const { state, dispatch } = useTrip();
   const isFocused = useIsFocused();
-  const { destination, routeCandidates, routeCandidatesExpiresAt } = state;
+  const { destination, routeCandidatesExpiresAt } = state;
 
   const latestRef = useRef(state);
   latestRef.current = state;
@@ -145,7 +141,7 @@ export default function RouteListScreen({ navigation }) {
   }
 
   // 노선 없을 때 처리
-  if (!visibleRouteCandidates || visibleRouteCandidates.length === 0) {
+  if (visibleRouteCandidates.length === 0) {
     return (
       <View style={styles.emptyContainer}>
         <Text style={styles.emptyText}>
