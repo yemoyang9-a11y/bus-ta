@@ -24,6 +24,7 @@ import type {
 import type { RealtimeWebRTCTransport } from "./webrtc-transport";
 import {
   RealtimeResponseQueue,
+  isCurrentCandidateBatch,
   type PendingResponse,
 } from "./response-queue";
 import { getRealtimeErrorDetails } from "./server-event";
@@ -95,6 +96,9 @@ export class HaneumRealtimeSession {
     new CandidateAnnouncementTracker();
   private eventIdCounter = 0;
   private hasSentReadyResponse = false;
+  private candidateCallFlight: Promise<void> = Promise.resolve();
+  private candidateAnnouncementBatch: PendingResponse['candidateBatch'];
+  private announcedReservations: { batch: NonNullable<PendingResponse['candidateBatch']>; ids: number[] } | undefined;
   private queuedAssistDeviceEventKeys = new Set<string>();
 
   private completion: { tripId: string; bellRequestId?: string; eventId: string; responseId?: string; generated: boolean; started: boolean; stopped: boolean; playbackStarted: () => void; finish: (ok: boolean, cleanupFailed?: boolean) => void; promise: Promise<boolean> } | null = null;
@@ -223,9 +227,21 @@ export class HaneumRealtimeSession {
   // (2026-08-12, 예모님 확정 구조: TripContext를 운행 상태의 유일한 원본으로 사용)
   constructor(context: RealtimeGuideContext, private readonly onDisconnected?: () => void) {
     this.context = context;
+    context.getPendingCandidateIds = () => {
+      const state = context.getAppState();
+      const batchIds = (item: PendingResponse | null) => isCurrentCandidateBatch(item?.candidateBatch, state)
+        ? item.candidateBatch.routes.map(route => route.candidateId) : [];
+      return [...batchIds(this.activeResponse), ...batchIds(this.awaitingRetry),
+        ...(isCurrentCandidateBatch(this.announcedReservations?.batch, state)
+          ? this.announcedReservations.ids : []),
+        ...(isCurrentCandidateBatch(this.candidateAnnouncementBatch, state)
+          ? this.candidateAnnouncementBatch.routes.map(route => route.candidateId) : []),
+        ...this.responseQueue.pendingCandidateIds(state)];
+    };
   }
 
   handleTransportClose() {
+    this.candidateAnnouncementBatch = undefined;
     const transport = this.transport;
     this.transport = null;
     // The close event may precede native peer cleanup. Stop output first.
@@ -403,6 +419,21 @@ export class HaneumRealtimeSession {
       if (this.handledFunctionCalls.has(event.call_id)) return;
       this.handledFunctionCalls.add(event.call_id);
       if (this.handledFunctionCalls.size > 256) this.handledFunctionCalls.delete(this.handledFunctionCalls.values().next().value!);
+      let releaseCandidates: (() => void) | undefined;
+      const candidateOrigin = this.context.getAppState();
+      if (event.name === 'get_next_route_candidates') {
+        const previous = this.candidateCallFlight;
+        this.candidateCallFlight = new Promise(resolve => { releaseCandidates = resolve; });
+        await previous;
+      }
+      try {
+      if (event.name === 'get_next_route_candidates' && (this.closedTransports.has(transport) ||
+        candidateOrigin.routeCandidates !== this.context.getAppState().routeCandidates ||
+        candidateOrigin.directSelectionGeneration !== this.context.getAppState().directSelectionGeneration)) {
+        transport.send({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: event.call_id,
+          output: JSON.stringify({ success: false, message: '검색 상태가 변경되어 이전 후보 요청을 생략했습니다.' }) } });
+        return;
+      }
       const clientEvents =
         await dispatchRealtimeFunctionCall(
           event,
@@ -414,6 +445,7 @@ export class HaneumRealtimeSession {
         hasSuccessfulFunctionResult(clientEvents)
       ) {
         this.candidateAnnouncementTracker.resetForNewSearch();
+        this.candidateAnnouncementBatch = undefined;
       }
 
       const completedStatus = clientEvents.some(item => item.type === 'conversation.item.create' && JSON.parse(item.item.output)?.tripStatus === 'TRIP_DONE');
@@ -428,7 +460,7 @@ export class HaneumRealtimeSession {
         if (completedStatus && clientEvent.type === 'response.create') continue;
         this.send(clientEvent, transport);
       }
-
+      } finally { releaseCandidates?.(); }
       return;
     }
   }
@@ -544,6 +576,7 @@ export class HaneumRealtimeSession {
       );
 
       this.isResponseActive = false;
+      if (responseStatus !== 'completed') this.candidateAnnouncementBatch = undefined;
       this.activeResponse = null;
       this.flushPendingResponse();
 
@@ -634,6 +667,16 @@ export class HaneumRealtimeSession {
     }
 
     this.awaitingRetry = null;
+    if (next.candidateBatch) {
+      const state = this.context.getAppState();
+      if (!isCurrentCandidateBatch(next.candidateBatch, state)) {
+        this.flushPendingResponse(); return;
+      }
+      if (!state.routeCandidatesExpiresAt || Date.now() > state.routeCandidatesExpiresAt) {
+        next = { ...next, candidateBatch: { ...next.candidateBatch, routes: [] }, candidateIdsToMark: undefined,
+          instructions: next.selectionGeneration !== undefined ? buildExpiredEndTripInstructions() : '이전 후보는 만료됐으므로 안내하지 말고 다시 검색할지 묻는다.' };
+      }
+    }
     if (next.selectionGeneration !== undefined) {
       const state = this.context.getAppState();
       // 새 운행·여정·검색이 시작됐으면 이전 취소 안내를 버린다.
@@ -668,6 +711,9 @@ export class HaneumRealtimeSession {
     };
 
     this.activeResponse = dispatched;
+    this.candidateAnnouncementBatch = pending.candidateBatch;
+    if (pending.candidateBatch) this.context.dispatchAppAction({ type: 'SET_VISIBLE_ROUTE_CANDIDATES',
+      routes: pending.candidateBatch.routes, searchRoutes: pending.candidateBatch.searchRoutes, generation: pending.candidateBatch.generation });
     this.isResponseActive = true;
     this.candidateAnnouncementTracker.startResponse(
       pending.candidateIdsToMark,
@@ -704,11 +750,20 @@ export class HaneumRealtimeSession {
     if (candidateIds.length === 0) {
       return;
     }
+    const batch = this.candidateAnnouncementBatch;
+    const state = this.context.getAppState();
+    if (batch && !isCurrentCandidateBatch(batch, state)) return;
+    if (batch) {
+      const previous = this.announcedReservations;
+      this.announcedReservations = { batch, ids: [...new Set([...(isCurrentCandidateBatch(previous?.batch, state) ? previous.ids : []), ...candidateIds])] };
+    }
 
     this.context.dispatchAppAction({
       type: "MARK_CANDIDATES_ANNOUNCED",
       candidateIds,
+      ...(batch ? { searchRoutes: batch.searchRoutes, generation: batch.generation } : {}),
     });
+    this.candidateAnnouncementBatch = undefined;
   }
 
   /**
@@ -732,6 +787,7 @@ export class HaneumRealtimeSession {
         };
         candidateIdsToMark?: number[];
         selectionGeneration?: number;
+        candidateBatch?: PendingResponse['candidateBatch'];
       };
 
       const instructions =
@@ -750,7 +806,8 @@ export class HaneumRealtimeSession {
           instructions,
           [],
           candidateIdsToMark,
-        ), ...(responseEvent.selectionGeneration === undefined ? {} : { selectionGeneration: responseEvent.selectionGeneration }) },
+        ), ...(responseEvent.selectionGeneration === undefined ? {} : { selectionGeneration: responseEvent.selectionGeneration }),
+          ...(responseEvent.candidateBatch ? { candidateBatch: responseEvent.candidateBatch } : {}) },
       );
 
       this.flushPendingResponse();

@@ -18,10 +18,6 @@ import * as NativeSpeech from 'expo-speech';
 import { getSafeSpeech } from '../realtime/safe-speech';
 const Speech = getSafeSpeech(NativeSpeech);
 
-// 예모님 확정(2026-08-28): 후보 유효시간 5분. TripContext.js와 동일한 값을 써야 하므로
-// 상수 자체는 여기서도 다시 정의하되, 계산 방식(검색 시각 + 5분)은 TripContext가 갖고 있다.
-const ROUTE_CANDIDATES_TTL_MS = 5 * 60 * 1000;
-
 function isRouteCandidatesExpired(expiresAt) {
   if (!expiresAt) return true;
   return Date.now() > expiresAt;
@@ -36,7 +32,7 @@ export default function RouteListScreen({ navigation }) {
   // destination, routeCandidates는 function-dispatcher.ts의 search_routes 처리 결과로 채워진다.
   const { state, dispatch } = useTrip();
   const isFocused = useIsFocused();
-  const { destination, routeCandidates, routeCandidatesExpiresAt } = state;
+  const { destination, routeCandidatesExpiresAt } = state;
 
   const latestRef = useRef(state);
   latestRef.current = state;
@@ -58,14 +54,8 @@ export default function RouteListScreen({ navigation }) {
   // 채린님 확인(2026-08-15): AI가 이미 노선 후보를 음성으로 안내하므로,
   // 화면 상단의 guideMessage 텍스트(중복 안내)는 제거한다.
 
-  // 채린님 임시 조치(2026-08-28): 서버가 최대 5개까지 routeCandidates를 응답에
-  // 담아 보내면서, 화면에 제한 로직이 없어 전부 리스트로 노출되던 문제를 발견.
-  // "다른 버스 없어요?" 시 다음 후보를 보여주는 정식 기능(유나님 파트)이 완성되기 전까지,
-  // 시연을 위해 임시로 상위 2개만 화면에 보여준다. 정식 기능 완성 후 이 slice는 제거하고
-  // announcedCandidateIds 기반으로 다시 설계해야 한다.
-  const visibleRouteCandidates = routeCandidates
-    ? routeCandidates.slice(0, 2)
-    : routeCandidates;
+  // Realtime sends this exact stored batch in the same order as the spoken result.
+  const visibleRouteCandidates = state.visibleRouteCandidates ?? [];
 
   // 정민님 확인(2026-08-12): 노선 선택 후(=여기) BLE 연결 시작, 배터리 절약을 위해
   // 앱 켤 때가 아니라 실제 필요 시점에 연결한다.
@@ -151,7 +141,7 @@ export default function RouteListScreen({ navigation }) {
   }
 
   // 노선 없을 때 처리
-  if (!visibleRouteCandidates || visibleRouteCandidates.length === 0) {
+  if (visibleRouteCandidates.length === 0) {
     return (
       <View style={styles.emptyContainer}>
         <Text style={styles.emptyText}>

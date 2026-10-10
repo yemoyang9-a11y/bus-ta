@@ -21,7 +21,7 @@ import { createAutomaticBoarding } from './automatic-boarding';
 import { releaseCane } from '../ble/cane-release-controller';
 import { HaneumRealtimeSession } from './session';
 import { createRealtimeGuideContext } from './context';
-import { waitForRouteSelection } from '../state/trip-transition';
+import { waitForRouteSelection, waitForSearchState, confirmSearchState } from '../state/trip-transition';
 import { connectWithBestEffortLocation } from './connect-best-effort';
 import { createLocationRefreshCoordinator } from './location-refresh';
 import { createAssistDevicePreparation } from './assist-device-preparation';
@@ -79,6 +79,8 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
   stateRef.current = state;
   dispatchRef.current = dispatch;
 
+  useEffect(() => { confirmSearchState(state); }, [state.routeCandidates, state.routeSearchRequestId]);
+
   const currentLocationRef = useRef<{ latitude: number; longitude: number } | undefined>(undefined);
   const locationRefreshRef = useRef<ReturnType<typeof createLocationRefreshCoordinator> | null>(null);
 
@@ -122,7 +124,10 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
       getCurrentLocation: () => currentLocationRef.current,
       refreshCurrentLocation,
       stopBeaconScan,
-      waitForRouteSelection: generation => waitForRouteSelection(stateRef.current, generation),
+      waitForRouteSelection: (generation, candidates) => waitForRouteSelection(
+        candidates ? { ...stateRef.current, routeCandidates: candidates } : stateRef.current, generation),
+      waitForSearchState: (candidates, requestId) => stateRef.current.routeCandidates === candidates && stateRef.current.routeSearchRequestId === requestId
+        ? Promise.resolve(true) : waitForSearchState(candidates, requestId),
       onTripEnded: tripId => sessionRef.current?.cancelTripCompletion(tripId),
       dispatchAppAction: (action: AppAction) => dispatchRef.current(action),
     });

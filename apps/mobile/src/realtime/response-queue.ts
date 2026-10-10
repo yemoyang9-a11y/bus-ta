@@ -1,4 +1,21 @@
-import type { TripStatusChangedEvent } from "./types";
+import type { AppTripState, TripStatusChangedEvent } from "./types";
+import type { Route } from '@bus-ta/shared';
+
+export type CandidateBatch = {
+  searchRoutes: Route[];
+  generation: number;
+  routes: Route[];
+  tripId: string | null;
+  journeyGeneration: number;
+  searchRequestId: number | null;
+};
+
+export function isCurrentCandidateBatch(batch: CandidateBatch | undefined, state: Pick<AppTripState,
+  'routeCandidates' | 'directSelectionGeneration' | 'tripId' | 'journeyGeneration' | 'routeSearchRequestId'>): batch is CandidateBatch {
+  return Boolean(batch && batch.searchRoutes === state.routeCandidates &&
+    batch.generation === (state.directSelectionGeneration ?? 0) && batch.tripId === state.tripId &&
+    batch.journeyGeneration === (state.journeyGeneration ?? 0) && batch.searchRequestId === (state.routeSearchRequestId ?? null));
+}
 
 export type PendingResponse = {
   eventId: string;
@@ -12,6 +29,7 @@ export type PendingResponse = {
   candidateIdsToMark?: number[];
   completionTripId?: string;
   selectionGeneration?: number;
+  candidateBatch?: CandidateBatch;
 };
 
 type DurablePendingResponse = PendingResponse & {
@@ -56,6 +74,11 @@ export class RealtimeResponseQueue {
 
   enqueueDirect(response: PendingResponse) {
     this.durableResponses.push(response);
+  }
+
+  pendingCandidateIds(state: AppTripState): number[] {
+    return this.durableResponses.flatMap(item => isCurrentCandidateBatch(item.candidateBatch, state)
+      ? item.candidateBatch.routes.map(route => route.candidateId) : []);
   }
 
   enqueueStatus(
