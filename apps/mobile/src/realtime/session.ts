@@ -1,8 +1,10 @@
 import { TRIP_COMPLETION_MESSAGE } from './trip-tracking';
 import { ONE_STOP_GUIDE_MESSAGE, ONE_STOP_REALTIME_PLAYBACK_TIMEOUT_MS } from './one-stop-alight-guide';
 import { toTripStatusSnapshot } from './status-snapshot';
+import { logVoiceRouteDiagnostic } from './voice-route-diagnostic';
 import { apiClient } from "../api/client";
 import {
+  buildExpiredEndTripInstructions,
   dispatchRealtimeFunctionCall,
   isRealtimeFunctionCallEvent,
 } from "./function-dispatcher";
@@ -10,6 +12,7 @@ import { checkAndDispatchStatusChange } from "./event-dispatcher";
 import {
   createRealtimeReadyResponseEvent,
   createRealtimeSessionUpdateEvent,
+  MISSED_BUS_POLICY_VERSION,
 } from "./guide";
 import type {
   CreateRealtimeSessionResponse,
@@ -180,6 +183,7 @@ export class HaneumRealtimeSession {
   cancelTripCompletion(tripId: string) {
     if (this.completion?.tripId === tripId) this.completion.finish(false);
     this.responseQueue.discardTripStatus(tripId);
+    if ((this.awaitingRetry as (PendingResponse & { tripId?: string }) | null)?.tripId === tripId) this.awaitingRetry = null;
   }
 
   private trackCompletion(value: Record<string, unknown>) {
@@ -259,6 +263,7 @@ export class HaneumRealtimeSession {
 
   sendSessionUpdate(transport: RealtimeTransport) {
     transport.send(createRealtimeSessionUpdateEvent());
+    logVoiceRouteDiagnostic('policy_sent', { policy: 'sent' });
   }
 
   recoverOutput(): boolean {
@@ -319,7 +324,7 @@ export class HaneumRealtimeSession {
                 this.handleServerEvent(
                   event,
                   transport,
-                ).catch(() => {});
+                ).catch(() => logVoiceRouteDiagnostic('handler_failed'));
               },
               onClose: () => { if (this.transport === transport) this.handleTransportClose(); },
               onError: () => {
@@ -362,6 +367,11 @@ export class HaneumRealtimeSession {
     event: unknown,
     transport: RealtimeTransport,
   ) {
+    if (event && typeof event === 'object' && (event as Record<string, unknown>).type === 'session.updated') {
+      const reported = (event as { session?: { instructions?: unknown } }).session?.instructions;
+      logVoiceRouteDiagnostic('policy_ack', { policy: typeof reported === 'string'
+        ? reported.includes(MISSED_BUS_POLICY_VERSION) ? 'confirmed' : 'different' : 'unavailable' });
+    }
     if (this.closedTransports.has(transport)) return;
     this.trackResponseLifecycle(event);
 
@@ -381,6 +391,15 @@ export class HaneumRealtimeSession {
     }
 
     if (isRealtimeFunctionCallEvent(event)) {
+      let flags: Record<string, unknown> = {};
+      try {
+        const parsed: unknown = JSON.parse(event.arguments);
+        if (parsed && typeof parsed === 'object') flags = parsed as Record<string, unknown>;
+      } catch { /* Dispatcher reports invalid arguments without exposing them. */ }
+      logVoiceRouteDiagnostic('function_received', { tool: event.name,
+        phase: this.context.getAppState().tripStatus, hasTrip: Boolean(this.context.getAppState().tripId),
+        missedBus: flags.reason === 'MISSED_BUS', cancelRequested: flags.action === 'CANCEL',
+        refreshArrivals: flags.refreshArrivals === true });
       if (this.handledFunctionCalls.has(event.call_id)) return;
       this.handledFunctionCalls.add(event.call_id);
       if (this.handledFunctionCalls.size > 256) this.handledFunctionCalls.delete(this.handledFunctionCalls.values().next().value!);
@@ -398,6 +417,13 @@ export class HaneumRealtimeSession {
       }
 
       const completedStatus = clientEvents.some(item => item.type === 'conversation.item.create' && JSON.parse(item.item.output)?.tripStatus === 'TRIP_DONE');
+      if (event.name === 'end_trip' && hasSuccessfulFunctionResult(clientEvents)) {
+        const ended = clientEvents.find(item => item.type === 'conversation.item.create');
+        if (ended?.type === 'conversation.item.create') {
+          const tripId = JSON.parse(ended.item.output)?.tripId;
+          if (typeof tripId === 'string') this.responseQueue.discardTripStatus(tripId);
+        }
+      }
       for (const clientEvent of clientEvents) {
         if (completedStatus && clientEvent.type === 'response.create') continue;
         this.send(clientEvent, transport);
@@ -599,7 +625,7 @@ export class HaneumRealtimeSession {
       return;
     }
 
-    const next =
+    let next =
       this.awaitingRetry ??
       this.responseQueue.dequeue();
 
@@ -608,6 +634,18 @@ export class HaneumRealtimeSession {
     }
 
     this.awaitingRetry = null;
+    if (next.selectionGeneration !== undefined) {
+      const state = this.context.getAppState();
+      // 새 운행·여정·검색이 시작됐으면 이전 취소 안내를 버린다.
+      if (state.tripId || state.journeyRoute || (state.directSelectionGeneration ?? 0) !== next.selectionGeneration) {
+        this.flushPendingResponse();
+        return;
+      }
+      // 후보만 만료됐으면 후보 안내를 빼고 취소 사실은 말한다.
+      if (next.candidateIdsToMark?.length && (!state.routeCandidatesExpiresAt || Date.now() > state.routeCandidatesExpiresAt)) {
+        next = { ...next, candidateIdsToMark: undefined, instructions: buildExpiredEndTripInstructions() };
+      }
+    }
     this.dispatchResponseCreate(next);
   }
 
@@ -693,6 +731,7 @@ export class HaneumRealtimeSession {
           instructions?: string;
         };
         candidateIdsToMark?: number[];
+        selectionGeneration?: number;
       };
 
       const instructions =
@@ -707,11 +746,11 @@ export class HaneumRealtimeSession {
           : undefined;
 
       this.responseQueue.enqueueDirect(
-        this.createPendingResponse(
+        { ...this.createPendingResponse(
           instructions,
           [],
           candidateIdsToMark,
-        ),
+        ), ...(responseEvent.selectionGeneration === undefined ? {} : { selectionGeneration: responseEvent.selectionGeneration }) },
       );
 
       this.flushPendingResponse();

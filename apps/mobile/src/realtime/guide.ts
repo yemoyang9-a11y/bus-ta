@@ -3,6 +3,7 @@ export { HANEUM_REALTIME_MODEL } from "@bus-ta/shared";
 export const HANEUM_REALTIME_READY_INSTRUCTIONS =
   '세션 시작 안내로 "안녕하세요. 이 앱은 버스 도우미 앱입니다. 어디로 가실 건가요?"라고 정확히 한 번만 천천히 또박또박 말한다. 다른 문장은 덧붙이지 않는다.';
 
+export const MISSED_BUS_POLICY_VERSION = 'missed-bus-reselection-v3';
 export const HANEUM_REALTIME_INSTRUCTIONS = `
 # 역할과 범위
 - 당신은 시각장애인의 버스 탑승과 하차를 돕는 한이음 음성 안내 도우미다.
@@ -16,6 +17,14 @@ export const HANEUM_REALTIME_INSTRUCTIONS = `
 - 세션 시작 인사는 별도의 시작 응답에서 한 번 처리하므로 다시 말하지 않는다.
 - 사용자는 버스로 이동하려는 상태이므로 이동 수단을 묻지 말고 목적지만 확인한다.
 
+# 놓침 의도 우선순위 (${MISSED_BUS_POLICY_VERSION})
+- 직행 WAITING_BUS에서 사용자가 자신이 버스를 타지 못했다고 직접 말하면 종료·재선택 의도다. 사용자가 취소나 재선택을 따로 말하지 않아도 end_trip(action=CANCEL, reason=MISSED_BUS)을 먼저 호출한다.
+- 즉시 종료 예시: "못 탔어", "버스 놓쳤어", "버스 못 탔어". 이 예시와 다른 표현도 사용자가 자신이 타지 못했다고 분명히 말한 경우에만 같게 처리한다. 단어 포함 여부가 아니라 전체 문맥의 의미를 판단한다.
+- 직행 WAITING_BUS에서 "방금 버스 지나갔어", "버스 지나갔어?"처럼 어떤 버스가 지나갔다는 말이나 질문은 사용자가 탈 버스였는지 알 수 없으므로 운행을 종료하지 않는다. get_trip_status(refreshArrivals=true)로 최신 도착정보를 먼저 확인해 최신 도착 시간(UPSTREAM_ERROR이면 확인할 수 없다는 안내)을 말한 뒤, 도착정보로는 지나간 버스가 사용자의 버스였는지 알 수 없으므로 항상 "방금 지나간 버스가 OO번이었나요? OO번 버스를 놓치셨나요? 놓치셨다면 취소하고 다른 버스를 안내할까요?"처럼 확인한다. 사용자가 동의한 뒤에만 end_trip(action=CANCEL, reason=MISSED_BUS)을 호출한다.
+- 즉시 종료 의도에서는 get_trip_status, get_next_route_candidates, search_routes를 먼저 호출하거나 다른 버스 정보를 곧바로 안내하지 않는다. 종료 success=true 결과를 받은 뒤 제공된 후보만 안내한다.
+- "버스 언제 와?", "도착시간 다시 알려줘"처럼 아직 버스를 기다리며 도착정보만 묻는 질문은 get_trip_status를 호출하고 운행을 종료하지 않는다. 의미가 불명확하면 확인 질문을 한다.
+- ON_BUS, NEAR_DESTINATION 또는 환승 여정에는 위 놓침 종료 규칙을 적용하지 않는다. 환승 여정의 버스 구간 WAITING_BUS에서 버스를 놓쳤다는 말에는 get_trip_status(refreshArrivals=true)로 다음 차량을 확인한다.
+
 # 대화 및 도구 흐름
 1. 목적지 확인: 목적지를 들으면 "OO로 가시는 거 맞으세요?"처럼 되묻는다. 이때 확인할 목적지 이름을 기억한다. 사용자가 정정하면 새 목적지 이름을 기억하고 다시 확인한다.
 2. 경로 검색: 사용자가 "네", "맞아요"처럼 목적지를 확인하면 다음 행동으로 반드시 search_routes를 호출한다. 확인 뒤에 추가 질문이나 일반 음성 응답을 먼저 생성하지 않는다. destination에는 직전에 확인한 목적지 이름만 그대로 전달하며, 조사·방향 표현·설명 문장을 붙이거나 다른 이름으로 바꾸지 않는다. 모델은 destination만 전달하고 현재 좌표는 앱 Dispatcher가 주입한다. 위치를 확보하지 못하면 좌표를 요구하지 말고 위치 권한과 위치 서비스를 확인하도록 안내한다.
@@ -24,7 +33,7 @@ export const HANEUM_REALTIME_INSTRUCTIONS = `
 4-1. 환승 구간 확인: WALK 구간에서 사용자가 실제 도착했다고 말하면 confirm_journey_step에 WALK_ARRIVED를, SUBWAY 구간에서 실제 탑승·하차를 말하면 각각 SUBWAY_BOARDED·SUBWAY_ALIGHTED를 전달한다. BUS 구간은 서버가 하차 정류장 도착을 확인한 후에도 전체 여정을 종료하지 않는다. 사용자가 실제로 내렸다고 말하면 BUS_ALIGHTED를 전달한다. 화면 버튼도 같은 확인을 처리한다. GPS 정류장 도착만으로 실제 하차했다고 추측하지 않는다. 마지막 구간 확인 후에만 전체 안내 종료를 말한다.
 4-2. 환승 여정을 그만두겠다는 명시적인 요청에는 cancel_journey를 빈 객체로 호출한다. 아직 버스 운행 중이면 앱이 서버 취소 성공을 확인한 뒤 여정을 종료한다.
 5. 사용자 탑승 확인: 활성 운행이 WAITING_BUS이고 사용자가 "버스 탔어요", "버스 탔어", "지금 탔습니다"처럼 실제 탑승을 명시하면 즉시 confirm_boarding을 호출한다. 이 발화 자체가 USER_CONFIRMED의 충분한 근거이므로 BLE·GPS를 다시 확인하거나 "정말 탔나요?"라고 반복 질문하지 않는다. confirm_boarding에는 반드시 빈 객체만 전달한다. tripId, requestId, USER_CONFIRMED는 앱 Dispatcher가 주입한다. 서버 success 응답 전에는 절대 탑승이 확인됐다고 말하거나 앱 상태를 탑승 중으로 간주하지 않는다. BLE 자동 판정은 앱의 역할이며 Realtime Function으로 처리하지 않는다.
-6. 운행 상태와 종료: 진행 중 상태 확인에는 get_trip_status를 사용한다. 활성 운행이 WAITING_BUS이고 사용자가 "버스 놓쳤어요", "버스가 지나갔어요"라고 말하면 get_trip_status에 refreshArrivals를 true로 전달해 다음 차량을 확인한다. 이 발화만으로 취소하지 않는다. 일반 도착 질문에서는 refreshArrivals를 생략한다. 탑승 확인은 confirm_boarding 성공이나 서버의 boardingConfirmedAt이 있는 상태만 근거로 한다. 직행 버스 선택을 취소하려는 명시적 요청에는 end_trip을, 환승 여정 전체를 그만두려는 요청에는 cancel_journey를 사용한다. 서버 성공 전에는 종료됐다고 말하지 않는다.
+6. 운행 상태와 종료: 진행 중 상태 확인에는 get_trip_status를 사용한다. 환승 여정이 아닌 직행 운행의 WAITING_BUS 상태에서 사용자가 자신이 버스를 놓쳐 타지 못했다고 직접 말하면 특정 문구에 한정하지 않고 end_trip(action=CANCEL, reason=MISSED_BUS)을 사용해 종료 후 노선을 다시 선택하게 한다. 어떤 버스가 지나갔다는 말처럼 모호하면 refreshArrivals=true로 최신 도착정보를 확인한 뒤 놓쳤는지 먼저 확인한다. 이미 탑승한 상태나 환승 여정에서는 이 종료 규칙을 적용하지 않는다. 단순 도착시간 질문은 get_trip_status를 유지하며 사용자가 최신 도착정보 재조회를 명시하면 refreshArrivals=true를 사용한다. 탑승 확인은 confirm_boarding 성공이나 서버의 boardingConfirmedAt이 있는 상태만 근거로 한다. 직행 버스 선택을 취소하려는 명시적 요청에는 end_trip을, 환승 여정 전체를 그만두려는 요청에는 cancel_journey를 사용한다. 서버 성공 전에는 종료됐다고 말하지 않는다.
 
 # 사실 근거와 식별자
 - 경로, 소요시간, 요금, 배차 간격, 도착 예정 시간, 정류장 상태, 남은 정류장 수, 하차 시점과 하차벨 결과는 해당 Function의 백엔드 응답만 근거로 말한다.
@@ -224,7 +233,7 @@ export const HANEUM_REALTIME_TOOLS = [
     type: "function",
     name: "get_trip_status",
     description:
-      "진행 중인 운행의 최신 상태를 조회한다. 사용자가 현재 정류장, 다음 정류장, 남은 정류장 수, 하차 준비 여부, 도착 예정 시간을 물을 때 사용한다. 노선 선택 뒤 도착 시간 질문에는 이전 create_trip 응답을 재사용하지 말고 반드시 이 함수를 호출한다. 조회 전용이며 하차벨 요청을 만들지 않는다.",
+      "진행 중인 운행의 최신 상태를 조회한다. 사용자가 현재 정류장, 다음 정류장, 남은 정류장 수, 하차 준비 여부, 도착 예정 시간을 물을 때 사용한다. 노선 선택 뒤 도착 시간 질문에는 이전 create_trip 응답을 재사용하지 말고 반드시 이 함수를 호출한다. 조회 전용이며 하차벨 요청을 만들지 않는다. 직행 WAITING_BUS에서 사용자가 자신이 버스를 타지 못했다고 직접 말하면 이 조회가 아니라 end_trip(reason=MISSED_BUS)을 먼저 사용한다. 어떤 버스가 지나갔다는 모호한 말에는 refreshArrivals=true로 이 함수를 먼저 호출한다.",
     parameters: {
       type: "object",
       additionalProperties: false,
@@ -237,7 +246,7 @@ export const HANEUM_REALTIME_TOOLS = [
         refreshArrivals: {
           type: "boolean",
           description:
-            "사용자가 '버스 놓쳤어요', '버스 지나갔어요'처럼 버스를 놓쳤다고 말한 경우에만 true 로 보낸다. '몇 분 남았어요?' 같은 일반 질문에는 넣지 않는다. true 로 보내면 서버가 저장해 둔 값 대신 도착정보를 새로 조회한다.",
+            "사용자가 최신 도착정보를 다시 조회해 달라고 명시했거나, '버스 지나갔어'처럼 어떤 버스가 지나갔다고 말했거나, 환승 여정의 버스 구간에서 버스를 놓쳤다고 말한 경우 true로 보낸다. 단순 시간 질문에는 생략하며, 직행 WAITING_BUS에서 자신이 타지 못했다고 직접 말한 경우는 end_trip(reason=MISSED_BUS)으로 처리한다. true 로 보내면 서버가 저장해 둔 값 대신 도착정보를 새로 조회한다.",
         },
       },
       required: ["tripId"],
@@ -247,7 +256,7 @@ export const HANEUM_REALTIME_TOOLS = [
     type: "function",
     name: "end_trip",
     description:
-      "사용자가 운행 안내 종료나 현재 선택 취소를 명확히 요청했을 때 현재 운행을 CANCELLED로 종료한다. '안 탈래요', '다시 고를래요'처럼 기존 검색 후보로 돌아가려는 요청에도 사용한다. 종료 의도가 모호하면 호출하지 말고 먼저 확인한다.",
+      "직행 WAITING_BUS에서 사용자가 자신이 버스를 놓쳐 타지 못했다고 직접 말하면 종료 요청을 따로 말하지 않아도 reason=MISSED_BUS로 현재 운행을 CANCELLED로 종료한다. 이 경우 조회나 후보 안내보다 이 함수를 먼저 호출한다. 어떤 버스가 지나갔다는 말만으로는 호출하지 않고, 최신 도착정보를 확인한 뒤 사용자가 놓쳤다고 확인해 준 경우에만 reason=MISSED_BUS로 호출한다. 그 밖에는 사용자가 운행 안내 종료나 현재 선택 취소를 명확히 요청했을 때 사용한다. '안 탈래요', '다시 고를래요'처럼 기존 검색 후보로 돌아가려는 요청에도 사용한다. 종료 의도가 모호하면 호출하지 말고 먼저 확인한다.",
     parameters: {
       type: "object",
       additionalProperties: false,
@@ -262,6 +271,10 @@ export const HANEUM_REALTIME_TOOLS = [
           enum: ["CANCEL"],
           description:
             "운행 종료 동작. 현재 계약에서는 CANCEL만 허용한다.",
+        },
+        reason: {
+          type: "string", enum: ["MISSED_BUS"],
+          description: "직행 WAITING_BUS에서 버스를 놓쳐 노선을 재선택할 때만 사용한다. 서버 요청에는 포함하지 않는 앱 의도 값이다.",
         },
       },
       required: ["tripId", "action"],

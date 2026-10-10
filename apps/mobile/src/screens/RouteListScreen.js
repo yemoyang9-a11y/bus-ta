@@ -1,4 +1,5 @@
-import React, { useEffect, useState } from 'react';
+import { startDirectTrip } from '../state/direct-trip-selection';
+import React, { useEffect, useRef, useState } from 'react';
 import { useIsFocused } from '@react-navigation/native';
 import {
   View,
@@ -8,10 +9,14 @@ import {
   FlatList,
   ActivityIndicator,
 } from 'react-native';
-import { apiClient, ApiError } from '../api/client';
+import { apiClient } from '../api/client';
 import { useTrip } from '../state/TripContext';
 import { stopBeaconScan } from '../ble/bleManager';
 import { canStartJourney } from '../state/transfer-journey';
+import { confirmRouteSelectionScreen } from '../state/trip-transition';
+import * as NativeSpeech from 'expo-speech';
+import { getSafeSpeech } from '../realtime/safe-speech';
+const Speech = getSafeSpeech(NativeSpeech);
 
 // 예모님 확정(2026-08-28): 후보 유효시간 5분. TripContext.js와 동일한 값을 써야 하므로
 // 상수 자체는 여기서도 다시 정의하되, 계산 방식(검색 시각 + 5분)은 TripContext가 갖고 있다.
@@ -33,11 +38,22 @@ export default function RouteListScreen({ navigation }) {
   const isFocused = useIsFocused();
   const { destination, routeCandidates, routeCandidatesExpiresAt } = state;
 
+  const latestRef = useRef(state);
+  latestRef.current = state;
+  const navigatedRef = useRef(null);
   useEffect(() => {
-    if (isFocused && state.journeyRoute) navigation.navigate('Transfer');
-  }, [state.journeyRoute, navigation, isFocused]);
+    if (!isFocused) { navigatedRef.current = null; return; }
+    if (state.journeyRoute) { navigation.navigate('Transfer'); return; }
+    if (!state.tripId) confirmRouteSelectionScreen(state, 'RouteList');
+    const key = state.tripId;
+    if (!key || !state.selectedRoute || !['WAITING_BUS', 'ON_BUS', 'NEAR_DESTINATION'].includes(state.tripStatus)) return;
+    if (navigatedRef.current === key) return;
+    navigatedRef.current = key;
+    navigation.navigate('Riding', { tripId: key, selectedRoute: state.selectedRoute });
+  }, [state.tripId, state.selectedRoute, state.tripStatus, state.journeyRoute, state.directSelectionGeneration, navigation, isFocused]);
 
   const [loading, setLoading] = useState(false);
+  const [selectionError, setSelectionError] = useState(null);
 
   // 채린님 확인(2026-08-15): AI가 이미 노선 후보를 음성으로 안내하므로,
   // 화면 상단의 guideMessage 텍스트(중복 안내)는 제거한다.
@@ -65,7 +81,7 @@ export default function RouteListScreen({ navigation }) {
   //
   // 노선 선택 시 POST /api/trips 호출 후 탑승 중 화면으로 이동
   const selectRoute = async (selectedRoute) => {
-    if (state.journeyRoute) return;
+    if (latestRef.current.tripId || latestRef.current.journeyRoute) return;
     // Disabled 카드 외의 호출 경로에서도 API·BLE·선택 상태를 바꾸지 않는다.
     if (isGuidanceOnly(selectedRoute)) return;
     // 예모님 지적(2026-08-28, P1): 화면에서 기존 후보를 선택할 때도 TTL을 확인하지 않고
@@ -82,25 +98,10 @@ export default function RouteListScreen({ navigation }) {
       return;
     }
 
+    setSelectionError(null);
     setLoading(true);
 
     try {
-      // A 취소 직후 후보 화면이 먼저 열려도, A의 실제 스캔 중지가 끝나기 전에는
-      // B 운행과 새 대상 비콘 설정을 시작하지 않는다. RidingScreen의 cleanup과
-      // 동시에 호출돼도 stopBeaconScan() single-flight가 같은 Promise를 공유한다.
-      if (state.beaconScanActive) {
-        await stopBeaconScan();
-        dispatch({
-          type: 'SET_BEACON_SCAN_ACTIVE',
-          active: false,
-        });
-      }
-
-      dispatch({
-        type: 'SELECT_ROUTE',
-        route: selectedRoute,
-      });
-
       // 공통 API 명세서 5.2 기준 필드만 전달 (guideMessage·recommendationReason 등
       // 스펙에 없는 필드는 보내지 않는다 — 백엔드 스키마 검증 대상이 아님)
       const tripRequest = {
@@ -122,27 +123,19 @@ export default function RouteListScreen({ navigation }) {
         intervalTime: selectedRoute.intervalTime,
       };
 
-      const data = await apiClient.trips.create(tripRequest);
-
-      dispatch({
-        type: 'START_TRIP',
-        tripId: data.tripId,
-      });
-
-      navigation.navigate('Riding', {
-        tripId: data.tripId,
-        selectedRoute,
-      });
+      await startDirectTrip({ getState: () => latestRef.current, dispatch,
+        route: selectedRoute, request: tripRequest, create: apiClient.trips.create,
+        cancel: (tripId) => apiClient.trips.end(tripId, { action: 'CANCEL' }), stopScan: stopBeaconScan });
+      // Navigation is driven by the committed state, just like voice selection.
     } catch (error) {
-      // errorCode별 분기 (13.2)
-      if (
-        error instanceof ApiError &&
-        error.errorCode === 'INVALID_STATION_LIST'
-      ) {
-        // 선택한 후보 자체가 규칙을 어긴 경우. 임의로 보정하지 않고 오류 화면으로.
+      if (!latestRef.current.tripId && !latestRef.current.journeyRoute) {
+        setSelectionError(error instanceof Error ? error.message : '운행을 준비하지 못했습니다. 다시 선택해 주세요.');
+        // 화면 문구만으로는 화면을 볼 수 없는 사용자에게 실패가 전달되지 않는다.
+        // 다른 선택이 아직 진행 중이면 그 결과가 곧 안내되므로 다시 고르라고 말하지 않는다.
+        if (error?.code !== 'SELECTION_IN_PROGRESS') {
+          Speech.speak('운행을 준비하지 못했습니다. 다시 선택해 주세요.', { language: 'ko' });
+        }
       }
-
-      navigation.navigate('Error');
     } finally {
       setLoading(false);
     }
@@ -177,6 +170,7 @@ export default function RouteListScreen({ navigation }) {
 
   return (
     <View style={styles.container}>
+      {selectionError && <Text accessibilityRole="alert" style={{ color: '#FFFFFF', marginBottom: 12 }}>{selectionError}</Text>}
       <FlatList
         data={visibleRouteCandidates}
         keyExtractor={(item) => String(item.candidateId)}

@@ -3,7 +3,7 @@ import { useIsFocused } from '@react-navigation/native';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { useRealtime } from '../realtime/RealtimeProvider';
 import { useTrip } from '../state/TripContext';
-import { getTripNavigationTarget } from '../state/trip-transition';
+import { getTripNavigationTarget, confirmRouteSelectionScreen } from '../state/trip-transition';
 
 // Realtime 음성 세션의 실제 진입점.
 // 목적지 인식과 확인은 구식 STT/Confirm 화면이 아니라 Realtime 대화 안에서 처리한다.
@@ -27,7 +27,9 @@ export default function MainScreen({ navigation }) {
         journeyPhase === 'BUS_ALIGHT_CONFIRM' || !tripId ? undefined : { tripId, selectedRoute });
       return;
     }
-    const target = getTripNavigationTarget({ tripId, routeCandidates });
+    const candidatesValid = state.routeCandidatesExpiresAt && Date.now() <= state.routeCandidatesExpiresAt;
+    const target = getTripNavigationTarget({ tripId, routeCandidates: candidatesValid ? routeCandidates : null });
+    if (!tripId && target !== 'RouteList') confirmRouteSelectionScreen(state, 'Main');
 
     if (target === 'Riding') {
       navigation.navigate('Riding', { tripId, selectedRoute });
@@ -37,7 +39,7 @@ export default function MainScreen({ navigation }) {
     if (target === 'RouteList') {
       navigation.navigate('RouteList');
     }
-  }, [tripId, routeCandidates, navigation, selectedRoute, journeyRoute, journeyPhase, isFocused]);
+  }, [tripId, routeCandidates, navigation, selectedRoute, journeyRoute, journeyPhase, isFocused, state.directSelectionGeneration, state.routeCandidatesExpiresAt]);
 
   const handleRetry = () => {
     connect().catch(() => {});

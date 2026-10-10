@@ -1,3 +1,5 @@
+import { startDirectTrip } from '../state/direct-trip-selection';
+import { logVoiceRouteDiagnostic } from './voice-route-diagnostic';
 import { apiClient, ApiError } from "../api/client";
 import type {
   BoardingConfirmationResponse,
@@ -41,6 +43,8 @@ type EndTripModelResult = EndTripResponse & {
   destination: string | null;
   routes: Route[];
   expired: boolean;
+  // 놓친 노선도 다음 차를 기다리려고 다시 고를 수 있어 routes 에 남긴다.
+  missedRouteCandidateId?: number;
 };
 
 type JourneyResult = { success: true; message: string; completed?: boolean; nextSegmentIndex?: number };
@@ -61,6 +65,8 @@ type ModelFunctionResult =
   | (CreateTripResponse & { boardingStation: Route["boardingStation"] });
 
 // 동일 함수+인자 조합의 병렬 재호출 방지 (create_trip은 선택당 1회만 등)
+const endedResults = new WeakSet<object>();
+const endTripFlights = new WeakMap<RealtimeGuideContext, Map<string, Promise<EndTripResponse>>>();
 const inFlightCalls = new Map<string, Promise<FunctionResult>>();
 const journeyOrigins = new WeakMap<object, { route: Route; generation: number; index: number | null; tripId: string | null }>();
 let boardingRequestSequence = 0;
@@ -69,7 +75,7 @@ function buildCallKey(
   event: RealtimeFunctionCallEvent,
   context: RealtimeGuideContext,
 ): string {
-  if (event.name === "confirm_boarding") {
+  if (event.name === "confirm_boarding" || event.name === "end_trip") {
     return `${event.name}:${context.getAppState().tripId ?? "NO_ACTIVE_TRIP"}`;
   }
   if (["start_journey_bus", "confirm_journey_step", "cancel_journey"].includes(event.name)) {
@@ -115,7 +121,7 @@ function buildFunctionResponseInstructions(name: RealtimeFunctionName): string {
   // 도착 예정 시간을 create_trip 전용으로 묶어 두었기 때문이다. 이 Function 은 매번
   // 서버가 갱신한 값을 들고 오므로 답변 근거를 방금 받은 결과로 못박는다.
   if (name === "get_trip_status") {
-    return `${common} 도착 예정 시간과 남은 정류장 수는 방금 전달된 이 get_trip_status 결과만 근거로 말한다. 이전 create_trip 응답, 앞선 대화에서 안내했던 도착 시간, 앱이 기억하던 값은 절대 다시 사용하지 않는다. arrivalStatus 가 AVAILABLE 이면 arrivals의 첫 항목 predictedArrivalMinutes 를 사용해 \"버스는 약 N분 후 도착합니다\"처럼 안내한다. NO_VEHICLE 이면 조회는 됐고 지금 이 정류장에 오는 해당 노선 차량이 없다고 안내하며, 이때는 다른 노선을 제안해도 된다. NO_PREDICTION 이면 차가 없다고 단정하지 말고 도착시간 정보를 확인할 수 없다고 안내한다. UPSTREAM_ERROR 이면 \"지금은 도착 정보를 확인할 수 없습니다\"라고만 안내하고, 절대 버스가 없다거나 차량이 없다는 취지로 말하지 않으며, arrivals 에 값이 남아 있어도 그것을 방금 확인한 최신 도착시간처럼 말하지 않는다. \"버스를 놓쳤다\"는 발화 뒤에 이 결과가 왔더라도 그 발화만으로 운행 자체를 취소하지 않는다. \"몇 정류장 남았어요?\"의 뜻은 탑승 전후가 다르다. tripStatus 가 WAITING_BUS 이면 remainingStations 를 버스가 승차 정류장까지 남긴 정류장 수로 말하지 않고, 남은 정류장 수는 확인할 수 없다고 밝힌 뒤 최신 도착 예정 시간을 안내한다. tripStatus 가 ON_BUS 또는 NEAR_DESTINATION 이면 remainingStations 를 목적지까지 남은 정류장 수로 안내한다.`;
+    return `${common} 도착 예정 시간과 남은 정류장 수는 방금 전달된 이 get_trip_status 결과만 근거로 말한다. 이전 create_trip 응답, 앞선 대화에서 안내했던 도착 시간, 앱이 기억하던 값은 절대 다시 사용하지 않는다. arrivalStatus 가 AVAILABLE 이면 arrivals의 첫 항목 predictedArrivalMinutes 를 사용해 \"버스는 약 N분 후 도착합니다\"처럼 안내한다. NO_VEHICLE 이면 조회는 됐고 지금 이 정류장에 오는 해당 노선 차량이 없다고 안내하며, 이때는 다른 노선을 제안해도 된다. NO_PREDICTION 이면 차가 없다고 단정하지 말고 도착시간 정보를 확인할 수 없다고 안내한다. UPSTREAM_ERROR 이면 \"지금은 도착 정보를 확인할 수 없습니다\"라고만 안내하고, 절대 버스가 없다거나 차량이 없다는 취지로 말하지 않으며, arrivals 에 값이 남아 있어도 그것을 방금 확인한 최신 도착시간처럼 말하지 않는다. 상태 조회 자체는 운행을 취소하지 않으며, 이 결과만으로 end_trip을 호출하지 않는다. 환승 여정이 아닌 직행 WAITING_BUS에서 사용자가 어떤 버스가 지나갔다고 말한 뒤 이 결과를 받았다면, 위 기준대로 최신 도착 시간(UPSTREAM_ERROR이면 확인할 수 없다는 안내)을 말한 뒤 방금 지나간 버스가 사용자의 버스였는지, 놓쳤으면 취소하고 다른 버스를 안내할지 확인 질문을 덧붙이고, 다음 사용자 발화에서 놓쳤다고 확인한 경우에만 end_trip(reason=MISSED_BUS)을 호출한다. 환승 여정의 버스 구간이면 end_trip을 호출하지 않고 다음 차량 도착 시간만 안내한다. \"몇 정류장 남았어요?\"의 뜻은 탑승 전후가 다르다. tripStatus 가 WAITING_BUS 이면 remainingStations 를 버스가 승차 정류장까지 남긴 정류장 수로 말하지 않고, 남은 정류장 수는 확인할 수 없다고 밝힌 뒤 최신 도착 예정 시간을 안내한다. tripStatus 가 ON_BUS 또는 NEAR_DESTINATION 이면 remainingStations 를 목적지까지 남은 정류장 수로 안내한다.`;
   }
 
   if (name === "confirm_boarding") {
@@ -123,10 +129,16 @@ function buildFunctionResponseInstructions(name: RealtimeFunctionName): string {
   }
 
   if (name === "end_trip") {
-    return `${common} ${mixedGuidance} success가 true이면 선택한 운행이 취소됐다. expired가 true이면 다시 검색할지 묻고, 아니면 취소한 노선은 다시 말하지 말고 result.routes의 다른 후보를 설명한다. result.routes가 비어 있으면 다시 검색할지 묻는다. 실패하면 result.message만 안내한다.`;
+    return `${common} ${mixedGuidance} success가 true이면 선택한 운행이 취소됐다고 먼저 말한다. expired가 true이거나 result.routes가 비어 있으면 다시 검색할지 묻는다. 그 밖에는 result.routes의 후보만 설명하고 선택을 요청한다. missedRouteCandidateId가 있으면 그 후보는 방금 놓친 노선이므로 같은 노선의 다음 차를 기다리려면 다시 선택할 수 있다고 안내하고, 그 노선의 도착 시간은 추측하지 않는다. 다시 선택하면 최신 도착정보를 안내한다. missedRouteCandidateId가 없으면 취소한 노선은 다시 말하지 말고 result.routes의 다른 후보를 설명한다. 실패하면 result.message만 안내한다.`;
   }
 
   return common;
+}
+
+// end_trip 응답이 대기열에 있는 동안 후보 유효시간이 지났을 때 쓴다. 이미 모델에 전달된
+// 후보는 안내하지 않되, 취소 사실은 반드시 말해야 사용자가 상황을 안다.
+export function buildExpiredEndTripInstructions(): string {
+  return `${buildFunctionResponseInstructions("end_trip")} 단, 이 응답 직전에 후보 유효시간이 지났으므로 result.routes는 안내하지 말고, 운행이 취소됐다고 말한 뒤 다시 검색할지 묻는다.`;
 }
 
 export async function dispatchRealtimeFunctionCall(
@@ -152,16 +164,44 @@ export async function dispatchRealtimeFunctionCall(
     }
 
     result = await callPromise;
+    if (event.name === "end_trip") {
+      if (endedResults.has(result)) {
+        logVoiceRouteDiagnostic('duplicate_end', { tool: event.name, success: result.success });
+        return [{ type: "conversation.item.create", item: {
+        type: "function_call_output", call_id: event.call_id,
+        output: JSON.stringify({ success: result.success, message: "같은 종료 요청은 이미 처리 중이거나 처리되었습니다." }),
+      } }];
+      }
+      endedResults.add(result);
+    }
     result = await rejectStaleTripResult(event.name, result, context);
   }
 
-  const modelResult = withSpokenRouteNumbers(
+  let modelResult = withSpokenRouteNumbers(
     buildModelFunctionResult(event.name, args, result, context),
   );
-  const candidateIdsToMark = collectCandidateIdsToMark(event.name, result, modelResult);
+  logVoiceRouteDiagnostic('function_result', { tool: event.name, success: result.success,
+    phase: context.getAppState().tripStatus, hasTrip: Boolean(context.getAppState().tripId) });
+  let candidateIdsToMark = collectCandidateIdsToMark(event.name, result, modelResult);
   // end_trip 성공 시 Context가 즉시 초기화돼도 직전 검색 후보를 잃지 않도록
   // 모델 결과를 먼저 만든 뒤 상태를 갱신한다.
+  const selectionGeneration = context.getAppState().directSelectionGeneration ?? 0;
   updateContext(event.name, args, result, context);
+  if (event.name === "end_trip" && result.success === true && !context.getAppState().journeyRoute && context.waitForRouteSelection) {
+    const ready = await context.waitForRouteSelection(selectionGeneration + 1);
+    const current = context.getAppState();
+    // 새 운행·여정·검색이 이미 시작됐으면 이전 취소 안내 자체가 혼란을 준다.
+    if (current.tripId || current.journeyRoute || (current.directSelectionGeneration ?? 0) !== selectionGeneration + 1) {
+      return [{ type: "conversation.item.create", item: { type: "function_call_output", call_id: event.call_id,
+        output: JSON.stringify({ success: true, message: "운행은 종료됐지만 현재 상태가 변경되어 이전 후보 안내를 생략했습니다." }) } }];
+    }
+    // 후보 화면 확인이 안 됐거나 후보가 만료돼도 취소 사실은 말해야 한다. 후보만 뺀다.
+    const expired = !current.routeCandidatesExpiresAt || Date.now() > current.routeCandidatesExpiresAt;
+    if (!ready || expired) {
+      modelResult = { ...modelResult, routes: [], expired, missedRouteCandidateId: undefined } as ModelFunctionResult;
+      candidateIdsToMark = [];
+    }
+  }
 
   const responseEvent: RealtimeClientEvent = {
     type: "response.create",
@@ -172,6 +212,9 @@ export async function dispatchRealtimeFunctionCall(
 
   if (candidateIdsToMark.length > 0) {
     responseEvent.candidateIdsToMark = candidateIdsToMark;
+  }
+  if (event.name === 'end_trip' && result.success === true) {
+    responseEvent.selectionGeneration = selectionGeneration + 1;
   }
 
   return [
@@ -275,18 +318,25 @@ function buildModelFunctionResult(
     const expired =
       !appState.routeCandidatesExpiresAt ||
       Date.now() > appState.routeCandidatesExpiresAt;
-    const cancelledCandidateId = appState.selectedRoute?.candidateId;
-    const routes = expired
-      ? []
-      : ((appState.routeCandidates ?? []) as Route[])
-          .filter((route) => route.candidateId !== cancelledCandidateId)
-          .slice(0, 2);
+    const selected = appState.selectedRoute;
+    // candidateId 는 검색마다 1부터 다시 매겨진다. 운행 중 새 검색이 있었다면 번호만 같은
+    // 다른 노선일 수 있어 노선 번호까지 같아야 취소한 노선으로 본다.
+    const isCancelled = (route: Route) =>
+      Boolean(selected) && route.candidateId === selected?.candidateId && route.routeNo === selected?.routeNo;
+    const candidates = (appState.routeCandidates ?? []) as Route[];
+    const others = candidates.filter((route) => !isCancelled(route));
+    // 버스를 놓친 경우 같은 노선의 다음 차를 기다리는 선택지를 없애지 않는다.
+    const missedRoute = (args as { reason?: unknown } | null)?.reason === "MISSED_BUS"
+      ? candidates.find(isCancelled)
+      : undefined;
+    const routes = expired ? [] : (missedRoute ? [missedRoute, ...others] : others).slice(0, 2);
 
     return {
       ...(result as EndTripResponse),
       destination: appState.destination,
       routes,
       expired,
+      ...(missedRoute && !expired ? { missedRouteCandidateId: missedRoute.candidateId } : {}),
     };
   }
 
@@ -429,8 +479,12 @@ async function callBackendFunction(
         remainingCandidateCount: Math.max(0, remainingCandidates.length - nextCandidates.length),
       };
     }
-    case "create_trip":
-      return apiClient.trips.create(assertCreateTripRequest(args, context));
+    case "create_trip": {
+      const request = assertCreateTripRequest(args, context);
+      return startDirectTrip({ getState: context.getAppState, dispatch: context.dispatchAppAction,
+        route: findSelectedRoute(args, context)!, request, create: apiClient.trips.create,
+        cancel: (tripId) => apiClient.trips.end(tripId, { action: "CANCEL" }), stopScan: async () => { if (!context.stopBeaconScan) throw Error("비콘 스캔 정리를 사용할 수 없습니다."); await context.stopBeaconScan(); } });
+    }
     case "start_journey": {
       const value = assertRecord(args);
       const state = context.getAppState();
@@ -500,7 +554,25 @@ async function callBackendFunction(
     }
     case "end_trip": {
       const { tripId, body } = assertEndTripRequest(args, context);
-      return apiClient.trips.end(tripId, body);
+      const value = assertRecord(args);
+      if (value.reason !== undefined && value.reason !== "MISSED_BUS") throw Error("지원하지 않는 종료 이유입니다.");
+      const state = context.getAppState();
+      if (value.reason === "MISSED_BUS" && (state.journeyRoute || state.tripStatus !== "WAITING_BUS" || state.boardingConfirmedAt)) {
+        throw Error("버스 놓침 재선택은 직행 버스 탑승 대기 중에만 가능합니다.");
+      }
+      let flights = endTripFlights.get(context);
+      if (!flights) { flights = new Map(); endTripFlights.set(context, flights); }
+      const existing = flights.get(tripId);
+      if (existing) return existing;
+      const flight = apiClient.trips.end(tripId, body).then(result => {
+        logVoiceRouteDiagnostic('end_api_result', { tool: 'end_trip', success: result.success === true });
+        return result;
+      }).catch(error => {
+        logVoiceRouteDiagnostic('end_api_result', { tool: 'end_trip', success: false });
+        flights!.delete(tripId); throw error;
+      });
+      flights.clear(); flights.set(tripId, flight);
+      return flight;
     }
   }
 }
@@ -529,12 +601,7 @@ function updateContext(
   }
 
   if (name === "create_trip") {
-    const createResult = result as CreateTripResponse;
-    const selectedRoute = findSelectedRoute(args, context);
-    if (selectedRoute) {
-      context.dispatchAppAction({ type: "SELECT_ROUTE", route: selectedRoute });
-    }
-    context.dispatchAppAction({ type: "START_TRIP", tripId: createResult.tripId });
+    // The shared selection commits the winning route and trip before releasing callers.
     return;
   }
 
@@ -592,7 +659,9 @@ function updateContext(
   }
 
   if (name === "end_trip") {
+    context.onTripEnded?.((result as EndTripResponse).tripId);
     clearActiveTripContextKeepSearch(context);
+    logVoiceRouteDiagnostic('reset_requested', { tool: 'end_trip', success: true });
   }
 }
 

@@ -1,3 +1,5 @@
+import { logVoiceRouteDiagnostic } from '../realtime/voice-route-diagnostic';
+
 type SearchState = {
   destination: unknown;
   routeCandidates: unknown;
@@ -5,6 +7,29 @@ type SearchState = {
   announcedCandidateIds: unknown;
   beaconScanActive: unknown;
 };
+
+type SelectionState = { tripId: string | null; routeCandidates: unknown[] | null; directSelectionGeneration?: number; journeyRoute?: unknown };
+const selectionWaiters = new Set<{ candidates: unknown[] | null; generation: number; finish: (ready: boolean) => void }>();
+
+// A navigation request is not proof that the destination screen has focused.
+export function waitForRouteSelection(state: SelectionState, generation: number): Promise<boolean> {
+  return new Promise(resolve => {
+    const waiter = { candidates: state.routeCandidates, generation, finish: (ready: boolean) => {
+      clearTimeout(timer); selectionWaiters.delete(waiter); resolve(ready);
+    } };
+    const timer = setTimeout(() => { logVoiceRouteDiagnostic('screen_timeout'); waiter.finish(false); }, 5000);
+    selectionWaiters.add(waiter);
+  });
+}
+export function confirmRouteSelectionScreen(state: SelectionState, screen?: 'RouteList' | 'Main') {
+  if (state.tripId || state.journeyRoute) return;
+  for (const waiter of selectionWaiters) {
+    if (waiter.candidates === state.routeCandidates && waiter.generation === (state.directSelectionGeneration ?? 0)) {
+      logVoiceRouteDiagnostic('screen_ready', { screen, hasTrip: false });
+      waiter.finish(true);
+    }
+  }
+}
 
 export function resetTripKeepingSearch<T extends SearchState>(
   initialState: T,

@@ -90,7 +90,7 @@ export default function RidingScreen({ route, navigation }) {
     stoppedRef.current = state.tripId !== tripId || state.tripStatus === 'TRIP_DONE' || state.tripStatus === 'CANCELLED';
     if (!isFocused) return;
     if (state.journeyPhase === 'BUS_ALIGHT_CONFIRM' || (state.journeyRoute && !state.tripId)) navigation.navigate('Transfer');
-    else if (!state.tripId) navigation.navigate('Main');
+    else if (!state.tripId) navigation.navigate(state.routeCandidates?.length && state.routeCandidatesExpiresAt && Date.now() <= state.routeCandidatesExpiresAt ? 'RouteList' : 'Main');
     if (trackingError) navigation.navigate('Error');
   }, [state.tripId, state.tripStatus, state.journeyRoute, state.journeyPhase, tripId, trackingError, isFocused]);
 
