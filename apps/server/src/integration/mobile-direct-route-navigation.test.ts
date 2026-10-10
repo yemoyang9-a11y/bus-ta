@@ -26,6 +26,8 @@ function app(routes: Route[], create: () => Promise<CreateTripResponse>) {
   let effects: (() => void)[] = [];
   const navigation: any[] = [];
   const spoken: string[] = [];
+  const cancelled: string[] = [];
+  const cancel = async (tripId: string) => { cancelled.push(tripId); };
   const dispatch = (action: AppAction) => { state = tripReducer(state, action); };
   const getState = () => state as unknown as AppTripState;
   const react = { createElement: (type: any, props: any, ...children: any[]) => ({ type, props, children }),
@@ -36,7 +38,7 @@ function app(routes: Route[], create: () => Promise<CreateTripResponse>) {
     react, '@react-navigation/native': { useIsFocused: () => focused },
     'react-native': { View: 'View', Text: 'Text', TouchableOpacity: 'Button', FlatList: 'List', StyleSheet: { create: (x: any) => x } },
     '../state/TripContext': { useTrip: () => ({ state, dispatch }) },
-    '../api/client': { apiClient: { trips: { create } } },
+    '../api/client': { apiClient: { trips: { create, end: (tripId: string) => cancel(tripId) } } },
     '../state/direct-trip-selection': { startDirectTrip },
     '../state/transfer-journey': { canStartJourney: (r: Route) => r.routeMode === 'MULTIMODAL' && r.journeySupported },
     '../ble/bleManager': { stopBeaconScan: async () => {} },
@@ -56,9 +58,9 @@ function app(routes: Route[], create: () => Promise<CreateTripResponse>) {
   render();
   const context: RealtimeGuideContext = { getAppState: getState, dispatchAppAction: dispatch,
     refreshCurrentLocation: async () => {}, getCurrentLocation: () => undefined };
-  return { getState, dispatch, navigation, spoken, render, context, focus: (value: boolean) => { focused = value; },
+  return { getState, dispatch, navigation, spoken, cancelled, render, context, focus: (value: boolean) => { focused = value; },
     press: (route: Route) => render().props.renderItem({ item: route, index: 0 }).props.onPress(),
-    start: (route: Route) => startDirectTrip({ getState, dispatch, route, request: { ...route, destination: "목적지", routeMode: "DIRECT_BUS", tripSupported: true }, create, stopScan: async () => {} }),
+    start: (route: Route) => startDirectTrip({ getState, dispatch, route, request: { ...route, destination: "목적지", routeMode: "DIRECT_BUS", tripSupported: true }, create, cancel, stopScan: async () => {} }),
   };
 }
 const response = (id = 'trip-direct') => ({ success: true, tripId: id }) as CreateTripResponse;
@@ -145,6 +147,39 @@ test('journey step confirm does not rewind selection generation onto a cancelled
   const result = await a.start(r);
   assert.equal(attempts, 2); assert.equal(result.tripId, 'trip-2'); assert.equal(a.getState().tripId, 'trip-2');
 });
+test('a discarded late create response cancels the orphan server trip', async () => {
+  const r = route('61'); let release!: () => void;
+  const a = app([r], async () => { await new Promise<void>(done => { release = done; }); return response('trip-orphan'); });
+  const pending = a.start(r); await Promise.resolve();
+  a.dispatch({ type: 'RESET_TRIP_KEEP_SEARCH' }); release();
+  await assert.rejects(pending, /이전 응답/);
+  assert.deepEqual(a.cancelled, ['trip-orphan']); assert.equal(a.getState().tripId, null);
+});
+test('touch path cancels the orphan trip through the real screen wiring', async () => {
+  const r = route('62'); let release!: () => void; let markStarted!: () => void;
+  const started = new Promise<void>(done => { markStarted = done; });
+  const a = app([r], async () => { markStarted(); await new Promise<void>(done => { release = done; }); return response('trip-touch-orphan'); });
+  const pending = a.press(r); await started;
+  // React re-renders the mounted screen after the reset, which refreshes latestRef.
+  a.dispatch({ type: 'RESET_TRIP_KEEP_SEARCH' }); a.render(); release(); await pending;
+  assert.deepEqual(a.cancelled, ['trip-touch-orphan']); assert.equal(a.getState().tripId, null);
+});
+test('voice path cancels the orphan trip through the real end API', async t => {
+  const r = route('63'); const requests: { method: string; url: string; body: unknown }[] = [];
+  let release!: () => void; let markStarted!: () => void;
+  const started = new Promise<void>(done => { markStarted = done; });
+  const a = app([r], async () => response());
+  t.mock.method(globalThis, 'fetch', async (url: unknown, init?: RequestInit) => {
+    requests.push({ method: init?.method ?? 'GET', url: String(url), body: init?.body ? JSON.parse(String(init.body)) : null });
+    if (init?.method === 'POST') { markStarted(); await new Promise<void>(done => { release = done; }); return Response.json(response('trip-voice-orphan')); }
+    return Response.json({ success: true, tripId: 'trip-voice-orphan', tripStatus: 'CANCELLED', message: '취소', timestamp: 'now' });
+  });
+  const pending = voice(a, r); await started;
+  a.dispatch({ type: 'RESET_TRIP_KEEP_SEARCH' }); release(); await pending;
+  const end = requests.find(req => req.method === 'PATCH');
+  assert.ok(end); assert.match(end.url, /trip-voice-orphan/); assert.deepEqual(end.body, { action: 'CANCEL' });
+  assert.equal(a.getState().tripId, null);
+});
 test('actual RouteList transfer selection still dispatches journey and navigates Transfer', async () => {
   const r: Route = { ...route('mixed'), routeMode: 'MULTIMODAL', journeySupported: true, tripSupported: false,
     segments: [{ mode: 'BUS', startName: 'A', endName: 'B', lineNames: [], routeNumbers: ['60'], busLeg: DEMO_ROUTE }] };
@@ -190,7 +225,7 @@ test('a disconnected cane does not block selection; a connected stop failure sti
     let requests = 0;
     const result = startDirectTrip({ getState: () => state, dispatch: (action: AppAction) => { state = tripReducer(state as any, action) as any; }, route: r,
       request: { ...r, destination: '목적지', routeMode: 'DIRECT_BUS' as const, tripSupported: true as const },
-      create: async () => { requests++; return response(); }, stopScan: async () => { throw stopError; } });
+      create: async () => { requests++; return response(); }, cancel: async () => {}, stopScan: async () => { throw stopError; } });
     return { result, state: () => state, requests: () => requests };
   };
   const offline = await run(Error('BLE_NOT_CONNECTED: 지팡이에 연결되어 있지 않습니다.'));
@@ -206,7 +241,7 @@ test('successful flight stays shared before React state commit', async () => {
   let requests = 0; const actions: AppAction[] = [];
   const deps = { getState: () => state, dispatch: (action: AppAction) => actions.push(action), route: r,
     request: { ...r, destination: '목적지', routeMode: 'DIRECT_BUS' as const, tripSupported: true as const },
-    create: async () => { requests++; return response(); }, stopScan: async () => {} };
+    create: async () => { requests++; return response(); }, cancel: async () => {}, stopScan: async () => {} };
   await startDirectTrip(deps); await startDirectTrip(deps);
   assert.equal(requests, 1); assert.equal(actions.filter(a => a.type === 'START_TRIP').length, 1);
 });

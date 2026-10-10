@@ -726,3 +726,20 @@ esbuild(=tsx)의 `.js` 로더는 JSX를 켜지 않아
 `apps/server`에서 `pnpm --package=node@22.17.0 dlx node --import tsx --test <파일>`을 쓴다.
 Node 22는 TAP 형식이라 요약이 `ℹ pass`가 아니라 `# pass`로 나온다. grep 패턴을 바꾸지 않으면
 결과가 비어 보인다.
+
+---
+
+## 2026-10-10 — RouteListScreen VM 하네스는 dispatch 뒤 `render()`를 불러야 실제 React와 같다
+
+**증상.** 터치 경로에서 "늦은 생성 응답을 버리면 서버 운행을 취소한다"는 테스트가, 공통 함수와 음성 경로는 통과하는데
+터치 경로만 실패했다(취소 0건). 앱 코드에는 취소 연결이 이미 있었다.
+
+**원인.** RouteListScreen은 `getState: () => latestRef.current`로 상태를 읽고, `latestRef.current`는 렌더링 때만 갱신된다.
+실제 앱에서는 dispatch 뒤 React가 마운트된 화면을 다시 그리지만, `mobile-direct-route-navigation.test.ts`의 하네스는
+`a.render()`를 직접 불러야 그 과정이 일어난다. 재렌더링 없이 응답을 풀면 화면은 리셋 전 상태를 보고 응답을 적용해 버린다.
+
+**해결.** 테스트에서 `a.dispatch(...)` 직후 `a.render()`를 호출해 React 커밋을 흉내 냈다. 수정 전 코드에서는 여전히 실패,
+수정 후 통과를 확인했다.
+
+**교훈.** 이 하네스로 "도중에 상태가 바뀌는" 시나리오를 테스트할 때는 dispatch마다 `render()`를 붙인다. 붙이지 않으면
+앱 버그가 아니라 하네스가 오래된 상태를 보여 주는 것이다.

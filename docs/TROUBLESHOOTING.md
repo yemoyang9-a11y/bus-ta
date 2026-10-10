@@ -193,6 +193,7 @@ curl -X POST "$URL" -H "Content-Type: application/json" \
 - 무음 취소: 종료 성공 후 후보 화면 확인이 5초 안에 오지 않거나 대기열에서 후보가 만료되면 응답 전체를 버려 취소 사실이 안내되지 않았다. 새 운행·여정·검색으로 상태가 바뀐 경우에만 버리고, 그 밖에는 후보 없이 취소를 안내한다.
 - 선택 잠금: 지팡이 BLE가 끊긴 채 `beaconScanActive`가 남아 있으면 스캔 중지가 `BLE_NOT_CONNECTED`로 실패해 모든 직행 선택이 막혔다. 연결이 없으면 멈춘 것으로 보고 진행한다. 연결된 상태의 중지 실패는 진동이 남을 수 있어 계속 거절한다.
 - 터치 선택 실패는 화면 문구만 바뀌어 화면을 볼 수 없는 사용자에게 전달되지 않았다. 고정 안내문을 음성으로 함께 낸다.
+- 고아 운행: 운행 생성 응답이 오기 전에 취소·재검색이 일어나 앱이 늦은 응답을 버릴 때, 서버의 WAITING_BUS 운행은 그대로 남았다. 음성·터치 공통 선택 함수가 버린 tripId로 `PATCH /api/trips/{tripId}` `{action: CANCEL}`을 보낸다(환승 경로와 같은 최선 노력 정리).
 - 검증: `pnpm --filter @bus-ta/server test`의 `mobile-direct-route-navigation`, `mobile-missed-bus-reselection` 테스트. 실제 모델의 발화 해석과 실기기 BLE 동작은 별도 확인이 필요하다.
 
 ## 2026-10-09: PR #60 CI의 음성·터치 동시 선택 테스트 3개 실패

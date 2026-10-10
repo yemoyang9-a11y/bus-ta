@@ -9,6 +9,8 @@ export function startDirectTrip(deps: {
   route: Route;
   request: CreateTripRequest;
   create: (request: CreateTripRequest) => Promise<CreateTripResponse>;
+  // 서버에는 만들어졌지만 앱이 적용하지 않은 운행을 정리한다.
+  cancel: (tripId: string) => Promise<unknown>;
   stopScan: () => Promise<unknown>;
 }): Promise<CreateTripResponse> {
   const state = deps.getState();
@@ -43,7 +45,11 @@ export function startDirectTrip(deps: {
     if (result.success !== true || typeof result.tripId !== 'string' || !result.tripId.trim()) {
       throw Error('유효한 운행 생성 결과를 받지 못했습니다.');
     }
-    if (!current()) throw Error('운행 선택 상태가 변경되어 이전 응답을 적용하지 않았습니다.');
+    if (!current()) {
+      // 아무도 추적하지 않는 WAITING_BUS 운행이 서버에 남지 않게 한다. 정리 실패는 선택 결과를 바꾸지 않는다.
+      await deps.cancel(result.tripId).catch(() => undefined);
+      throw Error('운행 선택 상태가 변경되어 이전 응답을 적용하지 않았습니다.');
+    }
     deps.dispatch({ type: 'SELECT_ROUTE', route: deps.route });
     deps.dispatch({ type: 'START_TRIP', tripId: result.tripId });
     return result;

@@ -124,7 +124,8 @@ export default function RouteListScreen({ navigation }) {
       };
 
       await startDirectTrip({ getState: () => latestRef.current, dispatch,
-        route: selectedRoute, request: tripRequest, create: apiClient.trips.create, stopScan: stopBeaconScan });
+        route: selectedRoute, request: tripRequest, create: apiClient.trips.create,
+        cancel: (tripId) => apiClient.trips.end(tripId, { action: 'CANCEL' }), stopScan: stopBeaconScan });
       // Navigation is driven by the committed state, just like voice selection.
     } catch (error) {
       if (!latestRef.current.tripId && !latestRef.current.journeyRoute) {

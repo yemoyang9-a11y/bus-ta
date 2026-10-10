@@ -482,7 +482,8 @@ async function callBackendFunction(
     case "create_trip": {
       const request = assertCreateTripRequest(args, context);
       return startDirectTrip({ getState: context.getAppState, dispatch: context.dispatchAppAction,
-        route: findSelectedRoute(args, context)!, request, create: apiClient.trips.create, stopScan: async () => { if (!context.stopBeaconScan) throw Error("비콘 스캔 정리를 사용할 수 없습니다."); await context.stopBeaconScan(); } });
+        route: findSelectedRoute(args, context)!, request, create: apiClient.trips.create,
+        cancel: (tripId) => apiClient.trips.end(tripId, { action: "CANCEL" }), stopScan: async () => { if (!context.stopBeaconScan) throw Error("비콘 스캔 정리를 사용할 수 없습니다."); await context.stopBeaconScan(); } });
     }
     case "start_journey": {
       const value = assertRecord(args);
