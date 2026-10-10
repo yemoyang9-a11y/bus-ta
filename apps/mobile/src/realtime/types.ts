@@ -98,6 +98,7 @@ export type AppTripState = {
   targetBeaconId?: string | null;
   destination: string | null;
   routeCandidates: Route[] | null;
+  visibleRouteCandidates?: Route[] | null;
 
   // 예모님 확정(2026-08-28): 검색 성공 시점 + 5분(TTL). 이 시각이 지나면 기존
   // routeCandidates를 재사용하지 않고 재검색해야 한다.
@@ -135,6 +136,7 @@ export type AppTripState = {
 };
 
 export type AppAction =
+  | { type: 'SET_VISIBLE_ROUTE_CANDIDATES'; routes: Route[]; searchRoutes: Route[]; generation: number }
   | {
       type: "SET_DESTINATION_AND_ROUTES";
       destination: string;
@@ -145,6 +147,8 @@ export type AppAction =
       // 실제 음성 안내가 완료된 후보만 기록한다.
       type: "MARK_CANDIDATES_ANNOUNCED";
       candidateIds: number[];
+      searchRoutes?: Route[];
+      generation?: number;
     }
   | { type: "SELECT_ROUTE"; route: Route }
   | { type: "START_JOURNEY"; route: Route }
@@ -179,10 +183,11 @@ export type AppAction =
 // Realtime Dispatcher가 TripContext 상태를 읽고 쓰기 위한 창구.
 export type RealtimeGuideContext = {
   getAppState(): AppTripState;
+  getPendingCandidateIds?: () => number[];
   getCurrentLocation(): { latitude: number; longitude: number } | undefined;
   refreshCurrentLocation(): Promise<void>;
   stopBeaconScan?: () => Promise<unknown>;
-  waitForRouteSelection?: (generation: number) => Promise<boolean>;
+  waitForRouteSelection?: (generation: number, candidates?: Route[]) => Promise<boolean>;
   onTripEnded?: (tripId: string) => void;
   dispatchAppAction(action: AppAction): void;
   lastFunctionResult?: unknown;
@@ -207,6 +212,7 @@ export type RealtimeClientEvent =
       // OpenAI 서버로 그대로 보내는 값이 아니라 session.ts가 PendingResponse에
       // 옮겨 담고, 해당 음성 응답이 성공적으로 끝났을 때 안내 완료 처리에 사용한다.
       candidateIdsToMark?: number[];
+      candidateBatch?: { searchRoutes: Route[]; generation: number; routes: Route[] };
       selectionGeneration?: number;
     };
 

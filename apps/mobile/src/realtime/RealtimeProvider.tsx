@@ -122,7 +122,8 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
       getCurrentLocation: () => currentLocationRef.current,
       refreshCurrentLocation,
       stopBeaconScan,
-      waitForRouteSelection: generation => waitForRouteSelection(stateRef.current, generation),
+      waitForRouteSelection: (generation, candidates) => waitForRouteSelection(
+        candidates ? { ...stateRef.current, routeCandidates: candidates } : stateRef.current, generation),
       onTripEnded: tripId => sessionRef.current?.cancelTripCompletion(tripId),
       dispatchAppAction: (action: AppAction) => dispatchRef.current(action),
     });

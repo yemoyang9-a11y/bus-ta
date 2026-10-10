@@ -68,6 +68,7 @@ type ModelFunctionResult =
 const endedResults = new WeakSet<object>();
 const endTripFlights = new WeakMap<RealtimeGuideContext, Map<string, Promise<EndTripResponse>>>();
 const inFlightCalls = new Map<string, Promise<FunctionResult>>();
+const searches = new WeakMap<RealtimeGuideContext, object>();
 const journeyOrigins = new WeakMap<object, { route: Route; generation: number; index: number | null; tripId: string | null }>();
 let boardingRequestSequence = 0;
 
@@ -145,6 +146,9 @@ export async function dispatchRealtimeFunctionCall(
   event: RealtimeFunctionCallEvent,
   context: RealtimeGuideContext,
 ): Promise<RealtimeClientEvent[]> {
+  const origin = context.getAppState();
+  const searchToken = event.name === 'search_routes' ? {} : undefined;
+  if (searchToken) searches.set(context, searchToken);
   const args = parseFunctionArguments(event.arguments, event.name);
   let result: FunctionResult;
 
@@ -177,6 +181,13 @@ export async function dispatchRealtimeFunctionCall(
     result = await rejectStaleTripResult(event.name, result, context);
   }
 
+  if ((searchToken && (searches.get(context) !== searchToken || origin.routeCandidates !== context.getAppState().routeCandidates ||
+      origin.directSelectionGeneration !== context.getAppState().directSelectionGeneration)) ||
+    (event.name === 'get_next_route_candidates' && (origin.routeCandidates !== context.getAppState().routeCandidates ||
+      origin.directSelectionGeneration !== context.getAppState().directSelectionGeneration))) {
+    return [{ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: event.call_id,
+      output: JSON.stringify({ success: false, message: '검색 상태가 변경되어 이전 후보 응답을 버렸습니다.' }) } }];
+  }
   let modelResult = withSpokenRouteNumbers(
     buildModelFunctionResult(event.name, args, result, context),
   );
@@ -187,6 +198,13 @@ export async function dispatchRealtimeFunctionCall(
   // 모델 결과를 먼저 만든 뒤 상태를 갱신한다.
   const selectionGeneration = context.getAppState().directSelectionGeneration ?? 0;
   updateContext(event.name, args, result, context);
+  if (event.name === 'search_routes' && result.success === true && 'routes' in result && context.waitForRouteSelection && !origin.tripId && !origin.journeyRoute) {
+    await context.waitForRouteSelection(selectionGeneration + 1, result.routes as Route[]);
+    if (searches.get(context) !== searchToken || context.getAppState().routeCandidates !== result.routes) {
+      return [{ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: event.call_id,
+        output: JSON.stringify({ success: false, message: '검색 상태가 변경되어 이전 안내를 생략했습니다.' }) } }];
+    }
+  }
   if (event.name === "end_trip" && result.success === true && !context.getAppState().journeyRoute && context.waitForRouteSelection) {
     const ready = await context.waitForRouteSelection(selectionGeneration + 1);
     const current = context.getAppState();
@@ -215,6 +233,21 @@ export async function dispatchRealtimeFunctionCall(
   }
   if (event.name === 'end_trip' && result.success === true) {
     responseEvent.selectionGeneration = selectionGeneration + 1;
+  }
+  if (result.success === true && ['search_routes', 'get_next_route_candidates', 'end_trip'].includes(event.name)) {
+    const current = context.getAppState();
+    const all: Route[] = event.name === 'search_routes' && 'routes' in result ? result.routes as Route[] : origin.routeCandidates ?? [];
+    const routes = event.name === 'search_routes' ? all.slice(0, 2)
+      : event.name === 'get_next_route_candidates' ? (result as NextRouteCandidatesResult).candidates
+      : 'routes' in modelResult ? modelResult.routes.map(route => all.find(item => item.candidateId === route.candidateId)).filter((route): route is Route => Boolean(route)) : [];
+    responseEvent.candidateBatch = { searchRoutes: all,
+      generation: event.name === 'search_routes' || event.name === 'end_trip' ? selectionGeneration + 1 : current.directSelectionGeneration ?? 0, routes };
+    const spokenRoutes = event.name === 'get_next_route_candidates' && 'candidates' in modelResult ? modelResult.candidates
+      : 'routes' in modelResult ? modelResult.routes : [];
+    // Later Function outputs may enter the conversation while this response waits.
+    // Bind this response's voice instructions to the exact same batch as the UI.
+    responseEvent.response = { instructions: (responseEvent.response?.instructions ?? '') +
+      ` 이 응답의 후보 목록은 다음 JSON으로 고정한다. 다른 Function 결과나 대화 기억의 후보로 바꾸지 말고 배열 순서대로 안내한다. 목록이 비어 있으면 후보를 만들어 내지 않는다: ${JSON.stringify(spokenRoutes)}` };
   }
 
   return [
@@ -313,6 +346,9 @@ function buildModelFunctionResult(
   result: FunctionResult,
   context: RealtimeGuideContext,
 ): ModelFunctionResult {
+  if (name === 'search_routes' && result.success === true && 'routes' in result) {
+    return { ...result, routes: result.routes.slice(0, 2) };
+  }
   if (name === "end_trip" && result.success === true) {
     const appState = context.getAppState();
     const expired =
@@ -321,8 +357,11 @@ function buildModelFunctionResult(
     const selected = appState.selectedRoute;
     // candidateId 는 검색마다 1부터 다시 매겨진다. 운행 중 새 검색이 있었다면 번호만 같은
     // 다른 노선일 수 있어 노선 번호까지 같아야 취소한 노선으로 본다.
-    const isCancelled = (route: Route) =>
-      Boolean(selected) && route.candidateId === selected?.candidateId && route.routeNo === selected?.routeNo;
+    const isCancelled = (route: Route) => Boolean(selected) &&
+      route.candidateId === selected?.candidateId && route.routeNo === selected?.routeNo &&
+      route.localBusId === selected?.localBusId && route.gbisStationId === selected?.gbisStationId &&
+      JSON.stringify(route.boardingStation) === JSON.stringify(selected?.boardingStation) &&
+      JSON.stringify(route.destinationStation) === JSON.stringify(selected?.destinationStation);
     const candidates = (appState.routeCandidates ?? []) as Route[];
     const others = candidates.filter((route) => !isCancelled(route));
     // 버스를 놓친 경우 같은 노선의 다음 차를 기다리는 선택지를 없애지 않는다.
@@ -467,7 +506,8 @@ async function callBackendFunction(
 
       const routeCandidates = (appState.routeCandidates ?? []) as Route[];
       const announcedCandidateIds = appState.announcedCandidateIds ?? [];
-      const remainingCandidates = routeCandidates.filter((route) => !announcedCandidateIds.includes(route.candidateId));
+      const pending = context.getPendingCandidateIds?.() ?? [];
+      const remainingCandidates = routeCandidates.filter((route) => !announcedCandidateIds.includes(route.candidateId) && !pending.includes(route.candidateId));
       const nextCandidates = remainingCandidates.slice(0, 2);
       console.log('[app/candidates] next', { storedCount: routeCandidates.length, announcedCount: announcedCandidateIds.length, returnedCount: nextCandidates.length, expired: false });
 
@@ -697,7 +737,9 @@ function findSelectedRoute(args: unknown, context: RealtimeGuideContext): Route 
   const candidateId = assertPositiveInteger(value.candidateId, "candidateId");
   const appState = context.getAppState();
   const routeCandidates = (appState.routeCandidates ?? []) as Route[];
-  return routeCandidates.find((route) => route.candidateId === candidateId);
+  const matches = routeCandidates.filter(route => route.candidateId === candidateId);
+  if (matches.length > 1) throw Error('후보 식별자가 중복되어 노선을 선택할 수 없습니다. 다시 검색해 주세요.');
+  return matches[0];
 }
 
 function assertCreateTripRequest(

@@ -12,6 +12,7 @@ export type PendingResponse = {
   candidateIdsToMark?: number[];
   completionTripId?: string;
   selectionGeneration?: number;
+  candidateBatch?: { searchRoutes: import('@bus-ta/shared').Route[]; generation: number; routes: import('@bus-ta/shared').Route[] };
 };
 
 type DurablePendingResponse = PendingResponse & {
@@ -56,6 +57,11 @@ export class RealtimeResponseQueue {
 
   enqueueDirect(response: PendingResponse) {
     this.durableResponses.push(response);
+  }
+
+  pendingCandidateIds(searchRoutes: unknown, generation: number): number[] {
+    return this.durableResponses.flatMap(item => item.candidateBatch && item.candidateBatch.searchRoutes === searchRoutes &&
+      item.candidateBatch.generation === generation ? item.candidateBatch.routes.map(route => route.candidateId) : []);
   }
 
   enqueueStatus(

@@ -9,6 +9,7 @@ export const ROUTE_CANDIDATES_TTL_MS = 5 * 60 * 1000;
 export const initialState = {
   destination: null as unknown,
   routeCandidates: null as unknown[] | null,
+  visibleRouteCandidates: null as unknown[] | null,
   // 예모님 확정(2026-08-28): 검색 성공 시점 + 5분. 앱 재시작 시 메모리 상태 자체가
   // 초기화되므로 별도 처리 없이 자연스럽게 폐기된다.
   routeCandidatesExpiresAt: null as number | null,
@@ -142,11 +143,17 @@ export function tripReducer(state: TripState, action: TripAction): TripState {
         directSelectionGeneration: state.directSelectionGeneration + 1,
         destination: action.destination,
         routeCandidates: action.routes as unknown[] | null,
+        visibleRouteCandidates: (action.routes as unknown[] | null)?.slice(0, 2) ?? null,
         routeCandidatesExpiresAt: Date.now() + ROUTE_CANDIDATES_TTL_MS,
         announcedCandidateIds: [],
       };
 
+    case 'SET_VISIBLE_ROUTE_CANDIDATES':
+      if (action.searchRoutes !== state.routeCandidates || action.generation !== state.directSelectionGeneration) return state;
+      return { ...state, visibleRouteCandidates: (action.routes as unknown[]).filter(route => state.routeCandidates?.includes(route)) };
+
     case "MARK_CANDIDATES_ANNOUNCED":
+      if (action.searchRoutes !== undefined && (action.searchRoutes !== state.routeCandidates || action.generation !== state.directSelectionGeneration)) return state;
       return {
         ...state,
         announcedCandidateIds: [
