@@ -29,6 +29,7 @@ export type PendingResponse = {
   candidateIdsToMark?: number[];
   completionTripId?: string;
   selectionGeneration?: number;
+  nextCandidateCallId?: string;
   candidateBatch?: CandidateBatch;
 };
 

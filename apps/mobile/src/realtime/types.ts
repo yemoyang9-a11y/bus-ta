@@ -219,6 +219,7 @@ export type RealtimeClientEvent =
       candidateIdsToMark?: number[];
       candidateBatch?: import('./response-queue').CandidateBatch;
       selectionGeneration?: number;
+      nextCandidateCallId?: string;
     };
 
 export type ApiErrorResult = {

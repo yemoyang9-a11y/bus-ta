@@ -6,6 +6,7 @@ import { apiClient } from "../api/client";
 import {
   buildExpiredEndTripInstructions,
   dispatchRealtimeFunctionCall,
+  refreshNextRouteCandidatesResponse,
   isRealtimeFunctionCallEvent,
 } from "./function-dispatcher";
 import { checkAndDispatchStatusChange } from "./event-dispatcher";
@@ -456,7 +457,9 @@ export class HaneumRealtimeSession {
           if (typeof tripId === 'string') this.responseQueue.discardTripStatus(tripId);
         }
       }
+      const deferredNextOutput = clientEvents.some(item => item.type === 'response.create' && item.nextCandidateCallId);
       for (const clientEvent of clientEvents) {
+        if (deferredNextOutput && clientEvent.type === 'conversation.item.create') continue;
         if (completedStatus && clientEvent.type === 'response.create') continue;
         this.send(clientEvent, transport);
       }
@@ -670,11 +673,16 @@ export class HaneumRealtimeSession {
     this.awaitingRetry = null;
     if (next.candidateBatch) {
       const state = this.context.getAppState();
-      if (!isCurrentCandidateBatch(next.candidateBatch, state)) {
+      const batch = next.candidateBatch;
+      if (!isCurrentCandidateBatch(batch, state)) {
         this.flushPendingResponse(); return;
       }
+      if (next.nextCandidateCallId) {
+        const { routes, ...refreshed } = refreshNextRouteCandidatesResponse(this.context, next.nextCandidateCallId);
+        next = { ...next, ...refreshed, nextCandidateCallId: undefined, candidateBatch: { ...batch, routes } };
+      }
       if (!state.routeCandidatesExpiresAt || Date.now() > state.routeCandidatesExpiresAt) {
-        next = { ...next, candidateBatch: { ...next.candidateBatch, routes: [] }, candidateIdsToMark: undefined,
+        next = { ...next, candidateBatch: { ...batch, routes: [] }, candidateIdsToMark: undefined,
           instructions: next.selectionGeneration !== undefined ? buildExpiredEndTripInstructions() : '이전 후보는 만료됐으므로 안내하지 말고 다시 검색할지 묻는다.' };
       }
     }
@@ -789,6 +797,7 @@ export class HaneumRealtimeSession {
         candidateIdsToMark?: number[];
         selectionGeneration?: number;
         candidateBatch?: PendingResponse['candidateBatch'];
+        nextCandidateCallId?: string;
       };
 
       const instructions =
@@ -808,7 +817,8 @@ export class HaneumRealtimeSession {
           [],
           candidateIdsToMark,
         ), ...(responseEvent.selectionGeneration === undefined ? {} : { selectionGeneration: responseEvent.selectionGeneration }),
-          ...(responseEvent.candidateBatch ? { candidateBatch: responseEvent.candidateBatch } : {}) },
+          ...(responseEvent.candidateBatch ? { candidateBatch: responseEvent.candidateBatch } : {}),
+          ...(responseEvent.nextCandidateCallId ? { nextCandidateCallId: responseEvent.nextCandidateCallId } : {}) },
       );
 
       this.flushPendingResponse();

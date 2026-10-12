@@ -682,3 +682,148 @@ test('successful flight stays shared before React state commit', async () => {
   await startDirectTrip(deps); await startDirectTrip(deps);
   assert.equal(requests, 1); assert.equal(actions.filter(a => a.type === 'START_TRIP').length, 1);
 });
+
+
+for (const failure of ['correlated error', 'failed response'] as const) {
+  test(`queued exhaustion retries the unheard last candidate after ${failure}`, async () => {
+    const routes = [1, 2, 3].map(id => route(`${id}`, id));
+    const a = app(routes, async () => response()); const s = sessionFor(a);
+    a.dispatch({ type: 'MARK_CANDIDATES_ANNOUNCED', candidateIds: [1, 2] });
+    await Promise.all([s.call('get_next_route_candidates', {}, 'last'), s.call('get_next_route_candidates', {}, 'dependent')]);
+    const first = s.sent.find(e => e.type === 'response.create');
+    if (failure === 'correlated error') {
+      await s.session.handleServerEvent({ type: 'error', error: { code: 'rate_limit_exceeded', event_id: first.event_id } }, s.transport);
+    } else {
+      await s.session.handleServerEvent({ type: 'response.done', response: { status: 'failed' } }, s.transport);
+    }
+    assert.equal(s.sent.filter(e => e.type === 'response.create').length, 2);
+    assert.deepEqual(a.getState().visibleRouteCandidates, [routes[2]]);
+    assert.equal(a.getState().visibleRouteCandidates?.[0], routes[2]);
+    const dependentOutputs = s.sent.filter(e => e.type === 'conversation.item.create' && e.item.call_id === 'dependent');
+    assert.equal(dependentOutputs.length, 1);
+    assert.equal(s.sent.indexOf(dependentOutputs[0]) + 1, s.sent.lastIndexOf(s.sent.filter(e => e.type === 'response.create').at(-1)));
+    const latest = JSON.parse(dependentOutputs[0].item.output);
+    assert.equal(latest.exhausted, false);
+    assert.equal(latest.lastBatch, true);
+    assert.deepEqual(latest.candidates.map((r: Route) => r.candidateId), [3]);
+    const instructions = s.sent.filter(e => e.type === 'response.create').at(-1).response.instructions;
+    assert.match(instructions, /"candidateId":3/);
+    assert.match(instructions, /"exhausted":false/);
+    assert.deepEqual(a.getState().announcedCandidateIds, [1, 2]);
+    await s.done();
+    assert.deepEqual(a.getState().announcedCandidateIds, [1, 2, 3]);
+  });
+}
+
+test('queued exhaustion remains exhausted after predecessor succeeds', async () => {
+  const routes = [1, 2, 3].map(id => route(`${id}`, id));
+  const a = app(routes, async () => response()); const s = sessionFor(a);
+  a.dispatch({ type: 'MARK_CANDIDATES_ANNOUNCED', candidateIds: [1, 2] });
+  await Promise.all([s.call('get_next_route_candidates', {}, 'last'), s.call('get_next_route_candidates', {}, 'dependent')]);
+  await s.done();
+  assert.deepEqual(a.getState().visibleRouteCandidates, []);
+  const latest = JSON.parse(s.sent.filter(e => e.type === 'conversation.item.create').at(-1).item.output);
+  assert.equal(latest.exhausted, true);
+  assert.deepEqual(latest.candidates, []);
+  assert.equal(s.sent.filter(e => e.type === 'response.create').length, 2);
+});
+
+test('focused search commit confirms screen before state waiter resumes without losing readiness', async t => {
+  const a = app([route('15')], async () => response()); const s = sessionFor(a);
+  a.context.getCurrentLocation = () => ({ latitude: 0, longitude: 0 });
+  const actions: AppAction[] = []; const dispatch = a.context.dispatchAppAction;
+  a.context.dispatchAppAction = action => { if (action.type === 'SET_DESTINATION_AND_ROUTES') actions.push(action); else dispatch(action); };
+  let entered!: () => void;
+  const waiting = new Promise<void>(resolve => { entered = resolve; });
+  a.context.waitForSearchState = (candidates, requestId) => { entered(); return tripTransition.waitForSearchState(candidates, requestId); };
+  a.context.waitForRouteSelection = (generation, candidates) => tripTransition.waitForRouteSelection(
+    { ...a.getState(), routeCandidates: candidates ?? a.getState().routeCandidates }, generation);
+  t.mock.method(globalThis, 'fetch', async () => Response.json({ success: true, destination: 'new', routes: [route('34')] }));
+  const pending = s.call('search_routes', { destination: 'new' }); await waiting;
+  dispatch(actions[0]!);
+  a.render(); // Focused RouteList effect runs before Provider's search confirmation in the same commit.
+  tripTransition.confirmSearchState(a.getState());
+  let timer!: ReturnType<typeof setTimeout>;
+  const timedOut = new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(true), 100); });
+  const late = await Promise.race([pending.then(() => false), timedOut]); clearTimeout(timer);
+  if (late) { tripTransition.confirmRouteSelectionScreen(a.getState(), 'RouteList'); await pending; }
+  assert.equal(late, false, 'focused confirmation must survive the state waiter microtask');
+  assert.equal(s.sent.filter(e => e.type === 'response.create').length, 1);
+});
+
+test('intermediate journey confirmation preserves displayed batch and search identity through cancellation', () => {
+  const journey: Route = { ...route('mixed', 4), routeMode: 'MULTIMODAL', journeySupported: true, tripSupported: false,
+    segments: [{ mode: 'WALK', startName: 'A', endName: 'B', lineNames: [], routeNumbers: [] },
+      { mode: 'BUS', startName: 'B', endName: 'C', lineNames: [], routeNumbers: ['60'], busLeg: DEMO_ROUTE }] };
+  const routes = [route('1'), route('2', 2), route('3', 3), journey];
+  const a = app(routes, async () => response());
+  a.getState().routeSearchRequestId = 71; a.getState().pendingRouteSearchRequestId = 72;
+  a.dispatch({ type: 'SET_VISIBLE_ROUTE_CANDIDATES', routes: [journey, routes[2]!], searchRoutes: routes,
+    generation: a.getState().directSelectionGeneration! });
+  a.dispatch({ type: 'START_JOURNEY', route: journey });
+  a.dispatch({ type: 'CONFIRM_JOURNEY_STEP', expectedIndex: 0 });
+  assert.deepEqual(a.getState().visibleRouteCandidates, [journey, routes[2]]);
+  assert.equal(a.getState().routeSearchRequestId, 71);
+  assert.equal(a.getState().pendingRouteSearchRequestId, 72);
+  a.dispatch({ type: 'RESET_TRIP_KEEP_SEARCH' });
+  assert.deepEqual(a.render().props.data, [journey, routes[2]]);
+});
+
+
+for (const change of ['expired', 'new search', 'new trip', 'new journey'] as const) {
+  test(`deferred exhaustion respects ${change} before predecessor failure`, async () => {
+    const routes = [1, 2, 3].map(id => route(`${id}`, id));
+    const a = app(routes, async () => response()); const s = sessionFor(a);
+    a.dispatch({ type: 'MARK_CANDIDATES_ANNOUNCED', candidateIds: [1, 2] });
+    await Promise.all([s.call('get_next_route_candidates', {}, 'last'), s.call('get_next_route_candidates', {}, 'dependent')]);
+    assert.equal(s.sent.filter(e => e.type === 'conversation.item.create' && e.item.call_id === 'dependent').length, 0);
+    if (change === 'expired') a.getState().routeCandidatesExpiresAt = Date.now() - 1;
+    if (change === 'new search') a.dispatch({ type: 'SET_DESTINATION_AND_ROUTES', destination: 'new', routes: [route('99', 9)] });
+    if (change === 'new trip') await a.start(routes[0]!);
+    if (change === 'new journey') {
+      const journey: Route = { ...routes[0]!, routeMode: 'MULTIMODAL', tripSupported: false, journeySupported: true,
+        segments: [{ mode: 'WALK', startName: 'A', endName: 'B', lineNames: [], routeNumbers: [] },
+          { mode: 'BUS', startName: 'B', endName: 'C', lineNames: [], routeNumbers: ['60'], busLeg: DEMO_ROUTE }] };
+      a.dispatch({ type: 'START_JOURNEY', route: journey });
+    }
+    await s.session.handleServerEvent({ type: 'response.done', response: { status: 'failed' } }, s.transport);
+    const deferred = s.sent.filter(e => e.type === 'conversation.item.create' && e.item.call_id === 'dependent');
+    if (change === 'expired') {
+      assert.equal(deferred.length, 1); const result = JSON.parse(deferred[0].item.output);
+      assert.equal(result.expired, true); assert.deepEqual(result.candidates, []);
+      assert.equal(a.getState().visibleRouteCandidates?.length, 0);
+      assert.match(s.sent.filter(e => e.type === 'response.create').at(-1).response.instructions, /만료/);
+    } else {
+      assert.equal(deferred.length, 0); assert.equal(s.sent.filter(e => e.type === 'response.create').length, 1);
+    }
+    assert.deepEqual(a.getState().announcedCandidateIds, change === 'new search' ? [] : [1, 2]);
+  });
+}
+
+test('repaired exhaustion retries an active-response conflict without emitting another Function output', async () => {
+  const routes = [1, 2, 3].map(id => route(`${id}`, id));
+  const a = app(routes, async () => response()); const s = sessionFor(a);
+  a.dispatch({ type: 'MARK_CANDIDATES_ANNOUNCED', candidateIds: [1, 2] });
+  await Promise.all([s.call('get_next_route_candidates', {}, 'last'), s.call('get_next_route_candidates', {}, 'dependent')]);
+  await s.session.handleServerEvent({ type: 'response.done', response: { status: 'failed' } }, s.transport);
+  const repaired = s.sent.filter(e => e.type === 'response.create').at(-1);
+  await s.session.handleServerEvent({ type: 'error', error: { code: 'conversation_already_has_active_response', event_id: repaired.event_id } }, s.transport);
+  await s.done();
+  const retry = s.sent.filter(e => e.type === 'response.create').at(-1);
+  assert.equal(retry.event_id, repaired.event_id); assert.equal(retry.response.instructions, repaired.response.instructions);
+  assert.deepEqual(a.getState().visibleRouteCandidates, [routes[2]]);
+  assert.equal(s.sent.filter(e => e.type === 'conversation.item.create' && e.item.call_id === 'dependent').length, 1);
+});
+
+for (const exhausted of [true, false]) {
+  test(`intermediate journey cancellation does not revive ${exhausted ? 'exhausted' : 'expired'} cards`, () => {
+    const journey: Route = { ...route('mixed', 4), routeMode: 'MULTIMODAL', journeySupported: true, tripSupported: false,
+      segments: [{ mode: 'WALK', startName: 'A', endName: 'B', lineNames: [], routeNumbers: [] },
+        { mode: 'BUS', startName: 'B', endName: 'C', lineNames: [], routeNumbers: ['60'], busLeg: DEMO_ROUTE }] };
+    const routes = [route('1'), route('2', 2), route('3', 3), journey]; const a = app(routes, async () => response());
+    a.getState().visibleRouteCandidates = exhausted ? [] : [journey, routes[2]!];
+    if (!exhausted) a.getState().routeCandidatesExpiresAt = Date.now() - 1;
+    a.dispatch({ type: 'START_JOURNEY', route: journey }); a.dispatch({ type: 'CONFIRM_JOURNEY_STEP', expectedIndex: 0 });
+    a.dispatch({ type: 'RESET_TRIP_KEEP_SEARCH' }); assert.deepEqual(a.getState().visibleRouteCandidates, []);
+  });
+}
