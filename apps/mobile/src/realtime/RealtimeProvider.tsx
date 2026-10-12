@@ -79,7 +79,7 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
   stateRef.current = state;
   dispatchRef.current = dispatch;
 
-  useEffect(() => { confirmSearchState(state); }, [state.routeCandidates, state.routeSearchRequestId]);
+  useEffect(() => { confirmSearchState(state); }, [state.routeCandidates, state.routeSearchRequestId, state.pendingRouteSearchRequestId]);
 
   const currentLocationRef = useRef<{ latitude: number; longitude: number } | undefined>(undefined);
   const locationRefreshRef = useRef<ReturnType<typeof createLocationRefreshCoordinator> | null>(null);

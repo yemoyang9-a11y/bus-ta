@@ -288,6 +288,48 @@ function sessionFor(a: ReturnType<typeof app>) {
   done: async () => { await session.handleServerEvent({ type: 'response.done', response: { status: 'completed' } }, transport); } };
 }
 
+test('rate limit rejection releases the unheard last candidate reservation for retry', async () => {
+  const routes = [1, 2, 3].map(id => route(`${id}`, id));
+  const a = app(routes, async () => response()); const s = sessionFor(a);
+  a.dispatch({ type: 'MARK_CANDIDATES_ANNOUNCED', candidateIds: [1, 2] });
+  await s.call('get_next_route_candidates', {}, 'last-first');
+  const eventId = s.sent.find(e => e.type === 'response.create').event_id;
+  await s.session.handleServerEvent({ type: 'error', error: { code: 'rate_limit_exceeded', event_id: eventId } }, s.transport);
+  await s.call('get_next_route_candidates', {}, 'last-retry');
+  const outputs = s.sent.filter(e => e.type === 'conversation.item.create').map(e => JSON.parse(e.item.output));
+  assert.deepEqual(outputs[1].candidates.map((r: Route) => r.candidateId), [3]);
+  assert.equal(outputs[1].exhausted, false);
+  await s.done(); await s.call('get_next_route_candidates', {}, 'exhausted-after-retry');
+  const last = JSON.parse(s.sent.filter(e => e.type === 'conversation.item.create').at(-1).item.output);
+  assert.equal(last.exhausted, true); assert.deepEqual(last.candidates, []);
+});
+
+test('failed replacement search preserves completed original speech and advances to candidates 3 and 4', async t => {
+  const routes = [1, 2, 3, 4].map(id => route(`${id}`, id));
+  const a = app(routes, async () => response()); const s = sessionFor(a);
+  await s.call('get_next_route_candidates', {}, 'initial');
+  await s.session.handleServerEvent({ type: 'output_audio_buffer.started' }, s.transport);
+  a.context.getCurrentLocation = () => ({ latitude: 0, longitude: 0 });
+  t.mock.method(globalThis, 'fetch', async () => Response.json({ success: false, errorCode: 'UPSTREAM_ERROR', message: '검색 실패' }, { status: 503 }));
+  await s.call('search_routes', { destination: '새 목적지' }, 'failed-search');
+  await s.done(); await s.session.handleServerEvent({ type: 'output_audio_buffer.stopped' }, s.transport);
+  assert.deepEqual(a.getState().announcedCandidateIds, [1, 2]);
+  await s.done(); // finish the queued error guidance before next candidate guidance
+  await s.call('get_next_route_candidates', {}, 'next');
+  const next = JSON.parse(s.sent.filter(e => e.type === 'conversation.item.create').at(-1).item.output);
+  assert.deepEqual(next.candidates.map((r: Route) => r.candidateId), [3, 4]);
+  assert.deepEqual(a.render().props.data, routes.slice(2));
+});
+
+test('no search record after reset still sends the expired re-search voice response', async () => {
+  const a = app([route('15')], async () => response()); a.dispatch({ type: 'RESET_TRIP' });
+  const s = sessionFor(a); await s.call('get_next_route_candidates');
+  const output = JSON.parse(s.sent.find(e => e.type === 'conversation.item.create').item.output);
+  assert.equal(output.expired, true);
+  assert.equal(s.sent.filter(e => e.type === 'response.create').length, 1);
+  assert.equal(a.getState().visibleRouteCandidates?.length, 0);
+});
+
 test('next spoken candidate batch matches actual RouteList data and order', async () => {
   const routes = [route('15', 1), route('34', 2), route('15', 3), route('82', 4)];
   routes[2] = { ...routes[2]!, boardingStation: { ...routes[2]!.boardingStation, stationName: '다른 승차 정류장' } };

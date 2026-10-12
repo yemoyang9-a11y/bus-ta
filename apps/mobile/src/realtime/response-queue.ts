@@ -2,7 +2,7 @@ import type { AppTripState, TripStatusChangedEvent } from "./types";
 import type { Route } from '@bus-ta/shared';
 
 export type CandidateBatch = {
-  searchRoutes: Route[];
+  searchRoutes: Route[] | null;
   generation: number;
   routes: Route[];
   tripId: string | null;

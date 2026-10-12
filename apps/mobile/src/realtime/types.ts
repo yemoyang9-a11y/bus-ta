@@ -100,6 +100,7 @@ export type AppTripState = {
   routeCandidates: Route[] | null;
   visibleRouteCandidates?: Route[] | null;
   routeSearchRequestId?: number | null;
+  pendingRouteSearchRequestId?: number | null;
 
   // 예모님 확정(2026-08-28): 검색 성공 시점 + 5분(TTL). 이 시각이 지나면 기존
   // routeCandidates를 재사용하지 않고 재검색해야 한다.
@@ -138,7 +139,7 @@ export type AppTripState = {
 
 export type AppAction =
   | { type: 'BEGIN_ROUTE_SEARCH'; requestId: number }
-  | { type: 'SET_VISIBLE_ROUTE_CANDIDATES'; routes: Route[]; searchRoutes: Route[]; generation: number }
+  | { type: 'SET_VISIBLE_ROUTE_CANDIDATES'; routes: Route[]; searchRoutes: Route[] | null; generation: number }
   | {
       type: "SET_DESTINATION_AND_ROUTES";
       destination: string;
@@ -150,7 +151,7 @@ export type AppAction =
       // 실제 음성 안내가 완료된 후보만 기록한다.
       type: "MARK_CANDIDATES_ANNOUNCED";
       candidateIds: number[];
-      searchRoutes?: Route[];
+      searchRoutes?: Route[] | null;
       generation?: number;
     }
   | { type: "SELECT_ROUTE"; route: Route }

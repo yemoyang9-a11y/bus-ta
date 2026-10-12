@@ -23,10 +23,10 @@ export function waitForSearchState(candidates: unknown[], requestId: number): Pr
   });
 }
 
-export function confirmSearchState(state: { routeCandidates: unknown[] | null; routeSearchRequestId?: number | null }) {
+export function confirmSearchState(state: { routeCandidates: unknown[] | null; routeSearchRequestId?: number | null; pendingRouteSearchRequestId?: number | null }) {
   for (const waiter of searchWaiters) {
-    if (state.routeSearchRequestId !== waiter.requestId) waiter.finish(false);
-    else if (state.routeCandidates === waiter.candidates) waiter.finish(true);
+    if (state.pendingRouteSearchRequestId !== waiter.requestId) waiter.finish(false);
+    else if (state.routeSearchRequestId === waiter.requestId && state.routeCandidates === waiter.candidates) waiter.finish(true);
   }
 }
 

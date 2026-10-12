@@ -261,7 +261,7 @@ export async function dispatchRealtimeFunctionCall(
     const routes = event.name === 'search_routes' ? all.slice(0, 2)
       : event.name === 'get_next_route_candidates' ? (result as NextRouteCandidatesResult).candidates
       : 'routes' in modelResult ? modelResult.routes.map(route => all.find(item => isSameRouteCandidate(item, route))).filter((route): route is Route => Boolean(route)) : [];
-    responseEvent.candidateBatch = { searchRoutes: all,
+    responseEvent.candidateBatch = { searchRoutes: event.name === 'search_routes' ? all : origin.routeCandidates,
       generation: event.name === 'search_routes' ? searchGeneration : event.name === 'end_trip' ? selectionGeneration + 1 : current.directSelectionGeneration ?? 0, routes,
       tripId: event.name === 'end_trip' ? null : origin.tripId,
       journeyGeneration: current.journeyGeneration ?? 0,

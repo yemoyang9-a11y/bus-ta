@@ -644,6 +644,7 @@ export class HaneumRealtimeSession {
 
     // 일반 오류에서는 candidateId를 안내 완료로 기록하지 않는다.
     this.activeResponse = null;
+    this.candidateAnnouncementBatch = undefined;
     this.candidateAnnouncementTracker.cancelResponse();
     this.isResponseActive = false;
     this.flushPendingResponse();
