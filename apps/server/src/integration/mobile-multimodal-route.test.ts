@@ -74,7 +74,7 @@ function screen(route: Route) {
   const exports: any = {};
   const refs: any[] = []; let cursor = 0;
   const effects: (() => void)[] = [];
-  const state: any = { destination: "최종목적지", routeCandidates: [route], routeCandidatesExpiresAt: Date.now() + 60000, beaconScanActive: true };
+  const state: any = { destination: "최종목적지", routeCandidates: [route], visibleRouteCandidates: [route], routeCandidatesExpiresAt: Date.now() + 60000, beaconScanActive: true };
   const dispatch = (action: any) => { calls.actions.push(action); if (action.type === "SELECT_ROUTE") state.selectedRoute = action.route; if (action.type === "START_TRIP") { state.tripId = action.tripId; state.tripStatus = "WAITING_BUS"; } };
   const React = { createElement: (type: unknown, props: unknown, ...children: unknown[]) => ({ type, props, children }), useState: () => [false, () => {}], useEffect: (effect: () => void) => effects.push(effect), useRef: (value: unknown) => refs[cursor++] ?? (refs[cursor - 1] = { current: value }) };
   const modules: Record<string, unknown> = {

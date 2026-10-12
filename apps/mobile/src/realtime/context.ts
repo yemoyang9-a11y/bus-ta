@@ -5,7 +5,8 @@ type CreateRealtimeGuideContextParams = {
   getCurrentLocation(): { latitude: number; longitude: number } | undefined;
   refreshCurrentLocation(): Promise<void>;
   stopBeaconScan?: () => Promise<unknown>;
-  waitForRouteSelection?: (generation: number) => Promise<boolean>;
+  waitForRouteSelection?: RealtimeGuideContext['waitForRouteSelection'];
+  waitForSearchState?: RealtimeGuideContext['waitForSearchState'];
   onTripEnded?: (tripId: string) => void;
   dispatchAppAction(action: AppAction): void;
 };
@@ -24,6 +25,7 @@ export function createRealtimeGuideContext(
     refreshCurrentLocation: params.refreshCurrentLocation,
     ...(params.stopBeaconScan ? { stopBeaconScan: params.stopBeaconScan } : {}),
     ...(params.waitForRouteSelection ? { waitForRouteSelection: params.waitForRouteSelection } : {}),
+    ...(params.waitForSearchState ? { waitForSearchState: params.waitForSearchState } : {}),
     ...(params.onTripEnded ? { onTripEnded: params.onTripEnded } : {}),
     dispatchAppAction: params.dispatchAppAction,
   };
