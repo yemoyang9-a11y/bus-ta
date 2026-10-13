@@ -27,7 +27,7 @@ import {
 } from "./connection-timeout";
 import { CandidateAnnouncementTracker } from "./candidate-announcement-tracker";
 import {
-  ASSIST_DEVICE_RESPONSE_INSTRUCTIONS,
+  getAssistDeviceResponseInstructions,
   getAssistDeviceEventKey,
 } from "./assist-device-status";
 import type { AssistDeviceStatusChangedEvent } from "./types";
@@ -603,7 +603,7 @@ export class HaneumRealtimeSession {
 
     this.responseQueue.enqueueDirect(
       this.createPendingResponse(
-        ASSIST_DEVICE_RESPONSE_INSTRUCTIONS,
+        getAssistDeviceResponseInstructions(event),
         [statusEvent],
       ),
     );

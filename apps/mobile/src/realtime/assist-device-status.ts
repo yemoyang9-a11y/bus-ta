@@ -3,7 +3,13 @@ import type {
 } from "./types";
 
 export const ASSIST_DEVICE_RESPONSE_INSTRUCTIONS =
-  "방금 전달된 보조기기 상태 이벤트만 근거로 사용자에게 짧고 명확한 한국어 음성 안내를 생성한다. attempted가 false이면 실제 BLE 연결을 시도하기 전 단계에서 실패한 것이므로 지팡이나 하차벨의 전원·연결을 탓하거나 확인하라고 말하지 않는다. reason이 BEACON_NOT_REGISTERED이면 이 노선의 비콘 정보가 등록되지 않아 버스 접근 진동을 준비하지 못했다고 말한다. reason이 BEACON_LOOKUP_FAILED이면 현재 비콘 정보를 확인하지 못해 버스 접근 진동을 준비하지 못했다고 말한다. 이 두 오류는 하차벨 BLE 연결 실패를 뜻하지 않으므로 하차벨도 작동하지 않는다고 말하지 않는다. device가 CANE이면 버스 접근 진동 안내를 사용할 수 없다고, device가 BELL이면 하차벨이 작동하지 않을 수 있으니 내리기 전에 기사님께 직접 말씀해 달라고 안내한다. device가 BOTH이면 두 내용을 모두 짧게 안내한다. retryable이 false이면 다시 시도하겠다고 약속하거나 반복 시도를 권하지 않는다. 내부 필드명과 오류 코드는 읽지 않는다.";
+  "앱이 실패 원인과 실제 연결 시도 여부, 재시도 가능 여부로 확정한 아래 안내 문구만 그대로 읽는다. 설명, 질문, 전문가 문의, 전원·블루투스 점검 권유를 덧붙이지 않는다. 재시도 가능은 재시도 중이라는 뜻이 아니므로 실행을 약속하지 않는다. 다른 Function을 호출하거나 내부 필드명과 오류 코드를 읽지 않는다.";
+
+export function getAssistDeviceResponseInstructions(
+  event: AssistDeviceStatusChangedEvent,
+) {
+  return `${ASSIST_DEVICE_RESPONSE_INSTRUCTIONS}\n안내 문구: ${getAssistDeviceFallbackMessage(event)}`;
+}
 
 export function createAssistDeviceStatusEvent(
   event: Omit<
@@ -75,22 +81,38 @@ export function getAssistDeviceFallbackMessage(
   if (
     event.reason === "BEACON_LOOKUP_FAILED"
   ) {
-    return "현재 비콘 정보를 확인하지 못해 버스 접근 진동을 준비하지 못했습니다.";
+    return event.retryable
+      ? "비콘 정보를 불러오지 못했습니다. 다시 조회할 수 있습니다."
+      : "비콘 정보를 확인하지 못해 버스 접근 진동 안내를 준비하지 못했습니다.";
+  }
+
+  const deviceName = event.device === "BOTH"
+    ? "지팡이와 하차벨"
+    : event.device === "BELL" ? "하차벨" : "지팡이";
+  const failure = event.reason === "COMMAND_FAILED"
+    ? `${deviceName}에 명령을 전달하지 못했습니다.`
+    : event.attempted
+      ? `${deviceName}에 연결하지 못했습니다.`
+      : `${deviceName} 연결을 준비하지 못했습니다.`;
+
+  if (event.retryable) {
+    const retry = event.reason === "COMMAND_FAILED"
+      ? "명령을 다시 전송할 수 있습니다."
+      : event.attempted ? "다시 연결을 시도할 수 있습니다." : "다시 준비를 시도할 수 있습니다.";
+    const bellSafety = event.device === "CANE"
+      ? "" : " 내리기 전에 기사님께 직접 말씀해 주세요.";
+    return `${failure} ${retry}${bellSafety}`;
   }
 
   if (event.device === "BOTH") {
-    return "지팡이와 하차벨에 연결하지 못했습니다. 버스 접근 진동을 사용할 수 없고, 내리기 전에 기사님께 직접 말씀해 주세요.";
+    return `${failure} 버스 접근 진동 안내를 사용할 수 없습니다. 내리기 전에 기사님께 직접 말씀해 주세요.`;
   }
 
   if (event.device === "BELL") {
-    return "하차벨에 연결하지 못했습니다. 내리기 전에 기사님께 직접 말씀해 주세요.";
+    return `${failure} 내리기 전에 기사님께 직접 말씀해 주세요.`;
   }
 
-  if (event.reason === "COMMAND_FAILED") {
-    return "지팡이 명령 전송에 실패해 버스 접근 진동을 사용할 수 없습니다.";
-  }
-
-  return "지팡이에 연결하지 못해 버스 접근 진동을 사용할 수 없습니다.";
+  return `${failure} 버스 접근 진동 안내를 사용할 수 없습니다.`;
 }
 
 export function getAssistDeviceEventKey(
