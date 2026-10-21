@@ -9,6 +9,7 @@ import { isScreenTripActive } from '../state/trip-transition';
 import { TRIP_COMPLETION_MESSAGE } from '../realtime/trip-tracking';
 import { createOneStopAlightGuide, ONE_STOP_GUIDE_MESSAGE } from '../realtime/one-stop-alight-guide';
 const Speech = getSafeSpeech(NativeSpeech);
+const ONE_STOP_SCREEN_DELAY_MS = 5000;
 import { useRealtime } from '../realtime/RealtimeProvider';
 import {
   connectBell,
@@ -44,6 +45,7 @@ export default function RidingScreen({ route, navigation }) {
   const { tripId, selectedRoute } = route.params;
 
   const bellHandledRef = useRef(false);
+  const oneStopNavTimerRef = useRef(null);
   const stoppedRef = useRef(false);
   const startingBeaconScanRef = useRef(false);
   const connectingBellRef = useRef(false);
@@ -85,6 +87,10 @@ export default function RidingScreen({ route, navigation }) {
     new Promise((resolve) => setTimeout(resolve, ms));
 
   useEffect(() => { bellHandledRef.current = false; guideStartedKeyRef.current = null; }, [tripId]);
+  useEffect(() => () => {
+    clearTimeout(oneStopNavTimerRef.current);
+    oneStopNavTimerRef.current = null;
+  }, [tripId]);
 
   useEffect(() => {
     stoppedRef.current = state.tripId !== tripId || state.tripStatus === 'TRIP_DONE' || state.tripStatus === 'CANCELLED';
@@ -347,18 +353,27 @@ export default function RidingScreen({ route, navigation }) {
 
     guideStartedKeyRef.current = key;
     const flow = createOneStopAlightGuide({
-      tripId, bellRequestId, session: isConnected ? session : null,
+      tripId, bellRequestId, session: null,
       speech: NativeSpeech, isCurrent,
     });
     guideFlowRef.current = flow;
-    void flow.start().then(playback => {
-      if (playback === 'cancelled' || !isCurrent() || bellHandledRef.current) return;
-      bellHandledRef.current = true;
-      navigation.navigate('Alight', {
-        tripId, bellRequestId, command: 'STOP_REQUEST',
-        guideMessage: ONE_STOP_GUIDE_MESSAGE, guidePlayback: playback,
-      });
-    });
+    void flow.start();
+    // Navigation must not wait for speech; this timer survives the 1 -> 0 cleanup below.
+    if (!oneStopNavTimerRef.current) {
+      oneStopNavTimerRef.current = setTimeout(() => {
+        oneStopNavTimerRef.current = null;
+        const latest = latestGuideRef.current;
+        if (bellHandledRef.current || !latest.isFocused || latest.trackingError ||
+          latest.state.tripId !== tripId || latest.state.bellRequestId !== bellRequestId ||
+          latest.state.tripStatus === 'CANCELLED') return;
+        bellHandledRef.current = true;
+        guideFlowRef.current?.cancel(true);
+        navigation.navigate('Alight', {
+          tripId, bellRequestId, command: 'STOP_REQUEST',
+          guideMessage: ONE_STOP_GUIDE_MESSAGE,
+        });
+      }, ONE_STOP_SCREEN_DELAY_MS);
+    }
     return () => {
       // GPS completion has its own speech; do not stop that new utterance.
       flow.cancel(latestGuideRef.current.state.tripStatus !== 'TRIP_DONE');
