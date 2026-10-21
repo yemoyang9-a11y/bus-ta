@@ -71,7 +71,35 @@ function hooks() {
   };
 }
 
-function load(path: string, modules: Record<string, unknown>) {
+// RidingScreen의 한 정거장 화면 이동 지연(ONE_STOP_SCREEN_DELAY_MS)과 같은 값이다.
+const ONE_STOP_SCREEN_DELAY_MS = 5000;
+
+/** 한 정거장 화면 이동 timer만 가상 시계로 관리한다. */
+function oneStopClock() {
+  let now = 0;
+  let nextId = 100;
+  const timers = new Map<number, { due: number; callback: () => void }>();
+  return {
+    set(callback: () => void, ms: number) {
+      if (ms !== ONE_STOP_SCREEN_DELAY_MS) return undefined;
+      const id = nextId++;
+      timers.set(id, { due: now + ms, callback });
+      return id;
+    },
+    clear(id: unknown) { timers.delete(id as number); },
+    advance(ms: number) {
+      now += ms;
+      for (const [id, timer] of [...timers].sort((a, b) => a[1].due - b[1].due)) {
+        if (timer.due > now || !timers.has(id)) continue;
+        timers.delete(id);
+        timer.callback();
+      }
+    },
+    get pending() { return timers.size; },
+  };
+}
+
+function load(path: string, modules: Record<string, unknown>, clock?: ReturnType<typeof oneStopClock>) {
   const exports: any = {};
   const source = readFileSync(new URL(path, import.meta.url), 'utf8');
   runInNewContext(ts.transpileModule(source, {
@@ -80,8 +108,14 @@ function load(path: string, modules: Record<string, unknown>) {
   }).outputText, {
     exports, console, AbortController,
     // 재시도만 microtask로 진행하고 GPS/화면 안내 timer는 실행하지 않는다.
-    setTimeout: (callback: () => void, ms: number) => { if (ms === 2000) queueMicrotask(callback); return 1; },
-    clearTimeout() {}, setInterval: () => 1, clearInterval() {},
+    // 한 정거장 화면 이동 timer는 clock.advance()로만 진행한다.
+    setTimeout: (callback: () => void, ms: number) => {
+      const id = clock?.set(callback, ms);
+      if (id !== undefined) return id;
+      if (ms === 2000) queueMicrotask(callback);
+      return 1;
+    },
+    clearTimeout(id: unknown) { clock?.clear(id); }, setInterval: () => 1, clearInterval() {},
     require: (name: string) => {
       if (name === "../state/trip-transition" && !(name in modules)) return tripTransition;
       if (!(name in modules)) throw new Error(`Unexpected module ${name}`);
@@ -94,6 +128,7 @@ function load(path: string, modules: Record<string, unknown>) {
 function setup(options: { gps?: boolean; auto?: boolean; offlineCompletion?: boolean; holdGuide?: boolean; localGuide?: boolean; localGuideError?: boolean; journey?: boolean } = {}) {
   const providerHooks = hooks();
   const screenHooks = hooks();
+  const screenClock = oneStopClock();
   let state: any = { tripId: 'A', tripStatus: 'ON_BUS', boardingConfirmedAt: 'now', bellConnected: null,
     targetBeaconId: 'BUS_A', beaconPreparationCompleted: true, beaconScanActive: false };
   if(options.auto) state={...state,tripStatus:'WAITING_BUS',boardingConfirmedAt:null,caneReady:true,beaconScanActive:true};
@@ -185,9 +220,11 @@ function setup(options: { gps?: boolean; auto?: boolean; offlineCompletion?: boo
     '../ble/beacon-scan-gate': { canStartBeaconScan: () => false },
     '../ble/beacon-scan-controller': {},
     '../ble/bell-connect-controller': bellController,
-  }).default;
+  }, screenClock).default;
   return {
     calls,
+    advance: (ms: number) => screenClock.advance(ms),
+    get pendingScreenTimers() { return screenClock.pending; },
     connectVoice:()=>realtime.connect(),
     recoverVoice:(signal?:AbortSignal)=>realtime.recoverVoice(signal),
     disconnectVoice:()=>realtime.session.handleTransportClose(),
@@ -228,8 +265,9 @@ test('real Provider reconnects explicitly after disconnect without duplicate sta
 });
 test('real Provider recovery failure does not block one-stop screen transition',async()=>{
   const app=setup({gps:true,holdGuide:true});app.provider();app.screen();await flush();
-  await app.sampleLocation();app.provider();app.screen();await flush();app.guideFailed();await flush();
-  app.localGuideDone();await flush();assert.equal(app.calls.navigations.length,1);
+  await app.sampleLocation();app.provider();app.screen();await flush();
+  assert.equal(app.calls.navigations.length,0);
+  app.advance(ONE_STOP_SCREEN_DELAY_MS);await flush();assert.equal(app.calls.navigations.length,1);
   app.failVoice();assert.equal(await app.recoverVoice(),false);assert.equal(app.calls.voiceConnects,1);
   assert.equal(app.calls.navigations.length,1);app.dispose();
 });
@@ -241,14 +279,16 @@ test('real Provider cancels late recovery after trip replacement',async()=>{
 });
 
 for (const journey of [false, true]) {
-  test(`one-stop speech holds Riding until playback finishes (journey=${journey})`, async () => {
+  test(`one-stop bell request opens Alight after the screen delay, not after playback (journey=${journey})`, async () => {
     const app=setup({gps:true,holdGuide:true,journey});app.provider();app.screen();await flush();
     await app.sampleLocation();app.provider();app.screen();await flush();
-    assert.equal(app.calls.guides,1);assert.equal(app.calls.navigations.length,0);
+    assert.equal(app.calls.guides,0);assert.equal(app.calls.speech.at(-1),oneStopGuide.ONE_STOP_GUIDE_MESSAGE);
+    assert.equal(app.calls.navigations.length,0);assert.equal(app.pendingScreenTimers,1);
     app.setStatus({...app.state,shouldTriggerBell:false});
     await app.sampleLocation();app.provider();app.screen();await flush();
-    assert.equal(app.calls.guides,1);assert.equal(app.calls.navigations.length,0);
-    app.guideDone();await flush();
+    assert.equal(app.calls.speech.filter(message=>message===oneStopGuide.ONE_STOP_GUIDE_MESSAGE).length,1);
+    assert.equal(app.calls.navigations.length,0);assert.equal(app.pendingScreenTimers,1);
+    app.advance(ONE_STOP_SCREEN_DELAY_MS);await flush();
     assert.equal(app.calls.navigations.length,1);assert.equal(app.calls.navigations[0][0],'Alight');
     assert.equal(app.calls.navigations[0][1].bellRequestId,'bell-A');
     assert.equal(app.calls.navigations[0][1].command,'STOP_REQUEST');
@@ -256,35 +296,77 @@ for (const journey of [false, true]) {
   });
 }
 
-test('offline one-stop guide waits for the actual local TTS onDone', async () => {
+test('local TTS onDone before the screen delay does not navigate early', async () => {
   const app=setup({gps:true,holdGuide:true,localGuide:true});app.provider();app.screen();await flush();
   await app.sampleLocation();app.provider();app.screen();await flush();
   assert.equal(app.calls.guides,0);assert.equal(app.calls.navigations.length,0);
   assert.equal(app.calls.speech.at(-1),oneStopGuide.ONE_STOP_GUIDE_MESSAGE);
-  app.localGuideDone();await flush();assert.equal(app.calls.navigations.length,1);app.dispose();
+  app.localGuideDone();await flush();assert.equal(app.calls.navigations.length,0);
+  app.advance(ONE_STOP_SCREEN_DELAY_MS);await flush();assert.equal(app.calls.navigations.length,1);app.dispose();
 });
 
-test('Realtime playback failure holds Riding during local fallback and then navigates once',async()=>{
-  const app=setup({gps:true,holdGuide:true});app.provider();app.screen();await flush();
-  await app.sampleLocation();app.provider();app.screen();await flush();app.guideFailed();await flush();
-  assert.equal(app.calls.navigations.length,0);assert.equal(app.calls.speech.at(-1),oneStopGuide.ONE_STOP_GUIDE_MESSAGE);
-  app.localGuideDone();await flush();assert.equal(app.calls.navigations.length,1);app.dispose();
-});
-
-test('failed Realtime request and late completion cannot navigate Riding twice',async()=>{
+test('connected Realtime session is bypassed for one-stop speech and Riding navigates once',async()=>{
   const app=setup({gps:true,holdGuide:true});app.provider();app.screen();await flush();
   await app.sampleLocation();app.provider();app.screen();await flush();
-  const lateDone=app.captureGuideDone();app.guideFailed();await flush();
-  lateDone();assert.equal(app.calls.navigations.length,0);
-  app.localGuideDone();app.localGuideDone();await flush();lateDone();await flush();
+  assert.equal(app.calls.guides,0);assert.equal(app.calls.speech.at(-1),oneStopGuide.ONE_STOP_GUIDE_MESSAGE);
+  assert.equal(app.calls.navigations.length,0);
+  app.advance(ONE_STOP_SCREEN_DELAY_MS);await flush();assert.equal(app.calls.navigations.length,1);
+  app.advance(ONE_STOP_SCREEN_DELAY_MS);await flush();assert.equal(app.calls.navigations.length,1);app.dispose();
+});
+
+test('late local TTS completion after timer navigation cannot navigate Riding twice',async()=>{
+  const app=setup({gps:true,holdGuide:true});app.provider();app.screen();await flush();
+  await app.sampleLocation();app.provider();app.screen();await flush();
+  app.advance(ONE_STOP_SCREEN_DELAY_MS);await flush();assert.equal(app.calls.navigations.length,1);
+  app.localGuideDone();app.localGuideDone();await flush();app.screen();await flush();
   assert.equal(app.calls.navigations.length,1);app.dispose();
 });
 
-test('local playback failure proceeds with explicit unavailable result and original bell request',async()=>{
+test('local playback failure still navigates after the delay with the original bell request',async()=>{
   const app=setup({gps:true,localGuide:true,localGuideError:true});app.provider();app.screen();await flush();
   await app.sampleLocation();app.provider();app.screen();await flush();
-  assert.equal(app.calls.navigations.length,1);assert.equal(app.calls.navigations[0][1].guidePlayback,'unavailable');
+  assert.equal(app.calls.navigations.length,0);
+  app.advance(ONE_STOP_SCREEN_DELAY_MS);await flush();
+  assert.equal(app.calls.navigations.length,1);assert.equal('guidePlayback' in app.calls.navigations[0][1],false);
   assert.equal(app.calls.navigations[0][1].bellRequestId,'bell-A');app.dispose();
+});
+
+test('음성 재생이 끝나지 않아도 5초 뒤 Alight로 이동한다',async()=>{
+  const app=setup({gps:true,holdGuide:true});app.provider();app.screen();await flush();
+  await app.sampleLocation();app.provider();app.screen();await flush();
+  assert.equal(app.calls.speech.at(-1),oneStopGuide.ONE_STOP_GUIDE_MESSAGE);
+  app.advance(ONE_STOP_SCREEN_DELAY_MS-1);await flush();assert.equal(app.calls.navigations.length,0);
+  app.advance(1);await flush();
+  // VM context에서 만든 객체이므로 같은 realm의 일반 객체로 복사해 비교한다.
+  assert.deepEqual(app.calls.navigations.map(([name,params])=>[name,{...params}]),[['Alight',{tripId:'A',bellRequestId:'bell-A',command:'STOP_REQUEST',
+    guideMessage:oneStopGuide.ONE_STOP_GUIDE_MESSAGE}]]);
+  app.dispose();
+});
+
+test('remainingStations가 1→0으로 바뀌어도 화면 이동 timer가 유지되어 Alight로 이동한다',async()=>{
+  const app=setup({gps:true,holdGuide:true});app.provider();app.screen();await flush();
+  await app.sampleLocation();app.provider();app.screen();await flush();
+  assert.equal(app.pendingScreenTimers,1);
+  app.setStatus({tripId:'A',tripStatus:'TRIP_DONE',boardingConfirmedAt:'now',remainingStations:0,
+    bellStatus:'PENDING',bellRequestId:'bell-A',command:'STOP_REQUEST'});
+  await app.sampleLocation();app.provider();app.screen();await flush();
+  assert.equal(app.state.tripStatus,'TRIP_DONE');assert.equal(app.state.remainingStations,0);
+  assert.equal(app.pendingScreenTimers,1);assert.equal(app.calls.navigations.some(args=>args[0]==='Alight'),false);
+  app.advance(ONE_STOP_SCREEN_DELAY_MS);await flush();
+  assert.equal(app.calls.navigations.filter(args=>args[0]==='Alight').length,1);
+  assert.equal(app.calls.navigations.find(args=>args[0]==='Alight')[1].bellRequestId,'bell-A');app.dispose();
+});
+
+test('Alight 이동 후 같은 운행의 반복 PATCH와 timer는 두 번 이동하지 않는다',async()=>{
+  const app=setup({gps:true,holdGuide:true});app.provider();app.screen();await flush();
+  await app.sampleLocation();app.provider();app.screen();await flush();
+  app.advance(ONE_STOP_SCREEN_DELAY_MS);await flush();assert.equal(app.calls.navigations.length,1);
+  await app.sampleLocation();app.provider();app.screen();await flush();
+  app.setStatus({...app.state,shouldTriggerBell:false});
+  await app.sampleLocation();app.provider();app.screen();await flush();
+  assert.equal(app.pendingScreenTimers,0);
+  app.advance(ONE_STOP_SCREEN_DELAY_MS);await flush();
+  assert.equal(app.calls.navigations.filter(args=>args[0]==='Alight').length,1);app.dispose();
 });
 
 for(const invalid of [
@@ -370,6 +452,7 @@ test('대상 정보가 없는 bell 실패도 공식 경로로 attempted=false를
 test('실제 Provider GPS는 Riding blur 후에도 Alight 구간을 추적하고 완료 음성 후 reset한다', async()=>{
   const app=setup({gps:true});app.provider();app.screen();await flush();
   await app.sampleLocation();app.provider();app.screen();await flush();
+  app.advance(ONE_STOP_SCREEN_DELAY_MS);await flush();
   assert.equal(app.calls.navigations[0]?.[0],'Alight');
   app.leaveRiding();assert.equal(app.calls.gpsRemoved,0);
   app.setStatus({tripId:'A',tripStatus:'TRIP_DONE',boardingConfirmedAt:'now',remainingStations:0,bellStatus:'SUCCESS'});
@@ -423,6 +506,8 @@ test('자동 API 진행 중 수동 탑승/취소/다음운행의 상태를 늦�
 
 test('같은 Riding 인스턴스의 다음 운행도 하차벨 화면으로 이동한다',async()=>{
  const app=setup({gps:true});app.provider();app.screen();await flush();await app.sampleLocation();app.provider();app.screen();await flush();
+ app.advance(ONE_STOP_SCREEN_DELAY_MS);await flush();
  app.provider({...app.state,tripId:'B',bellRequestId:'bell-B'});app.screen('B');await flush();
+ app.advance(ONE_STOP_SCREEN_DELAY_MS);await flush();
  assert.equal(app.calls.navigations.filter(item=>item[0]==='Alight').length,2);app.dispose();
 });
